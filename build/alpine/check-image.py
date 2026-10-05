@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""Static checks of a staged Alpine base image (rootfs directory). Read-only; prints PASS/FAIL lines.
+"""Static checks of a staged Alpine image (rootfs directory). Read-only; prints PASS/FAIL lines.
 
   check-image.py --root DIR --lock base.lock --origins base.origins --aports DIR --arch x86_64 \
-                 --manifest FILE [--needles FILE]
+                 --manifest FILE [--needles FILE] [--dev-lock dev.lock --dev-pkgs dev.pkgs]
 
 Checks: package set == pinned lock; versions == vendored APKBUILDs; dependency closure (everything
 satisfied, nothing extra); every path owned by a package or an explicit image-config path; ELF
 architecture; uid/gid consistency; no dangling links; no host state (secrets, host names, paths).
+
+With --dev-lock/--dev-pkgs the image is the base system plus the development layer: the package set
+is base.lock + dev.lock, the closure is rooted at alpine-base and the packages of dev.pkgs, and the
+layer's versions are compared with the vendored APKBUILDs of their origins.
 """
 import argparse
+import mmap
 import os
 import re
 import stat
@@ -107,7 +112,11 @@ def main():
     ap.add_argument("--arch", required=True)
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--needles", help="file with one host-state string per line to search for")
+    ap.add_argument("--dev-lock", help="guest/dev.lock: adds the development layer to the expected package set")
+    ap.add_argument("--dev-pkgs", help="guest/dev.pkgs: top-level packages of the development layer (the world, with alpine-base)")
     a = ap.parse_args()
+    if bool(a.dev_lock) != bool(a.dev_pkgs):
+        ap.error("--dev-lock and --dev-pkgs go together")
     root = os.path.abspath(a.root)
 
     pkgs = parse_db(os.path.join(root, "lib/apk/db/installed"))
@@ -117,14 +126,35 @@ def main():
     # 1. package set == pinned lock
     installed = sorted(f"{p['P']}={p['V']}" for p in pkgs)
     locked = sorted(l.strip() for l in open(a.lock) if l.strip() and not l.startswith("#"))
-    check(installed == locked, "installed package set matches base.lock",
+    dev = []  # (name, version, repo, origin, sha256) of the development layer
+    if a.dev_lock:
+        dev = [l.split() for l in open(a.dev_lock) if l.strip() and not l.startswith("#")]
+        check(all(len(d) == 5 for d in dev) and len({d[0] for d in dev}) == len(dev), "dev.lock has five fields per line and no duplicate package")
+        locked = sorted(set(locked) | {f"{d[0]}={d[1]}" for d in dev})
+    what = "base.lock + dev.lock" if a.dev_lock else "base.lock"
+    check(installed == locked, f"installed package set matches {what}",
           f"only installed: {sorted(set(installed) - set(locked))}; only locked: {sorted(set(locked) - set(installed))}")
 
     # 2. every package was built from the vendored aports (origin listed, version == APKBUILD)
     origins = [l.strip().split("/", 1) for l in open(a.origins) if l.strip() and not l.startswith("#")]
     originset = {o for _, o in origins}
-    stray = sorted(p["P"] for p in pkgs if p.get("o") not in originset)
-    check(not stray, "every package originates from an aport in base.origins", str(stray))
+    devby = {d[0]: d for d in dev}
+    stray = sorted(p["P"] for p in pkgs if p.get("o") not in originset and p["P"] not in devby)
+    check(not stray, "every package originates from an aport in base.origins" + (" or is locked in dev.lock" if dev else ""), str(stray))
+    if dev:
+        # The layer's packages are official binaries; each one must be exactly what the vendored aport describes.
+        wrong = []
+        for n, ver, repo, origin, _ in dev:
+            p = byname.get(n)
+            if p is None or p.get("o") != origin:
+                wrong.append(f"{n}: origin {p.get('o') if p else None} != {origin}")
+                continue
+            t = open(os.path.join(a.aports, repo, origin, "APKBUILD"), encoding="utf-8").read()
+            v = re.search(r"^pkgver=(\S+)", t, re.M).group(1).strip("\"'")
+            r = re.search(r"^pkgrel=(\S+)", t, re.M).group(1).strip("\"'")
+            if ver != f"{v}-r{r}":
+                wrong.append(f"{n} {ver} != vendored {origin} {v}-r{r}")
+        check(not wrong, f"development layer: {len(dev)} packages, origins as locked, versions equal the vendored APKBUILD pkgver-pkgrel", "; ".join(wrong))
     mism = []
     for o_repo, o in origins:
         t = open(os.path.join(a.aports, o_repo, o, "APKBUILD"), encoding="utf-8").read()
@@ -138,6 +168,9 @@ def main():
     # 3. manifest agrees with the installed db (name, version, origin)
     mf = [l.split() for l in open(a.manifest) if l.strip() and not re.match(r"^[a-z0-9_]+=|^#", l)]
     check(sorted(f"{x[0]}={x[1]}" for x in mf) == installed, "manifest lists exactly the installed packages")
+    if dev:
+        mism = [x[0] for x in mf if x[0] in devby and (x[3] != devby[x[0]][4] or x[2] != devby[x[0]][3])]
+        check(not mism, "manifest records the locked origin and .apk sha256 of every development package", str(mism))
     check(all(len(x) == 5 and re.fullmatch(r"[0-9a-f]{64}", x[3]) and re.fullmatch(r"[0-9a-f]{64}", x[4]) for x in mf),
           "manifest has apk sha256 and datahash for every package")
 
@@ -160,7 +193,10 @@ def main():
             if dep_name(tok) not in provides:
                 unsat.append(f"{p['P']} -> {tok}")
     check(not unsat, "every dependency is satisfied inside the image", "; ".join(unsat[:5]))
-    seen, todo = set(), ["alpine-base"]
+    roots = ["alpine-base"]
+    if a.dev_pkgs:
+        roots += [l.strip() for l in open(a.dev_pkgs) if l.strip() and not l.startswith("#")]
+    seen, todo = set(), list(roots)
     while True:
         while todo:
             n = todo.pop()
@@ -179,8 +215,11 @@ def main():
             break
         todo.extend(more)
     extra = sorted(set(byname) - seen)
-    check("alpine-base" in byname and not extra,
-          "image is exactly the closure of alpine-base, dependencies plus install_if (no extra packages)", str(extra))
+    check(all(r in byname for r in roots) and not extra,
+          f"image is exactly the closure of {' + '.join(roots) if dev else 'alpine-base'}, dependencies plus install_if (no extra packages)", str(extra))
+    if a.dev_pkgs:
+        world = sorted(l.strip() for l in open(os.path.join(root, "etc/apk/world")) if l.strip())
+        check(world == sorted(roots), "/etc/apk/world records exactly the requested packages (alpine-base + dev.pkgs)", str(world))
 
     # 6. ownership: every path is package-owned or an explicit image-configuration path
     print("== filesystem")
@@ -280,11 +319,12 @@ def main():
                 full = os.path.join(dp, n)
                 if os.path.islink(full) or not os.path.isfile(full):
                     continue
-                with open(full, "rb") as fh:
-                    data = fh.read()
-                for label, value in needles:
-                    if value in data:
-                        hits.append(f"{os.path.relpath(full, root)} [{label}]")  # label only, never the value
+                if os.path.getsize(full) == 0:
+                    continue
+                with open(full, "rb") as fh, mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                    for label, value in needles:
+                        if data.find(value) != -1:
+                            hits.append(f"{os.path.relpath(full, root)} [{label}]")  # label only, never the value
         check(not hits, f"none of {len(needles)} host-state strings (host paths, proxy, secrets, today's date) appears in any file",
               "; ".join(hits[:8]))
 

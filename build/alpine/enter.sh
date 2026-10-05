@@ -13,7 +13,7 @@
 #     (abuild installs and purges build dependencies, whose triggers leave residue) is discarded, so
 #     every build starts from the identical, pristine toolchain
 # Writable, persistent state is limited to /build/{work,packages,distfiles} (and /build/images for root);
-# /tmp and /run are tmpfs.
+# /build/upstream (locked upstream packages of the development layer) is read-only; /tmp and /run are tmpfs.
 # shellcheck source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -101,6 +101,8 @@ bind "$PKG_DIR" "$R/build/packages"
 bind "$DISTFILES_DIR" "$R/build/distfiles"
 mkdir -p "$IMAGES_DIR" # root-owned: only the image tooling (run as root) writes here
 bind "$IMAGES_DIR" "$R/build/images"
+mkdir -p "$UPSTREAM_DIR"
+bind "$UPSTREAM_DIR" "$R/build/upstream" ro
 
 if [ "$ENTER_USER" = root ]; then home=/root; runner=(); else home="/home/$BUILDER_USER"; runner=(/sbin/su-exec "$BUILDER_USER"); fi
 envv=(

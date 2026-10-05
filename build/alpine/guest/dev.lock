@@ -1,0 +1,36 @@
+# Packages the development layer adds to the base image (resolved from guest/dev.pkgs), one per line:
+#   name version repo origin sha256-of-the-.apk
+# Official signed binary packages of the Alpine v3.24 repositories. Every version equals the pkgver-pkgrel of its
+# origin aport in vendor/alpine-aports. make-dev.sh checks each sha256, apk verifies each signature against the
+# Alpine release keys of the image. Refresh deliberately: make-dev.sh --refresh-lock, then review the diff.
+binutils 2.45.1-r1 main binutils 15682887459d216585feb438bbfb7ec63e1f33e77c453f44637d2d9d8c35977d
+brotli-libs 1.2.0-r1 main brotli f0823de7c6d45859aeb6a7facfc5cfbf2dadb83ad4f27c794cb6ecc74e578cee
+c-ares 1.34.8-r0 main c-ares 123fdeadc5ec884b897787f98d865492bf70402697b251cd1f3591a00b8c9d73
+cargo 1.96.1-r0 main rust 5d5c394ba9805bc2af0cd7ffee8b66c9e541ff37a5629515cd2d3ce28aa0b5ac
+gcc 15.2.0-r5 main gcc d1d482472ed91240731c60dbae8176bc1e32e1dfb694856da6759f6d32716325
+gmp 6.3.0-r4 main gmp 85323ef5bce8ff234736dc2d6592ea37aebdc6348a531e27430bdfe38364d256
+isl26 0.26-r2 main isl26 30999fb66e296c8ea7aa102cad0d3095519b3022abb622d2951dd29367310ea9
+jansson 2.15.0-r0 main jansson 7681b41486e1f2b2efce11875c839533464ae8857d30fc49130f0039c6585fdb
+libatomic 15.2.0-r5 main gcc c5ec550c73dd7b4e81e206fdff3cf4c46b0ae1b29fec1db5cd4e12d88416abbf
+libcurl 8.22.0-r0 main curl 40b2a8e15a8d24bc95a5f42aaeb018313a1ff457cee71d8e15aaf1328da765e8
+libffi 3.5.2-r1 main libffi 6da1a19313a40c56cac756fb11e2c4d5267831e1c22fc8323f24c943c94da6e0
+libgcc 15.2.0-r5 main gcc 393dcd32629f06d7d85409c272d142d0c082772d10b87ef55ee82f47de3be637
+libgcc-static 15.2.0-r5 main gcc 563244a562f5c48b921f7f0b4a571e373cfcba65175fe2d4f752c5f975738bcd
+libgomp 15.2.0-r5 main gcc e7204aad00e31d544e0a34eac5a7eb7d3586d2b7b22afd6e5907189c4e0337cc
+libidn2 2.3.8-r0 main libidn2 7d038ac558dde464964b033ce5126dd2eaf84cc414dc15e77c5424a321d0ebee
+libpsl 0.21.5-r3 main libpsl ec665a344b6e887f00f0a47015cc732c3a281b69e84641dc8662ea234fde6cdb
+libssh2 1.11.1-r3 main libssh2 0386747f75d9cbf13acd8437bea064961cc49f150be3302a2c507f7e9ee12c7b
+libstdc++ 15.2.0-r5 main gcc 14c987b556f5385a5db18376e788c75f37d85321b8dc1920d926ea7daac1d6f6
+libunistring 1.4.2-r0 main libunistring 3aa6030e603e34d96192742f327c0509f409c6769ce2e7b1463685dede38d714
+libxml2 2.13.9-r2 main libxml2 4b2f986159c659f014b942fe8a5d70c67af475153ca826c3dd53389eea46a300
+llvm22-libs 22.1.3-r0 main llvm22 de10a3114c14e4afec35fabaaf1a3834392d24f6f394532a301b56eca4f0065d
+make 4.4.1-r4 main make a916626a876f64c6b6fb32a6bf0fa93351d09fae0aa7684135642390da647e60
+mpc1 1.3.1-r1 main mpc1 c2247438e163f1c11646428f07576ceb3cf3167f9a9a5c6526021f778d77adb6
+mpfr4 4.2.2-r0 main mpfr4 93620a803d416e8c05150fb14413796df14ea370322dff6bd106455deab15646
+musl-dev 1.2.6-r2 main musl 6831e8b9e4821dae2c9121f0641f81e543f4ac27c03144c4876980ee84e6988f
+nghttp2-libs 1.69.0-r0 main nghttp2 7d7705cea464389989d3ca6b9505dbfce3cf25cfca1eeb06709a9909f93f4f11
+rust 1.96.1-r0 main rust 09adcccc230473a82c6e95875a9ca3d705013e3de58e651f029dcf8e4bf82f1d
+scudo-malloc 22.1.3-r0 main scudo-malloc 3a34e54040c95c585a49fcb0d07e794cc0e9093d1dd61860a508c300d0edf3d4
+sqlite-libs 3.53.4-r0 main sqlite a8a216e53d22faa3f04d2e3650c1991af66f8d0b42fadff5afcdb9afb60b19e5
+xz-libs 5.8.4-r0 main xz ab362dd515ead04c31a6c302163248da7aa4813e283c971e6dd3f789b453a1d9
+zstd-libs 1.5.7-r2 main zstd 23c6065b0049b2406441564bcf0032515a43f78e80d76fcb85535a3803ef5d4e

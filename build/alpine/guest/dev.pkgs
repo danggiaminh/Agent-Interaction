@@ -1,0 +1,12 @@
+# Top-level packages of the development layer (Rust + C). Everything else in the layer is their
+# dependency closure, resolved against the base image and pinned with checksums in dev.lock.
+#   gcc       C compiler and driver (also the linker driver rustc uses); pulls binutils (as, ld, ar)
+#   musl-dev  libc headers, crt files and libc.a for the base image's musl
+#   make      build driver for C projects
+#   rust      rustc and the standard library for x86_64-alpine-linux-musl
+#   cargo     Rust build tool and package manager
+gcc
+musl-dev
+make
+rust
+cargo

@@ -1,0 +1,50 @@
+#!/bin/sh
+# In-sandbox checks of the development image, run as root, offline. Prints PASS/FAIL lines, exits 1 on any FAIL.
+#   env: ALPINE_ARCH BASE_IMAGE_NAME
+fail=0
+ok() { printf 'PASS  %s\n' "$1"; }
+bad() { printf 'FAIL  %s\n' "$1"; fail=1; }
+R=/build/images/dev-rootfs
+keys="$R/etc/apk/keys"
+
+# Every locked package file is the pinned one and carries a valid signature of the Alpine release keys that
+# the image itself ships (the same check apk made when it installed the file).
+n=0 files=""
+while read -r name ver repo origin sha; do
+	case "$name" in '#'* | '') continue ;; esac
+	f="/build/upstream/$repo/$ALPINE_ARCH/$name-$ver.apk"
+	n=$((n + 1))
+	if [ "$(sha256sum "$f" | cut -d' ' -f1)" != "$sha" ]; then bad "$name-$ver.apk does not match its sha256 in dev.lock"; fi
+	files="$files $f"
+done </guest/dev.lock
+# shellcheck disable=SC2086
+if out="$(apk --keys-dir "$keys" verify $files 2>&1)"; then
+	ok "apk verify: all $n locked packages match dev.lock and carry a valid Alpine release signature"
+else
+	bad "apk verify failed: $(printf '%s\n' "$out" | head -n 5)"
+fi
+
+# The installed files are what the packages shipped: nothing owned by a package is modified or missing.
+audit="$(apk --root "$R" audit --full 2>&1)" || true
+changed="$(printf '%s\n' "$audit" | grep -E '^[^A ] ' | grep -vE '^d ' || true)"
+if [ -z "$changed" ]; then
+	ok "apk audit: no package-owned file modified or missing ($(printf '%s\n' "$audit" | grep -c '^A ') unowned entries are checked separately)"
+else
+	bad "apk audit reports changes: $(printf '%s\n' "$changed" | head -n 5)"
+fi
+
+# The package manager considers the installed set consistent, without any repository.
+if out="$(apk --root "$R" --repositories-file /dev/null --no-network --no-cache fix --simulate 2>&1)"; then
+	ok "apk fix --simulate: installed set is consistent ($(printf '%s\n' "$out" | tail -n 1))"
+else
+	bad "apk fix --simulate: $(printf '%s\n' "$out" | tail -n 3)"
+fi
+
+# Package sources: still only the pinned v3.24 repositories, exactly as the base image configured them.
+base=/build/images/$BASE_IMAGE_NAME.rootfs.tar.gz
+if [ "$(tar -xzOf "$base" ./etc/apk/repositories | sha256sum)" = "$(sha256sum <"$R/etc/apk/repositories")" ]; then
+	ok "/etc/apk/repositories is unchanged from the base image"
+else
+	bad "/etc/apk/repositories differs from the base image"
+fi
+[ "$fail" = 0 ]
