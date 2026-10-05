@@ -15,6 +15,9 @@ else bad "cached minirootfs missing or sha256 mismatch"; fi
 if grep -q "alpine=$ALPINE_VERSION rootfs_sha256=$ROOTFS_SHA256 aports_tree=$APORTS_TREE" "$ROOTFS_DIR/.bootstrap-complete" 2>/dev/null; then
 	ok "rootfs bootstrapped from the pinned inputs"
 else bad "rootfs not bootstrapped from the pinned inputs (run bootstrap.sh)"; fi
+if [ -s "$ROOTFS_DIGEST_FILE" ] && [ "$(rootfs_digest)" = "$(cat "$ROOTFS_DIGEST_FILE")" ]; then
+	ok "toolchain rootfs is byte-identical to its state after bootstrap (no drift)"
+else bad "toolchain rootfs differs from its bootstrap state (drift): re-run bootstrap.sh --force"; fi
 if msg="$(vendor_pristine)"; then ok "vendored aports is the pinned tree and pristine"; else bad "vendored aports not pristine: $msg"; fi
 
 echo "== sandbox as builder, clean environment"

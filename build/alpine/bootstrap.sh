@@ -48,7 +48,7 @@ log "verified $ROOTFS_FILE: sha256 ok, GPG signature by $ROOTFS_SIGNER_FPR"
 
 # 2. Extract a fresh rootfs.
 [ "$ROOTFS_DIR" = "$REPO_ROOT/.build/rootfs" ] || die "refusing to wipe unexpected path $ROOTFS_DIR"
-rm -rf "$ROOTFS_DIR"
+rm -rf "$ROOTFS_DIR" "${BUILD_ROOT:?}"/overlay.* "$ROOTFS_DIGEST_FILE"
 mkdir -p "$ROOTFS_DIR"
 tar -xzf "$CACHE_DIR/$ROOTFS_FILE" -C "$ROOTFS_DIR" --numeric-owner
 
@@ -69,4 +69,7 @@ if [ ! -s "$LOCK_FILE" ] || [ "$refresh" = 1 ]; then
 fi
 
 printf 'alpine=%s rootfs_sha256=%s aports_tree=%s\n' "$ALPINE_VERSION" "$ROOTFS_SHA256" "$APORTS_TREE" >"$ROOTFS_DIR/.bootstrap-complete"
+# 6. Fingerprint the finished toolchain so later runs can prove it did not drift.
+rootfs_digest >"$ROOTFS_DIGEST_FILE"
+log "toolchain rootfs digest $(cat "$ROOTFS_DIGEST_FILE")"
 log "bootstrap complete: $ROOTFS_DIR"

@@ -13,8 +13,22 @@ ROOTFS_DIR="$BUILD_ROOT/rootfs"
 WORK_DIR="$BUILD_ROOT/work"
 PKG_DIR="$BUILD_ROOT/packages"
 DISTFILES_DIR="$BUILD_ROOT/distfiles"
+IMAGES_DIR="$BUILD_ROOT/images"
+LOGS_DIR="$BUILD_ROOT/logs"
 LOCK_FILE="$ALPINE_BUILD_DIR/guest/toolchain.lock" # visible inside the sandbox as /guest/toolchain.lock
+BASE_ORIGINS="$ALPINE_BUILD_DIR/guest/base.origins" # aports to build, in order (repo/name)
+BASE_LOCK="$ALPINE_BUILD_DIR/guest/base.lock"       # name=version of every package in the base image
 ENTER="$ALPINE_BUILD_DIR/enter.sh"
+
+ROOTFS_DIGEST_FILE="$BUILD_ROOT/rootfs.digest" # digest of the toolchain rootfs right after bootstrap
+
+# Digest of the toolchain rootfs without the paths every sandbox run legitimately touches (mount
+# points, pseudo-filesystems, the resolver copy). Any other difference means the toolchain drifted.
+rootfs_digest() {
+	python3 "$ALPINE_BUILD_DIR/tree-digest.py" "$ROOTFS_DIR" \
+		--exclude proc --exclude dev --exclude tmp --exclude run --exclude aports --exclude guest \
+		--exclude build --exclude etc/resolv.conf
+}
 
 log() { printf '[alpine-env] %s\n' "$*"; }
 die() { printf '[alpine-env] ERROR: %s\n' "$*" >&2; exit 1; }

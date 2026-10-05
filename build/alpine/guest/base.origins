@@ -1,0 +1,18 @@
+# aports (repo/name) that make up the runtime closure of alpine-base, in build order.
+# The closure itself (name=version) is pinned in base.lock and checked by check-base.sh.
+main/musl
+main/zlib
+main/openssl
+main/libcap
+main/busybox
+main/apk-tools
+main/openrc
+main/alpine-baselayout
+main/alpine-keys
+main/alpine-conf
+main/alpine-base
+main/mdev-conf
+main/ca-certificates
+main/pax-utils
+main/ifupdown-ng
+main/bridge

@@ -21,7 +21,7 @@ chk "/aports/main/zlib/APKBUILD present" test -f /aports/main/zlib/APKBUILD
 chk "running unprivileged" sh -c '[ "$(id -u)" != 0 ]'
 chk "member of abuild group" sh -c 'id -Gn | tr " " "\n" | grep -qx abuild'
 chk "host env canary not visible" sh -c '[ -z "${AGENT_ENV_CANARY+x}" ]'
-allowed=" ALPINE_ARCH ALPINE_BRANCH ALPINE_MIRROR ALPINE_VERSION APORTS_COMMIT APORTS_TREE HOME HTTPS_PROXY JOBS LANG NO_PROXY PACKAGER PATH PWD OLDPWD SHLVL REPODEST SOURCE_DATE_EPOCH SRCDEST TERM TZ https_proxy no_proxy _ "
+allowed=" ALPINE_ARCH ALPINE_BRANCH ALPINE_MIRROR ALPINE_VERSION APORTS_COMMIT APORTS_TREE DISTFILES_MIRROR HOME HTTPS_PROXY JOBS LANG NO_PROXY PACKAGER PATH PWD OLDPWD SHLVL REPODEST SOURCE_DATE_EPOCH SRCDEST TERM TZ https_proxy no_proxy _ "
 leaked=""
 for v in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
 	case "$allowed" in *" $v "*) ;; *) leaked="$leaked $v" ;; esac
@@ -31,6 +31,7 @@ chk "own PID namespace (pid 1 is the sandbox init)" sh -c "tr '\0' ' ' </proc/1/
 chk "own UTS namespace (hostname alpine-build)" sh -c '[ "$(hostname)" = alpine-build ]'
 chk "/tmp is tmpfs" grep -q ' /tmp tmpfs ' /proc/mounts
 for d in work packages distfiles; do chk "/build/$d writable" sh -c "touch /build/$d/.w && rm /build/$d/.w"; done
+chk "/build/images is not writable by the builder" sh -c '[ -d /build/images ] && ! touch /build/images/.w 2>/dev/null'
 
 # --- toolchain and signing ---
 for t in abuild abuild-apk apk gcc g++ make git patch su-exec tar wget; do chk "tool: $t" command -v "$t"; done

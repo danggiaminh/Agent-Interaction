@@ -17,4 +17,10 @@ cp -a "$src" "$dst"
 stamp="$(date -u -d "@$SOURCE_DATE_EPOCH" +%Y%m%d%H%M.%S)"
 find "$dst" -exec touch -h -t "$stamp" {} +
 cd "$dst"
+# Documented, per-package environment adjustments for host limitations (never edits the APKBUILD).
+if [ -f "/guest/pkg-env.d/$name.env" ]; then
+	echo ">>> applying /guest/pkg-env.d/$name.env"
+	# shellcheck disable=SC1090
+	. "/guest/pkg-env.d/$name.env"
+fi
 abuild -r
