@@ -56,11 +56,13 @@ build/alpine/dev-run.sh [--copy SRC:DST] [--out DIR:HOSTDIR] -- cmd   # run a co
 - **Validation** (`check-dev.sh`): installed set equals `base.lock` + `dev.lock`; every layer version equals the vendored APKBUILD;
   the image is exactly the closure of `alpine-base` + `dev.pkgs`; every locked `.apk` has its pinned sha256 and a valid Alpine
   signature; `apk audit` clean; every path package-owned; the base image is preserved path for path and byte for byte (only the apk
-  database and world file differ); all ELF objects are x86-64; no host names, paths, proxy or secret values anywhere; a rebuild from a
+  database, the world file and that one applet link differ); all ELF objects are x86-64; no host names, paths, proxy or secret values anywhere; a rebuild from a
   clean state gives the identical archive; then `dev-test.sh` compiles and runs three projects in the image (`dev-test/`):
   C (`make`, `-Wall -Wextra -Werror`), Rust (`cargo build --release --locked`, `cargo test`) and Rust calling C through a `build.rs`.
   It checks the tool versions and target, the ELF type, interpreter and `DT_NEEDED` of the results, that an identical rebuild gives
   identical binaries, and that the environment and the network are as specified above.
+  C binaries need only `libc.musl`; Rust binaries also need `libgcc_s.so.1` (unwinding), which `libgcc` in the layer provides. The layer
+  replaces one base file: busybox's unowned applet link `usr/bin/strings` becomes binutils' own `strings`.
 
 ## Isolation
 - Own mount/PID/IPC/UTS namespaces, chroot into `.build/rootfs`, environment rebuilt with `env -i` (no host variables or tokens;

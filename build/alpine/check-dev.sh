@@ -89,9 +89,16 @@ def load(path):
 
 base, dev = load(sys.argv[1]), load(sys.argv[2])
 rewritten = ("lib/apk/db/", "etc/apk/world")
-changed = [n for n in base if n in dev and base[n] != dev[n] and not n.startswith(rewritten)]
+
+def displaced_applet(n):
+    # busybox's applet links (-> /bin/busybox) belong to no package; a real tool of the layer (binutils'
+    # strings) legitimately takes their place, exactly as on any Alpine system that has both installed.
+    return base[n][0] == tarfile.SYMTYPE and base[n][4] == "/bin/busybox" and dev[n][0] == tarfile.REGTYPE
+
+changed = [n for n in base if n in dev and base[n] != dev[n] and not n.startswith(rewritten) and not displaced_applet(n)]
+replaced = [n for n in base if n in dev and base[n] != dev[n] and displaced_applet(n)]
 missing = [n for n in base if n not in dev]
-print(f"{len(base)} base paths, {len(dev) - len(base) + len(missing)} added by the layer, {len(changed)} changed, {len(missing)} removed")
+print(f"{len(base)} base paths, {len(dev) - len(base) + len(missing)} added by the layer, {len(replaced)} busybox applet link(s) replaced by the real tool ({', '.join(replaced)}), {len(changed)} changed, {len(missing)} removed")
 if changed or missing:
     print("changed:", changed[:8], "removed:", missing[:8])
     sys.exit(1)

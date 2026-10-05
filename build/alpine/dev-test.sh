@@ -68,7 +68,8 @@ expect "unit test ran" rust_tests_passed "1 "
 expect "output" rust_run "rust-ok 42"
 expect "ELF machine" rust_machine "Advanced Micro Devices X86-64"
 expect "musl dynamic loader" rust_interp "/lib/ld-musl-$ALPINE_ARCH.so.1"
-expect "needs only libc.musl" rust_needed "libc.musl-$ALPINE_ARCH.so.1 "
+# Rust's std unwinds through libgcc_s (package libgcc, part of the layer); nothing else besides musl may be needed.
+expect "needs only libc.musl and libgcc_s" rust_needed "libc.musl-$ALPINE_ARCH.so.1 libgcc_s.so.1 "
 expect "rebuild is byte-identical" rust_rebuild_identical yes
 
 echo "== C + Rust project (build.rs runs cc and ar, rustc links the archive)"

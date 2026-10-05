@@ -46,7 +46,7 @@ kv c_run "$(./hello 2>&1)"
 kv c_machine "$(readelf -h hello | sed -n 's/^ *Machine: *//p')"
 kv c_class "$(readelf -h hello | sed -n 's/^ *Class: *//p')"
 kv c_interp "$(readelf -l hello | sed -n 's/.*Requesting program interpreter: \(.*\)\]/\1/p')"
-kv c_needed "$(readelf -d hello | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | tr '\n' ' ')"
+kv c_needed "$(readelf -d hello | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | LC_ALL=C sort | tr '\n' ' ')"
 sum1="$(sha256sum hello | cut -d' ' -f1)"
 make clean >/dev/null 2>&1 && make >/dev/null 2>&1
 kv c_rebuild_identical "$([ "$(sha256sum hello | cut -d' ' -f1)" = "$sum1" ] && echo yes || echo no)"
@@ -65,7 +65,7 @@ bin=target/release/hello-rust
 kv rust_run "$($bin 2>&1)"
 kv rust_machine "$(readelf -h $bin | sed -n 's/^ *Machine: *//p')"
 kv rust_interp "$(readelf -l $bin | sed -n 's/.*Requesting program interpreter: \(.*\)\]/\1/p')"
-kv rust_needed "$(readelf -d $bin | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | tr '\n' ' ')"
+kv rust_needed "$(readelf -d $bin | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | LC_ALL=C sort | tr '\n' ' ')"
 sum1="$(sha256sum $bin | cut -d' ' -f1)"
 cargo clean --locked --offline >/dev/null 2>&1 && cargo build --release --locked --offline >/dev/null 2>&1
 kv rust_rebuild_identical "$([ "$(sha256sum $bin | cut -d' ' -f1)" = "$sum1" ] && echo yes || echo no)"
