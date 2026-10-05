@@ -71,6 +71,9 @@ Remove these files on a host with IPv6.
 - The v3.24 repository keeps moving after the 3.24.2 tag (e.g. `openssl` 3.5.9 there, 3.5.8 in the vendored aports). The image uses
   the vendored versions. Build-time headers and tools (`openssl-dev`, `libcap-dev`, ...) come from the locked toolchain, not from
   the freshly built packages.
-- `.apk` bytes are reproducible within one environment (same signing key). Across fresh bootstraps the signatures differ, while the
-  payload `datahash` of each package does not.
+- Reproducibility: within one environment the `.apk` files and the image archive are byte-identical when rebuilt. Across
+  independent environments (fresh clone, fresh bootstrap, full rebuild; checked) all 27 package payload hashes (`datahash`) and
+  the whole image filesystem are identical, except the `S:` lines of `/lib/apk/db/installed`: each `.apk` is signed with the
+  environment's own key, and deflate-compressed signature bytes differ in size by a few bytes, so the recorded package sizes
+  (and with them the archive checksum) differ. Sharing one signing key would remove that, but would mean committing a private key.
 - The image boot test exercises everything above the kernel (init, OpenRC, services, shutdown); no real kernel or bootloader is run.
