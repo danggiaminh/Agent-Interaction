@@ -1,0 +1,52 @@
+# Contributor: Michael Mason <ms13sp@gmail.com>
+# Maintainer: mio <miyopan@e.email>
+maintainer="mio <miyopan@e.email>"
+pkgname=nano
+pkgver=9.2
+pkgrel=0
+pkgdesc="Enhanced clone of the Pico text editor"
+url="https://www.nano-editor.org/"
+arch="all"
+license="GPL-3.0-or-later"
+makedepends="linux-headers ncurses-dev"
+subpackages="$pkgname-doc $pkgname-syntax::noarch"
+source="https://www.nano-editor.org/dist/v${pkgver%%.*}/nano-$pkgver.tar.xz"
+
+build() {
+	./configure \
+		--build=$CBUILD \
+		--host=$CHOST \
+		--prefix=/usr \
+		--sysconfdir=/etc \
+		--mandir=/usr/share/man \
+		--infodir=/usr/share/info \
+		--localstatedir=/var \
+		--disable-libmagic \
+		--disable-nls
+	make
+}
+
+check() {
+	make check
+}
+
+package() {
+	make DESTDIR="$pkgdir" install
+	install -Dm644 doc/sample.nanorc \
+		"$pkgdir"/etc/nanorc
+
+	# Proper syntax highlighting for APKBUILDs
+	sed -i "/syntax/s/\"$/\" \"APKBUILD&/" \
+		"$pkgdir"/usr/share/nano/sh.nanorc
+}
+
+syntax() {
+	pkgdesc="Syntax highlighting definitions for $pkgname"
+	depends="$pkgname=$pkgver-r$pkgrel"
+
+	amove usr/share/nano
+}
+
+sha512sums="
+944156519cf981b08df46c248c323ba41eb2063ed804d070d7ee8639cbbe6bf68c038c8f0c094ef28e3a8e569ce321f4494617066c69c7585af41617b08e6dbe  nano-9.2.tar.xz
+"

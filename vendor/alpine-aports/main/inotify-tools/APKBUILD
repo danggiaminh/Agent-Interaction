@@ -1,0 +1,37 @@
+# Maintainer: Leonardo Arena <rnalrd@alpinelinux.org>
+pkgname=inotify-tools
+pkgver=4.23.9.0
+pkgrel=0
+pkgdesc="C library and CLI tools providing a simple interface to inotify"
+url="https://github.com/inotify-tools/inotify-tools"
+arch="all"
+license="GPL-2.0-only"
+makedepends="automake autoconf libtool"
+subpackages="$pkgname-dev $pkgname-libs $pkgname-doc"
+source="$pkgname-$pkgver.tar.gz::https://github.com/inotify-tools/inotify-tools/archive/$pkgver.tar.gz"
+
+prepare() {
+	default_prepare
+	autoreconf -vif
+}
+
+build() {
+	./configure \
+		--prefix=/usr \
+		--sysconfdir=/etc \
+		--mandir=/usr/share/man \
+		--infodir=/usr/share/info
+	make
+}
+
+check() {
+	make check
+}
+
+package() {
+	make DESTDIR="$pkgdir" install
+}
+
+sha512sums="
+8f44037a482fa39978b845b4989834e8c897ad872913c6cb8c4a987e0d13f9177b05f593332b859d7adde228fdc3512fd45d66cab65368c38926f41d57e22d13  inotify-tools-4.23.9.0.tar.gz
+"

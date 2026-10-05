@@ -1,0 +1,62 @@
+# Contributor: Galen Abell <galen@galenabell.com>
+maintainer="Galen Abell <galen@galenabell.com>"
+pkgname=k9s
+_pkgname=github.com/derailed/k9s
+pkgver=0.50.18
+pkgrel=6
+pkgdesc="Kubernetes TUI"
+url="https://k9scli.io"
+arch="all"
+license="Apache-2.0"
+makedepends="go"
+subpackages="
+	$pkgname-bash-completion
+	$pkgname-zsh-completion
+	$pkgname-fish-completion
+	"
+options="net chmod-clean"
+source="
+	$pkgname-$pkgver-2.tar.gz::https://github.com/derailed/k9s/archive/v$pkgver.tar.gz
+	disable-version-check.patch
+	"
+
+case $CARCH in
+x86) options="$options !check" ;; # some tests are flaky on x86
+esac
+
+export GOCACHE="${GOCACHE:-"$srcdir/go-cache"}"
+export GOTMPDIR="${GOTMPDIR:-"$srcdir"}"
+export GOMODCACHE="${GOMODCACHE:-"$srcdir/go"}"
+
+build() {
+	local ldflags="
+	-X $_pkgname/cmd.version=$pkgver
+	-X $_pkgname/cmd.commit=AlpineLinux
+	-X $_pkgname/cmd.date=$(date +%FT%T%Z)
+	"
+	go build -ldflags "-s -w $ldflags" -tags netgo -o execs/$pkgname
+
+	./execs/k9s completion bash >k9s.bash
+	./execs/k9s completion zsh >k9s.zsh
+	./execs/k9s completion fish >k9s.fish
+}
+
+check() {
+	go test ./...
+}
+
+package() {
+	install -Dm755 execs/$pkgname "$pkgdir"/usr/bin/$pkgname
+
+	install -Dm644 k9s.bash \
+		"$pkgdir"/usr/share/bash-completion/completions/k9s
+	install -Dm644 k9s.zsh \
+		"$pkgdir"/usr/share/zsh/site-functions/_k9s
+	install -Dm644 k9s.fish \
+		"$pkgdir"/usr/share/fish/vendor_completions.d/k9s.fish
+}
+
+sha512sums="
+d02af24dee692f259f0148e380494daf38fa0a1e500b958d1480fa9a981c7f03d228a04a994fba14fc03beb1f6cddd7babf0d60aa1a650f9693eb185af948475  k9s-0.50.18-2.tar.gz
+d5933985e9f312ae1f9a7a2ccec32c06ebbab77cace4061ba9bfd2173dad01db09096aad24c4d63947c29c958a01d6d98e6fa402bd52fc2b91972ca2ad73c023  disable-version-check.patch
+"

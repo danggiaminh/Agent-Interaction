@@ -1,0 +1,48 @@
+# Contributor: Clayton Craft <clayton@craftyguy.net>
+# Maintainer: Clayton Craft <clayton@craftyguy.net>
+pkgname=cosmic-settings-daemon
+pkgver=1.0.15
+_upstreamver="${pkgver/_beta/-beta.}"
+_upstreamver="${_upstreamver/_p/.}"
+pkgrel=0
+pkgdesc="Settings daemon for the COSMIC Desktop Environment"
+url="https://github.com/pop-os/cosmic-settings-daemon"
+# riscv64: too slow to build
+arch="all !riscv64"
+license="GPL-3.0-only"
+depends="
+	acpid
+	alsa-utils
+	geoclue
+	playerctl
+	pulseaudio-dev
+"
+makedepends="
+	cargo-auditable
+	libinput-dev
+	openssl-dev
+"
+options="net !check"  # fetch dependencies, no tests
+source="$pkgname-$pkgver.tar.gz::https://github.com/pop-os/cosmic-settings-daemon/archive/refs/tags/epoch-$_upstreamver.tar.gz"
+builddir="$srcdir/$pkgname-epoch-$_upstreamver"
+
+prepare() {
+	default_prepare
+	cargo fetch --target="$CHOST" --locked
+}
+
+build() {
+	cargo auditable build --release --frozen
+}
+
+check() {
+	cargo test --frozen
+}
+
+package() {
+	make DESTDIR="$pkgdir" install
+}
+
+sha512sums="
+a8db41a5444edcd701cb4224cba25fc8ff5da95eee624e1320d9a7b17fcc2529b151f9de5a461a38bea0f1b8ad5415c04b6f62122df233cf709aac314111efee  cosmic-settings-daemon-1.0.15.tar.gz
+"

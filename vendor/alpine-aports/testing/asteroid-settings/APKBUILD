@@ -1,0 +1,48 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=asteroid
+maintainer="Bart Ribbers <bribbers@disroot.org>"
+pkgname=asteroid-settings
+pkgver=2.1_git20260517
+pkgrel=0
+_commit="dfea0d2bf5d4e4031c957f59820cf275a384d36c"
+pkgdesc="Default settings app for AsteroidOS"
+url="https://github.com/AsteroidOS/asteroid-settings"
+# armhf blocked by qt6-qtdeclarative
+# riscv64 blocked by libqofono -> nemo-qml-plugin-systemsettings
+arch="all !armhf !riscv64"
+license="GPL-3.0-or-later"
+depends="
+	mapplauncherd
+	mce
+	nemo-qml-plugin-configuration
+	nemo-qml-plugin-systemsettings
+	nemo-qml-plugin-time
+	"
+makedepends="
+	dbus-dev
+	extra-cmake-modules
+	mce-dev
+	qml-asteroid-dev
+	qt6-qtbase-dev
+	qt6-qtdeclarative-dev
+	qt6-qtmultimedia-dev
+	samurai
+	"
+source="$pkgname-$_commit.tar.gz::https://github.com/AsteroidOS/asteroid-settings/archive/$_commit.tar.gz"
+options="!check" # No tests
+builddir="$srcdir/$pkgname-$_commit"
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=None \
+		-DCMAKE_INSTALL_PREFIX=/usr
+	cmake --build build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+3499f54a0a5d21d636ccc60348378987dbf01c43e6be344a9ad6dc0bbee9961aa7edf40783c2f8a99c135cc336274544f53614ac03c9c5074e557e0e831b680e  asteroid-settings-dfea0d2bf5d4e4031c957f59820cf275a384d36c.tar.gz
+"

@@ -1,0 +1,73 @@
+# Contributor: Hygna <hygna@proton.me>
+# Contributor: Fabricio Silva <hi@fabricio.dev>
+maintainer="Johannes Müller <alpinelinux@jogemu.at>"
+pkgname=pnpm
+pkgver=11.20.0
+pkgrel=0
+pkgdesc="Fast, disk space efficient package manager"
+url="https://pnpm.io"
+arch="noarch"
+license="MIT"
+depends="nodejs"
+subpackages="
+	$pkgname-doc
+	$pkgname-bash-completion
+	$pkgname-zsh-completion
+	$pkgname-fish-completion
+	"
+source="https://registry.npmjs.org/pnpm/-/pnpm-$pkgver.tgz
+	0001-no-check-for-updates.patch
+	0002-no-self-update.patch
+	"
+builddir="$srcdir/package"
+
+prepare() {
+	default_prepare
+
+	# remove node-gyp
+	rm -rf dist/node-gyp-bin dist/node_modules/node-gyp
+	# remove windows files
+	rm -rf dist/vendor/*.exe
+
+	# remove other unnecessary files
+	find . -type f \( \
+		-name '.*' -o \
+		-name '*.cmd' -o \
+		-name '*.bat' -o \
+		-name '*.map' -o \
+		-name '*.md' -o \
+		-name '*.darwin*' -o \
+		-name '*.win*' -o \
+		-iname 'README*' \) -delete
+}
+
+check() {
+	./bin/pnpm.mjs --help
+}
+
+package() {
+	local destdir="$pkgdir"/usr/share/node_modules/$pkgname
+
+	install -Dm644 LICENSE -t "$pkgdir"/usr/share/licenses/$pkgname
+
+	install -Dm644 dist/templates/completion.bash \
+		"$pkgdir"/usr/share/bash-completion/completions/$pkgname
+	install -Dm644 dist/templates/completion.zsh \
+		"$pkgdir"/usr/share/zsh/site-functions/_$pkgname
+	install -Dm644 dist/templates/completion.fish \
+		"$pkgdir"/usr/share/fish/vendor_completions.d/$pkgname.fish
+
+	install -Dm644 package.json -t "$destdir"
+	install -Dm755 bin/pnpm.mjs bin/pnpx.mjs -t "$destdir"/bin
+	cp -r dist "$destdir"/dist
+
+	mkdir -p "$pkgdir"/usr/bin
+	ln -sf ../share/node_modules/pnpm/bin/pnpm.mjs "$pkgdir"/usr/bin/pnpm
+	ln -sf ../share/node_modules/pnpm/bin/pnpx.mjs "$pkgdir"/usr/bin/pnpx
+}
+
+sha512sums="
+9a6f330a95b66446ea088faf1521405a8a01f07fde7124cc9958dfed52d4bb436737e65b08f85f37b46fcba375092558ac51262b816844b22f63406ed166bfee  pnpm-11.20.0.tgz
+a5205737fce3a677ed63b051b243f4a860f20105da803e6741efacf45e589bdacfe172b58e05e43a048c62513e820ff5e8895fac985d952fdfd62724502cb1ab  0001-no-check-for-updates.patch
+9c3011abf48dc0f13485d543f6a54a68078206048aefd00d6ad60f2bed135bc4af071a131f2184935be125785c8f708932e571881ff22d805c99cd8944f4dbc6  0002-no-self-update.patch
+"

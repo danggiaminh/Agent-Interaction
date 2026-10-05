@@ -1,0 +1,91 @@
+# Contributor: Julien Voisin <julien.voisin@dustri.org>
+# Maintainer: Tom Lebreux <me@tomlebreux.com>
+pkgname=navidrome
+pkgver=0.60.3
+pkgrel=4
+pkgdesc="Modern Music Server and Streamer compatible with Subsonic/Airsonic"
+url="https://navidrome.org/"
+arch="all !riscv64 !s390x"
+license="GPL-3.0-or-later"
+# check: TypeError: Cannot redefine property: localStorage
+# For downloading go and nodejs dependencies
+options="net !check"
+depends="ffmpeg"
+makedepends="go nodejs npm sqlite-dev taglib-dev zlib-dev"
+install="$pkgname.pre-install"
+subpackages="$pkgname-openrc"
+pkgusers="navidrome"
+pkggroups="navidrome"
+source="
+	$pkgname-$pkgver.tar.gz::https://github.com/navidrome/navidrome/archive/refs/tags/v$pkgver.tar.gz
+	navidrome.initd
+	navidrome.confd
+	navidrome.toml
+	"
+
+export GOFLAGS="$GOFLAGS -tags=embed,netgo,libsqlite3"
+export GOCACHE="${GOCACHE:-"$srcdir/go-cache"}"
+export GOTMPDIR="${GOTMPDIR:-"$srcdir"}"
+export GOMODCACHE="${GOMODCACHE:-"$srcdir/go"}"
+
+# secfixes:
+#   0.60.0-r0:
+#     - CVE-2026-25578
+#     - CVE-2026-25579
+#   0.56.1-r0:
+#     - CVE-2025-48948
+#     - CVE-2025-48949
+#   0.47.5-r0:
+#     - CVE-2022-23857
+
+prepare() {
+	default_prepare
+
+	go mod download
+	go mod tidy
+
+	cd ui
+	# Prevents crash due to allocation failure
+	echo 'node-options=--max_old_space_size=3072' >.npmrc
+	npm ci
+	cd ..
+}
+
+build() {
+	cd ./ui/
+	npm run build
+	cd ..
+
+	# Display pkgrel instead of keeping the git sha in sync with pkgver
+	CGO_ENABLED=1 CGO_CFLAGS_ALLOW="--define-prefix" go build \
+		-ldflags="
+			-X github.com/navidrome/navidrome/consts.gitSha=$pkgver-r$pkgrel
+			-X github.com/navidrome/navidrome/consts.gitTag=v$pkgver"
+}
+
+check() {
+	make testall
+}
+
+package() {
+	install -Dm755 navidrome "$pkgdir"/usr/bin/navidrome
+
+	install -Dm644 "$srcdir"/navidrome.toml \
+		"$pkgdir"/etc/navidrome/navidrome.toml
+
+	install -Dm755 "$srcdir"/$pkgname.initd \
+		"$pkgdir"/etc/init.d/$pkgname
+	install -Dm644 "$srcdir"/$pkgname.confd \
+		"$pkgdir"/etc/conf.d/$pkgname
+
+	install -dm755 -o navidrome -g navidrome \
+		"$pkgdir"/var/lib/navidrome \
+		"$pkgdir"/var/lib/navidrome/music
+}
+
+sha512sums="
+df44225deec8ce9ac551e77c06d62ce86cb28368fde53e037774c0f654ac1a6bbe6eabaee0f0dd492e707c467602a3019ba86c7bce95c6e8c79e1ad8138017d1  navidrome-0.60.3.tar.gz
+9622f9e30b8964e7e2708d313f45e0977fdfa4ceec9b4311f8a40bd250c986fcc87f24577e74ccbcf06d4f3d071f0951d5e25eb3107ce0188b7caf6fe073edaa  navidrome.initd
+dc5a0f21c5da6c165c4dc216b8dc3cab8e2c02c5c2ff06dc393528383234034428df7cfa11704a2373fcebba4cba484fffd2231b3c5fd871420a34fe1dcf1e04  navidrome.confd
+998e62b7fb8c5af91d2007d5e4d93f106467dea3f26bc33cb90227639015298d3043a4496125082e69bb4a70f3461a942c09d3732bf39a206e504c4c0f9fcb2f  navidrome.toml
+"

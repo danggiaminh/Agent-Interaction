@@ -1,0 +1,85 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-frameworks
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=kwallet
+pkgver=6.26.0
+pkgrel=0
+pkgdesc="Secure and unified container for user passwords"
+# armhf blocked by qt6-qtdeclarative -> ki18n
+arch="all !armhf"
+url="https://community.kde.org/Frameworks"
+license="LGPL-2.1-or-later"
+depends_dev="
+	gpgme-dev
+	kconfig-dev
+	kconfigwidgets-dev
+	kcoreaddons-dev
+	kdbusaddons-dev
+	ki18n-dev
+	kiconthemes-dev
+	knotifications-dev
+	kservice-dev
+	kwindowsystem-dev
+	libgcrypt-dev
+	libsecret-dev
+	qca-qt6-dev
+	"
+makedepends="$depends_dev
+	doxygen
+	extra-cmake-modules
+	graphviz
+	kde-qdoc-common
+	kdoctools-dev
+	qt6-qttools-dev
+	samurai
+	"
+subpackages="$pkgname-dev $pkgname-doc $pkgname-lang $pkgname-bin"
+_repo_url="https://invent.kde.org/frameworks/kwallet.git"
+source="https://download.kde.org/stable/frameworks/${pkgver%.*}/kwallet-$pkgver.tar.xz"
+
+provides="dbus:org.freedesktop.Secrets"
+# 2nd highst priority after gnome-keyring, mainly for KDE
+provider_priority=10
+
+build() {
+	export KDE_DOCS=/usr/share/kde/documentation
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+
+	cmake --build build --target prepare_docs
+	cmake --build build --target generate_docs
+	cmake --build build --target generate_qch
+}
+
+check() {
+	local excluded_checks=
+	case "$CARCH" in
+		aarch64) excluded_checks="fdo_secrets_test" ;;
+		s390x) excluded_checks="(blowfishtest)";;
+	esac
+	ctest --test-dir build -E "$excluded_checks"
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+
+	DESTDIR="$pkgdir" cmake --build build --target install_html_docs
+	DESTDIR="$pkgdir" cmake --build build --target install_qch_docs
+}
+
+doc() {
+	replaces="kwallet5-doc"
+
+	default_doc
+}
+
+bin() {
+	amove usr/bin/kwallet-query
+}
+
+sha512sums="
+1ab85512aff28a9d1c7026b1eaa184d2ce4990ffd111d108b76a1ca56b3c9234df1d9062a36af8eca9d5fcfd8e2c1dfaec35bd22e22821af64ae89daac31b225  kwallet-6.26.0.tar.xz
+"

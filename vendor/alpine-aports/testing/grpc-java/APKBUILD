@@ -1,0 +1,38 @@
+# Contributor: wener <wenermail@gmail.com>
+# Maintainer: Leon White <badfunkstripe@gmail.com>
+pkgname=grpc-java
+pkgver=1.78.0
+pkgrel=0
+pkgdesc="The Java gRPC implementation. HTTP/2 based RPC"
+url="https://github.com/grpc/grpc-java"
+# Blocked by Bazel
+arch="x86_64 aarch64"
+license="Apache-2.0"
+depends="
+	protoc
+	openjdk21-jre-headless
+	"
+makedepends="
+	bazel8
+	openjdk21-jdk
+	protobuf-dev
+	"
+source="
+	$pkgname-$pkgver.tar.gz::https://github.com/grpc/grpc-java/archive/v$pkgver.tar.gz
+	system-deps.patch
+	"
+options="!check"
+
+build() {
+	bazel build //compiler:grpc_java_plugin
+}
+
+package() {
+	install -Dm755 bazel-bin/compiler/grpc_java_plugin \
+		"$pkgdir"/usr/bin/protoc-gen-grpc-java
+}
+
+sha512sums="
+5a51b47f1b48ec8eabd99c59cce7381fca529735f88bf9bfceba86254a32c7c195a33065119a42e8b4b876bb9d62a2e45bf52310d998c8b4feb74400cb0da7d8  grpc-java-1.78.0.tar.gz
+d3e7ca39230bf4e49cf42a117d1084879bc6c60384a6765eb2555bc5eb063b68302f2238b2ff5792289d367230ce344de9385e2a93ceafc8c936ae7c61062385  system-deps.patch
+"

@@ -1,0 +1,65 @@
+# Contributor: Alex Yam <alex@alexyam.com>
+# Maintainer: Alex Yam <alex@alexyam.com>
+pkgname=cherrytree
+pkgver=1.4.0
+pkgrel=0
+pkgdesc="hierarchical note taking application featuring rich text and syntax highlighting"
+url="https://github.com/giuspen/cherrytree"
+license="GPL-3.0-or-later"
+arch="all"
+makedepends="
+	cmake
+	curl-dev
+	fmt-dev
+	gspell-dev
+	gtkmm3-dev
+	gtksourceview4-dev
+	libxml++-2.6-dev
+	python3
+	samurai
+	spdlog-dev
+	sqlite-dev
+	uchardet-dev
+	vte3-dev
+	"
+checkdepends="xvfb-run gtest-dev"
+subpackages="$pkgname-doc $pkgname-lang"
+source="https://github.com/giuspen/cherrytree/releases/download/v$pkgver/cherrytree_$pkgver.tar.xz"
+builddir="$srcdir/${pkgname}_$pkgver"
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=MinSizeRel \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib \
+		-DBUILD_TESTING="$(want_check && echo ON || echo OFF)" \
+		-DAUTO_RUN_TESTING=OFF \
+		-DPYTHON_EXEC=/usr/bin/python3 \
+		-DUSE_SHARED_GTEST_GMOCK=ON
+	cmake --build build
+}
+
+check() {
+	# Skip broken ExportsMultipleParametersTests.ChecksExports tests
+	#
+	# (run_tests_with_x_1:7077): Gtk-WARNING **: 04:05:18.849:
+	#   Found an icon but could not load it. Most likely gdk-pixbuf does not
+	#   provide SVG support.
+	#
+	# [  FAILED  ] ExportsTests/ExportsMultipleParametersTests.ChecksExports
+	#   /testing/cherrytree/src/cherrytree_0.99.44/tests/data_данные
+	#   /test_документ.ctb", "--export_to_html_dir")
+	xvfb-run -a ctest --test-dir build \
+		-E ExportsMultipleParametersTests.ChecksExports
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --build build --target install
+
+	# bundled breeze-icons
+	rm -rv "$pkgdir"/usr/share/cherrytree/icons
+}
+
+sha512sums="
+fd6cbeb2725890bc1ec706185ea6f66a4245092799a0e7d6e48c8722ec861341739a2f0acd0bf36a0a99fc19af61dfce36bb1eee808291a375ed2820cc1e2046  cherrytree_1.4.0.tar.xz
+"

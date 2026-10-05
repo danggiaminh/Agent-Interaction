@@ -1,0 +1,63 @@
+# Contributor: Rasmus Thomsen <oss@cogitri.dev>
+maintainer="team/gnome <achill@achill.org>"
+pkgname=gjs
+# even number after first dot are the stable releases
+pkgver=1.88.1
+pkgrel=0
+pkgdesc="GNOME javascript library"
+url="https://gitlab.gnome.org/GNOME/gjs"
+# armhf blocked by mozjs
+arch="all !armhf"
+license="MIT AND LGPL-2.0-or-later"
+makedepends="
+	cairo-dev
+	clang
+	dbus
+	gobject-introspection-dev
+	gtk+3.0-dev
+	libffi>=3.3
+	lld
+	meson
+	mozjs-dev
+	"
+checkdepends="xvfb-run"
+subpackages="$pkgname-dev $pkgname-dbg"
+source="https://download.gnome.org/sources/gjs/${pkgver%.*}/gjs-$pkgver.tar.xz"
+options="$options !check" # https://gitlab.gnome.org/GNOME/gjs/-/issues/681#note_2382535
+
+build() {
+	case "$CARCH" in
+	aarch64|arm*|riscv64|loongarch64)
+		# not supported by clang here
+		export CFLAGS="${CFLAGS/-fstack-clash-protection}"
+		export CXXFLAGS="${CXXFLAGS/-fstack-clash-protection}"
+		;;
+	esac
+
+	CC=clang \
+	CXX=clang++ \
+	CFLAGS="$CFLAGS -O2" \
+	CXXFLAGS="$CXXFLAGS -O2" \
+	LDFLAGS="$LDFLAGS -fuse-ld=lld" \
+	abuild-meson \
+		--buildtype=release \
+		-Db_lto=true \
+		-Db_ndebug=true \
+		-Dprofiler=disabled \
+		-Dinstalled_tests=false \
+		output
+	meson compile -C output
+}
+
+check() {
+	# Tests can take a while on armv7
+	xvfb-run -a meson test --print-errorlogs -C output -t 10
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
+}
+
+sha512sums="
+4c243d618ca9d3ed48e7235b8a5c1816f3cb0fb6e664e3c429ff8375e23ee3de8f2b22846d6256ad347dc430e7bddccc8420d5bf7ffdbf7bf8a266daf5c2b9a6  gjs-1.88.1.tar.xz
+"

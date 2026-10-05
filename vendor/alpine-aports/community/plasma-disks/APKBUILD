@@ -1,0 +1,60 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-plasma
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=plasma-disks
+pkgver=6.6.6
+pkgrel=0
+pkgdesc="Monitors S.M.A.R.T. capable devices for imminent failure"
+# armhf blocked by qt6-qtdeclarative
+arch="all !armhf"
+url="https://kde.org/plasma-desktop/"
+license="GPL-2.0-or-later"
+depends="
+	kirigami
+	smartmontools
+	"
+makedepends="
+	extra-cmake-modules
+	kauth-dev
+	kcmutils-dev
+	kcoreaddons-dev
+	kdbusaddons-dev
+	kdeclarative-dev
+	ki18n-dev
+	kio-dev
+	knotifications-dev
+	kservice-dev
+	qt6-qtbase-dev
+	samurai
+	solid-dev
+	"
+checkdepends="xwayland-run"
+
+case "$pkgver" in
+	*.*.9*) _rel=unstable;;
+	*) _rel=stable;;
+esac
+
+subpackages="$pkgname-lang"
+_repo_url="https://invent.kde.org/plasma/plasma-disks.git"
+source="https://download.kde.org/$_rel/plasma/$pkgver/plasma-disks-$pkgver.tar.xz"
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+}
+
+check() {
+	wlheadless-run -- ctest --test-dir build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+328e019d30c2b4b90d7fe0faf64a22a65a1a8709ec4e126b9d664efcd1188bf4090b8aa1a45b0a18d74c1f50c8ed7117318e0ad71fa400404c4dbebfa83c8c8c  plasma-disks-6.6.6.tar.xz
+"

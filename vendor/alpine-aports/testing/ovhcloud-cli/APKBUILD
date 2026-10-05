@@ -1,0 +1,28 @@
+# Contributor: Guy Godfroy <guy.godfroy@gugod.fr>
+# Maintainer: Guy Godfroy <guy.godfroy@gugod.fr>
+pkgname=ovhcloud-cli
+pkgver=0.11.0
+pkgrel=2
+pkgdesc="Official Command Line Interface to manage OVHcloud services"
+url="https://github.com/ovh/ovhcloud-cli"
+arch="all"
+license="Apache-2.0"
+makedepends="go"
+source="$pkgname-$pkgver.tar.gz::https://github.com/ovh/ovhcloud-cli/archive/refs/tags/v$pkgver.tar.gz"
+options="net" #go deps
+
+build() {
+	go build -v -ldflags "-s -w -extldflags -static -X github.com/ovh/ovhcloud-cli/internal/version.Version=$pkgver" -o ovhcloud ./cmd/ovhcloud
+}
+
+check() {
+	go test ./...
+}
+
+package() {
+	install -Dm0755 ovhcloud -t "$pkgdir"/usr/bin/
+}
+
+sha512sums="
+153bee94909f323e1cb06ec15c66b28d5531e0ed5c1a6606d86dbf9977a2110bdde209bceeba65c5ed77d82dbe26ded8d72d012ed9ed58404e6b531b4bbe62e6  ovhcloud-cli-0.11.0.tar.gz
+"

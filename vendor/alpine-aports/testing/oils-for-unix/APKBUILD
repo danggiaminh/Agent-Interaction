@@ -1,0 +1,59 @@
+# Contributor: Samuel Hierholzer <samuel@ton-kunst.ch>
+maintainer="Jakub Jirutka <jakub@jirutka.cz>"
+pkgname=oils-for-unix
+pkgver=0.35.0
+pkgrel=1
+pkgdesc="Unix shell with JSON-compatible structured data"
+url="https://www.oils.pub/"
+arch="all"
+license="Apache-2.0"
+makedepends="readline-dev"
+subpackages="$pkgname-doc $pkgname-binsh::noarch $pkgname-bash::noarch"
+install="
+	$pkgname.post-install $pkgname.post-upgrade $pkgname.pre-deinstall
+	$pkgname-bash.post-install $pkgname-bash.post-upgrade $pkgname-bash.pre-deinstall
+	"
+source="https://oils.pub/download/oils-for-unix-$pkgver.tar.gz"
+
+build() {
+	# not gnu autoconf
+	./configure \
+		--prefix=/usr \
+		--with-readline
+	_build/oils.sh
+}
+
+check() {
+	_bin/cxx-opt-sh/osh -c 'echo hi'
+	_bin/cxx-opt-sh/osh -n -c 'echo hi'
+
+	_bin/cxx-opt-sh/ysh -c 'echo hi'
+	_bin/cxx-opt-sh/ysh -n -c 'echo hi'
+	_bin/cxx-opt-sh/ysh -c 'json write ({x: 42}, space=0)'
+}
+
+package() {
+	DESTDIR="$pkgdir" ./install
+	install -Dm644 LICENSE.txt -t "$pkgdir"/usr/share/licenses/"$pkgname"
+}
+
+binsh() {
+	pkgdesc="oils-for-unix as /bin/sh"
+	provides="/bin/sh"
+	provider_priority=10 # lowest (other providers: dash-binsh, busybox-binsh, yash-binsh)
+
+	mkdir -p "$subpkgdir"/bin
+	ln -s /usr/bin/oils-for-unix "$subpkgdir"/bin/sh
+}
+
+bash() {
+	pkgdesc="oils-for-unix as /bin/bash"
+	provider_priority=10 # lowest (other provider is bash)
+
+	mkdir -p "$subpkgdir"/bin
+	ln -s /usr/bin/oils-for-unix "$subpkgdir"/bin/bash
+}
+
+sha512sums="
+4a007837cf7c97b64b9c85efc6fbf0d9033ef6dbc62beaa761e73de40e074a398a15fef0ea19a386822dd8f451aebd828ce2a442be9bc8cafa032cef21e670e3  oils-for-unix-0.35.0.tar.gz
+"

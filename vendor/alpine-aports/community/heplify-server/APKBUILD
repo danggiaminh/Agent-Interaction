@@ -1,0 +1,75 @@
+# Maintainer: Leonardo Arena <rnalrd@alpinelinux.org>
+pkgname=heplify-server
+pkgver=1.60.9
+pkgrel=1
+pkgdesc="HEP Capture Server & Switch in Go"
+url="http://sipcapture.io"
+arch="all !armhf !armv7 !x86" # FTBFS: unaligned 64-bit atomic operation
+license="AGPL-3.0-or-later"
+makedepends="go"
+install="$pkgname.pre-install"
+subpackages="$pkgname-openrc"
+options="net"
+source="$pkgname-$pkgver.tar.gz::https://github.com/sipcapture/heplify-server/archive/refs/tags/$pkgver.tar.gz
+	$pkgname.initd
+	"
+
+case $CARCH in
+	ppc64le)
+		makedepends="$makedepends lua5.1-dev"
+		options="$options !check" # panic: test timed out
+		export GOFLAGS="$GOFLAGS -tags=llua"
+		;;
+	riscv64|loongarch64)
+		makedepends="$makedepends lua5.1-dev"
+		options="$options !check" # failing uri_test
+		export GOFLAGS="$GOFLAGS -tags=llua"
+		;;
+	aarch64|s390x|x86_64)
+		makedepends="$makedepends luajit-dev"
+		options="$options !check" # failing uri_test
+		;;
+	*)
+		makedepends="$makedepends luajit-dev"
+		;;
+esac
+
+export GOCACHE="${GOCACHE:-"$srcdir/go-cache"}"
+export GOTMPDIR="${GOTMPDIR:-"$srcdir"}"
+export GOMODCACHE="${GOMODCACHE:-"$srcdir/go"}"
+
+export GOFLAGS="$GOFLAGS -modcacherw"
+
+prepare() {
+	default_prepare
+	go mod download
+
+	case $CARCH in
+		armhf|armv7|x86|s390x|riscv64|ppc64le|loongarch64)
+			# -race is not supported on these arches
+			sed -i '/go test/s/-race//' Makefile
+	esac
+}
+
+build() {
+	make all
+}
+
+check() {
+	# is not supported when testing with -race
+	export GOFLAGS="${GOFLAGS/-buildmode=pie}"
+
+	make test
+}
+
+package() {
+	install -D -m755 heplify-server "$pkgdir"/usr/bin/heplify-server
+	install -D -m644 example/homer7_config/heplify-server.toml \
+		"$pkgdir"/etc/heplify-server/heplify-server.toml
+	install -D -m755 "$srcdir"/$pkgname.initd "$pkgdir"/etc/init.d/$pkgname
+}
+
+sha512sums="
+515c5409d0720f6c94f98e224ec107fb0a65b2ed6060ee3450847b36bc294c34ff9808f031f48888c6d12c2f19e81d79aaf6684fc697eaa4d799e5a1002b25c8  heplify-server-1.60.9.tar.gz
+f090147fa00fa3c12bce3dd7dffbe97fe0eb5ab61cfccac996921ea36c957ffc55ce53f45e4d1f1b8e0bcc7b4ac7eb3bf362ab6d65b46f2619336d3c18197a11  heplify-server.initd
+"

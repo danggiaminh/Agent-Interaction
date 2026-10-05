@@ -1,0 +1,39 @@
+# Contributor: Galen Abell <galen@galenabell.com>
+# Maintainer: Galen Abell <galen@galenabell.com>
+pkgname=py3-sphinx-autodoc-typehints
+_pyname=sphinx-autodoc-typehints
+pkgver=3.10.2
+pkgrel=0
+pkgdesc="Type hints support for the Sphinx autodoc extension"
+url="https://github.com/tox-dev/sphinx-autodoc-typehints"
+arch="noarch"
+license="MIT"
+options="net"
+depends="python3 py3-sphinx py3-typing-extensions"
+makedepends="py3-gpep517 py3-installer py3-hatchling py3-hatch-vcs"
+checkdepends="py3-pytest py3-sphobjinv"
+subpackages="$pkgname-pyc"
+source="$_pyname-$pkgver.tar.gz::https://github.com/tox-dev/sphinx-autodoc-typehints/archive/refs/tags/$pkgver.tar.gz"
+builddir="$srcdir/$_pyname-$pkgver"
+
+build() {
+	export SETUPTOOLS_SCM_PRETEND_VERSION=$pkgver
+	gpep517 build-wheel \
+		--wheel-dir .dist \
+		--output-fd 3 3>&1 >&2
+}
+
+check() {
+	python3 -m venv --clear --without-pip --system-site-packages test-env
+	test-env/bin/python3 -m installer .dist/sphinx_autodoc_typehints*.whl
+	test-env/bin/python3 -m pytest
+}
+
+package() {
+	python3 -m installer -d "$pkgdir" \
+		.dist/sphinx_autodoc_typehints*.whl
+}
+
+sha512sums="
+8dea2f90dccd6b9f0add9c663ba914425a866fa120eda48d1e3dd807e23baad4b6fa9b5046c2199fdd130760b54c82e71e821fa1c268c1de9a82574312180b42  sphinx-autodoc-typehints-3.10.2.tar.gz
+"

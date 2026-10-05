@@ -1,0 +1,45 @@
+# Contributor: Antoine Martin (ayakael) <dev@ayakael.net>
+# Maintainer: Antoine Martin (ayakael) <dev@ayakael.net>
+pkgname=py3-pathable
+#_pkgreal is used by apkbuild-pypi to find modules at PyPI
+_pkgreal=pathable
+pkgver=0.6.0
+pkgrel=0
+pkgdesc="Object-oriented JSONSchema"
+url="https://github.com/p1c2u/pathable"
+arch="noarch"
+license="Apache-2.0"
+checkdepends="
+	py3-pytest
+	py3-pytest-cov
+"
+makedepends="
+	poetry
+	py3-setuptools
+	py3-gpep517
+	py3-wheel
+"
+subpackages="$pkgname-pyc"
+source="$pkgname-$pkgver.tar.gz::https://github.com/p1c2u/pathable/archive/refs/tags/$pkgver.tar.gz"
+builddir="$srcdir/$_pkgreal-$pkgver"
+
+build() {
+	gpep517 build-wheel \
+		--wheel-dir .dist \
+		--output-fd 3 3>&1 >&2
+}
+
+check() {
+	python3 -m venv --clear --without-pip --system-site-packages .testenv
+	.testenv/bin/python3 -m installer "$builddir"/.dist/*.whl
+	.testenv/bin/python3 -m pytest -v
+}
+
+package() {
+	python3 -m installer -d "$pkgdir" \
+		.dist/*.whl
+}
+
+sha512sums="
+b45f075224f870cde80e4c28a8938b7bb857a804609f82b66d0692fe20f6cf00a2dc692d6eb32d6d30c0316837f47237334df92c711977cc032b96e55ebf14da  py3-pathable-0.6.0.tar.gz
+"

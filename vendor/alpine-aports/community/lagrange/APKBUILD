@@ -1,0 +1,54 @@
+# Contributor: Michał Polański <michal@polanski.me>
+# Maintainer: mio <miyopan@e.email>
+maintainer="mio <miyopan@e.email>"
+pkgname=lagrange
+pkgver=1.21.1
+pkgrel=0
+pkgdesc="Beautiful Gemini client"
+url="https://gmi.skyjake.fi/lagrange"
+license="BSD-2-Clause"
+arch="all"
+makedepends="
+	cmake
+	fribidi-dev
+	harfbuzz-dev
+	libunistring-dev
+	libwebp-dev
+	mpg123-dev
+	ncurses-static
+	openssl-dev
+	opusfile-dev
+	pcre2-dev
+	samurai
+	sdl2-dev
+	zip
+	zlib-dev
+	"
+subpackages="$pkgname-dbg $pkgname-doc"
+source="https://git.skyjake.fi/gemini/lagrange/releases/download/v$pkgver/lagrange-$pkgver.tar.gz"
+options="!check" # no test suite
+
+# -Werror=stringop-overflow with fortify
+# https://github.com/jvoisin/fortify-headers/issues/80
+# lib/the_Foundation/src/block.c:329:9:vsprintf(d->i->data, format, args2)
+export CFLAGS="$CFLAGS -Wno-stringop-overflow"
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DENABLE_POPUP_MENUS=OFF \
+		-DENABLE_RESIZE_DRAW=OFF \
+		-DENABLE_TUI=ON \
+		-DENABLE_X11_XLIB=OFF \
+		-DTFDN_ENABLE_SSE41=OFF
+	cmake --build build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+98195fd486941ff0e9dc77b58cbc7336acf37f912d7ea61e84a4cf0b20fca96d2bbf5d54e91776949110b1ac1efc4364f65915dd4232d16d1b24f2bc4f6cddd1  lagrange-1.21.1.tar.gz
+"

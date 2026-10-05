@@ -1,0 +1,50 @@
+# Maintainer: Robert Mongold <rtmongold@gmail.com>
+pkgname=zapzap
+pkgver=6.5.1
+pkgrel=0
+pkgdesc="Custom WhatsApp desktop client using PyQt"
+url="https://github.com/rafatosta/zapzap"
+# armv7 ppc64le riscv64 s390x x86: blocked by py3-pyqt6-webengine
+# armhf: blocked by qt6-qtmultimedia
+arch="noarch !armv7 !ppc64le !riscv64 !s390x !x86 !armhf"
+license="GPL-3.0-only"
+options="!check" # no test suite
+depends="
+	py3-qt6
+	py3-pyqt6-webengine
+	py3-dbus
+	py3-gettext
+	qt6-qtwebengine
+	qt6-qtbase-x11
+	mesa-dri-gallium
+	"
+makedepends="
+	py3-gpep517
+	py3-setuptools
+	py3-wheel
+	"
+subpackages="$pkgname-pyc"
+source="https://github.com/rafatosta/zapzap/archive/$pkgver/zapzap-$pkgver.tar.gz"
+
+build() {
+	gpep517 build-wheel \
+		--wheel-dir .dist \
+		--output-fd 3 3>&1 >&2
+}
+
+package() {
+	python3 -m installer -d "$pkgdir" \
+		.dist/*.whl
+
+	local _pkgname="com.rtosta.zapzap"
+	install -Dm644 share/icons/$_pkgname.svg \
+		-t "$pkgdir"/usr/share/icons/hicolor/scalable/apps/
+	install -Dm644 share/applications/$_pkgname.desktop \
+		-t "$pkgdir"/usr/share/applications/
+	install -Dm644 share/metainfo/$_pkgname.appdata.xml \
+		-t "$pkgdir"/usr/share/metainfo/
+}
+
+sha512sums="
+795de03fc18927526a7b4c33f557836d4a794f3bf98ffac88f4130cb73c977b0af28b82dfef1ef7ef42c321794c6989b32d4f45b0a7c0c79064ea366b7be59f4  zapzap-6.5.1.tar.gz
+"

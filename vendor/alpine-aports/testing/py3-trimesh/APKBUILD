@@ -1,0 +1,64 @@
+# Contributor: Aiden Grossman <agrossman154@yahoo.com>
+# Maintainer: Wen Heping <wenhepingalpine@sohu.com>
+pkgname=py3-trimesh
+pkgver=4.11.1
+pkgrel=1
+pkgdesc="Python library for working with triangular meshes"
+url="https://github.com/mikedh/trimesh"
+# x86, armhf, armv7 Tests fail on int64 to int32 casts on these arches
+# riscv64, no py3-shapely
+arch="noarch !x86 !armhf !armv7 !riscv64"
+# TODO: investigate why checks stall
+options="!check"
+license="MIT"
+depends="
+	py3-colorlog
+	py3-jsonschema
+	py3-lxml
+	py3-mapbox-earcut
+	py3-msgpack
+	py3-networkx
+	py3-numpy
+	py3-pillow
+	py3-requests
+	py3-rtree
+	py3-scipy
+	py3-shapely
+	py3-svgpath
+	python3
+	"
+makedepends="
+	py3-gpep517
+	py3-setuptools
+	py3-wheel
+	"
+checkdepends="py3-pytest py3-pytest-xdist py3-pyinstrument"
+subpackages="$pkgname-pyc"
+source="$pkgname-$pkgver.tar.gz::https://github.com/mikedh/trimesh/archive/refs/tags/$pkgver.tar.gz"
+builddir="$srcdir/trimesh-$pkgver"
+
+build() {
+	gpep517 build-wheel \
+		--wheel-dir .dist \
+		--output-fd 3 3>&1 >&2
+}
+
+check() {
+	# test_obj.py: no format zae, probably needs more investigation
+	python3 -m venv --clear --without-pip --system-site-packages .testenv
+	.testenv/bin/python3 -m installer .dist/*.whl
+	.testenv/bin/python3 -m pytest -n auto \
+		--deselect tests/test_dae.py::DAETest::test_material_round \
+		--deselect tests/test_dae.py::DAETest::test_obj_roundtrip \
+		--deselect tests/test_light.py::LightTests::test_scene \
+		--deselect tests/test_obj.py::OBJTest::test_multi_nodupe
+}
+
+package() {
+	python3 -m installer -d "$pkgdir" \
+		.dist/*.whl
+}
+
+sha512sums="
+68d58a365ad7c3ee4e23b569a1594f13ef9e5ecaf3dd5f17a67c476909b31988fa4d3cf58ede5ea507f9e3e12e67260aed2e3511419f85f6c7ff87afb52baf07  py3-trimesh-4.11.1.tar.gz
+"

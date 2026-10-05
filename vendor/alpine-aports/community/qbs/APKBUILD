@@ -1,0 +1,45 @@
+maintainer="Achill Gilgenast <achill@achill.org>"
+pkgname=qbs
+pkgver=3.2.0
+pkgrel=0
+pkgdesc="Cross platform Qt build tool"
+url="https://wiki.qt.io/Qbs"
+# 32-bit: fails
+arch="all !x86 !armv7 !armhf"
+license="LGPL-3.0-or-later AND GPL-2.0-or-later"
+makedepends="clang cmake qt6-qtbase-dev qt6-qt5compat-dev samurai"
+source="https://download.qt.io/official_releases/qbs/$pkgver/qbs-src-$pkgver.tar.gz"
+builddir="$srcdir/qbs-src-$pkgver"
+options="!check" # todo
+
+build() {
+	case "$CARCH" in
+	arm*|aarch64|riscv64|loongarch64)
+		# not supported by clang here
+		export CFLAGS="${CFLAGS/-fstack-clash-protection}"
+		export CXXFLAGS="${CXXFLAGS/-fstack-clash-protection}"
+		;;
+	esac
+
+	CC=clang CXX=clang++ \
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=MinSizeRel \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DWITH_TESTS="$(want_check && echo ON || echo OFF)" \
+		-DQBS_LIBEXEC_INSTALL_DIR=lib/qbs
+	cmake --build build
+}
+
+check() {
+	ctest -j6 --test-dir build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+
+	rm -rf "$pkgdir"/usr/share/qbs/examples/
+}
+
+sha512sums="
+3c6a7e1bbdd1d6b9f08cfbec584d99e570d3bb66c17165e0df9702464ce731b8360b11205d2cf14442d077ddb07eaa4a3bf10fbcad23582ed695ae09d6a229d6  qbs-src-3.2.0.tar.gz
+"

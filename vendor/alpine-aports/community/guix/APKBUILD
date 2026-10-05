@@ -1,0 +1,112 @@
+# Contributor: Sören Tempel <soeren+alpine@soeren-tempel.net>
+# Maintainer: Sören Tempel <soeren+alpine@soeren-tempel.net>
+pkgname=guix
+pkgver=1.5.0
+pkgrel=2
+pkgdesc="Functional package manager based on Guile Scheme"
+url="https://guix.gnu.org"
+# s390x loongarch64 not supported upstream
+arch="all !s390x !loongarch64"
+license="GPL-3.0-or-later"
+# shadow-subids (cmd:newgidmap) required by unprivileged guix-daemon.
+depends="
+	guile
+	guile-gcrypt
+	guile-git
+	guile-gnutls
+	guile-json
+	guile-lzlib
+	guile-semver
+	guile-sqlite3
+	guile-zlib
+	guile-zstd
+	shadow-subids"
+# XXX: coreutils required because build system is not compatible
+# with BusyBox's mktemp implementation.
+makedepends="
+	argp-standalone
+	bzip2-dev
+	coreutils
+	gettext-dev
+	git
+	guile-dev
+	libgcrypt-dev
+	linux-headers
+	po4a
+	sqlite-dev
+	help2man
+	texinfo"
+install="guix.pre-install guix.pre-upgrade"
+subpackages="
+	$pkgname-doc
+	$pkgname-lang
+	$pkgname-openrc
+	$pkgname-zsh-completion
+	$pkgname-fish-completion
+	$pkgname-bash-completion"
+source="https://ftp.gnu.org/gnu/guix/guix-$pkgver.tar.gz
+	guix-daemon.confd
+	guix-daemon.initd
+	guix.sh"
+
+# secfixes:
+#   1.4.0-r5:
+#     - CVE-2024-27297
+
+build() {
+	local guix_system="$CARCH-linux"
+	case $CARCH in
+	arm*)    guix_system="armhf-linux"       ;;
+	x86)     guix_system="i686-linux"        ;;
+	ppc64le) guix_system="powerpc64le-linux" ;;
+	esac
+
+	./configure \
+		--build=$CBUILD \
+		--host=$CHOST \
+		--prefix=/usr \
+		--sysconfdir=/etc \
+		--mandir=/usr/share/man \
+		--localstatedir=/var \
+		--with-system="$guix_system" \
+		--with-bash-completion-dir=/usr/share/bash-completion/completions \
+		--with-fish-completion-dir=/usr/share/fish/vendor_completions.d \
+		--disable-rpath
+	make LIBS="-lintl -largp"
+}
+
+package() {
+	make DESTDIR="$pkgdir" install
+	install -Dm644 "$srcdir"/guix.sh \
+		"$pkgdir"/etc/profile.d/guix.sh
+
+	# Remove other files that we don't use.
+	rm -r "$pkgdir"/usr/lib/upstart \
+		"$pkgdir"/etc/init.d \
+		"$pkgdir"/etc/openrc \
+		"$pkgdir"/usr/lib/systemd \
+		"$pkgdir"/usr/share/selinux \
+		"$pkgdir"/etc/apparmor.d
+
+	# Install a custom OpenRC service.
+	install -Dm755 "$srcdir"/guix-daemon.initd "$pkgdir"/etc/init.d/guix-daemon
+	install -Dm644 "$srcdir"/guix-daemon.confd "$pkgdir"/etc/conf.d/guix-daemon
+
+	# Add /etc/guix/acl with the default substitute servers.
+	# Taken from: https://salsa.debian.org/debian/guix/-/blob/2d44a707ccaacbee73410b770aa1a395eff1caa6/debian/rules#L57
+	mkdir -p "$pkgdir"/etc/guix
+	{
+		printf '(acl\n (entry\n'
+		sed -e 's,^,  ,g' -e 's, $$,,g' etc/substitutes/ci.guix.gnu.org.pub
+		printf '  (tag\n   (guix import)\n   )\n  )\n (entry\n'
+		sed -e 's,^,  ,g' -e 's, $$,,g' etc/substitutes/bordeaux.guix.gnu.org.pub
+		printf '  (tag\n   (guix import)\n   )\n  )\n )\n'
+	} > "$pkgdir"/etc/guix/acl
+}
+
+sha512sums="
+c3da9644444b10a4d8dcbd1524ce51a3d85c356fd90b851b78f0b4b604f29e3cb7f742f5e4301e29a084aef76d2e56669f73cd413df49e956fa00aed4390c24c  guix-1.5.0.tar.gz
+80a4f01634a6f33078e5cb693a2c9c44291487a83d7c9dfe2fbc3e219ded47c146ae8e9c80f3994c489e7c88f9c0ecf075ad16509f121ddf35b87b0068d6e7e3  guix-daemon.confd
+5c451a2b08508fc1c2b08f84825c659dd85e3f57d932ca40a9635665545b96ed2d9f89670d65b992feb9b5ddbc16a5e666fd6b910dd91898cb3a630133b8ba8b  guix-daemon.initd
+72073321288b2da0bb917dcab315b48098260f0fcb90099fc6c90b09a0c95e2abc97cf50be6d774c238ea3699756a533705e3f0e431c57f942b106cf3feaca7a  guix.sh
+"

@@ -1,0 +1,56 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-plasma
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=oxygen
+pkgver=6.6.6
+pkgrel=0
+pkgdesc="Artwork, styles and assets for the Oxygen visual style for the Plasma Desktop"
+# armhf blocked by qt6-qtdeclarative -> ki18n
+arch="all !armhf"
+url="https://kde.org/plasma-desktop/"
+license="LGPL-2.1-or-later"
+makedepends="
+	extra-cmake-modules
+	frameworkintegration-dev
+	kcmutils-dev
+	kcompletion-dev
+	kconfig-dev
+	kdecoration-dev
+	kguiaddons-dev
+	ki18n-dev
+	kservice-dev
+	kwayland-dev
+	kwidgetsaddons-dev
+	kwindowsystem-dev
+	libplasma-dev
+	qt6-qtbase-dev
+	samurai
+	xcb-util-dev
+	"
+subpackages="$pkgname-lang"
+
+case "$pkgver" in
+	*.*.9*) _rel=unstable;;
+	*) _rel=stable;;
+esac
+
+_repo_url="https://invent.kde.org/plasma/oxygen.git"
+source="https://download.kde.org/$_rel/plasma/$pkgver/oxygen-$pkgver.tar.xz"
+options="!check" # No tests
+
+build() {
+	cmake -B build -G Ninja \
+		-DBUILD_QT5=OFF \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+4f6125ab52032dba250e5c8ba3e6f7b526ca76f7fbed4fa819191d2b50b1f3a717da77c74a28059efb2eb0f811d5812b1aba70ae6a140e39001cf2592d9ffdfe  oxygen-6.6.6.tar.xz
+"

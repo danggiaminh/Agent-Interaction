@@ -1,0 +1,52 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-other
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=kid3
+pkgver=3.9.7
+pkgrel=2
+pkgdesc="Efficient audio tagger that supports a large variety of file formats"
+url="https://kid3.kde.org/"
+# armhf blocked by qt6-qtdeclarative-dev
+arch="all !armhf"
+license="GPL-2.0-or-later"
+makedepends="
+	chromaprint-dev
+	extra-cmake-modules
+	ffmpeg-dev
+	flac-dev
+	id3lib-dev
+	libvorbis-dev
+	qt6-qtbase-dev
+	qt6-qtdeclarative-dev
+	qt6-qtmultimedia-dev
+	qt6-qtsvg-dev
+	qt6-qttools-dev
+	readline-dev
+	samurai
+	taglib-dev
+	zlib-dev
+	"
+subpackages="$pkgname-doc"
+_repo_url="https://invent.kde.org/multimedia/kid3.git"
+source="https://download.kde.org/stable/kid3/$pkgver/kid3-$pkgver.tar.xz"
+
+build() {
+	CXXFLAGS="$CXXFLAGS -flto=auto" \
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=MinSizeRel \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DWITH_APPS="qt;qml;cli"
+	cmake --build build
+}
+
+check() {
+	ctest --test-dir build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+4559e33af6f49226e6fdbc0af9ab937b99fd639c7c62d2a9efbc5b97926c1f0cacdffa66c81938a1a039ada5be5156728fa3e319fbbfa45d1959a4f72f6c9093  kid3-3.9.7.tar.xz
+"

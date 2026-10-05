@@ -1,0 +1,59 @@
+# Contributor: Leo <thinkabit.ukim@gmail.com>
+# Maintainer:
+pkgname=liquidctl
+pkgver=1.16.0
+pkgrel=0
+pkgdesc="Liquid Cooler Control"
+url="https://github.com/liquidctl/liquidctl"
+options="!check" # Requires writable /var/run
+arch="noarch"
+license="GPL-3.0-or-later"
+depends="
+	py3-colorlog
+	py3-crcmod
+	py3-docopt
+	py3-hidapi
+	py3-pillow
+	py3-smbus
+	py3-usb
+	"
+makedepends="
+	py3-gpep517
+	py3-installer
+	py3-setuptools
+	py3-setuptools_scm
+	py3-wheel
+	"
+checkdepends="py3-pytest"
+subpackages="$pkgname-doc $pkgname-pyc $pkgname-udev"
+source="$pkgname-$pkgver.tar.gz::https://github.com/liquidctl/liquidctl/archive/v$pkgver.tar.gz"
+
+prepare() {
+	default_prepare
+
+	# `uaccess` is (e)logind-specific.
+	sed -i 's/TAG+="uaccess"/GROUP="plugdev"/' extra/linux/71-liquidctl.rules
+}
+
+build() {
+	export SETUPTOOLS_SCM_PRETEND_VERSION=$pkgver
+	gpep517 build-wheel \
+		--wheel-dir .dist \
+		--output-fd 3 3>&1 >&2
+}
+
+check() {
+	python3 -m venv --clear --without-pip --system-site-packages .testenv
+	.testenv/bin/python3 -m installer .dist/*.whl
+	.testenv/bin/python3 -m pytest
+}
+
+package() {
+	python3 -m installer -d "$pkgdir" .dist/*.whl
+	install -Dm644 extra/linux/71-liquidctl.rules -t "$pkgdir/usr/lib/udev/rules.d/"
+	install -Dm644 liquidctl.8 -t "$pkgdir/usr/share/man/man8/"
+}
+
+sha512sums="
+ff9dc7fcac8872b05eeb28e4b28f2e460020a7d3365b5db2281bfbd323b8b5be9c8572d61578aea381698e007a21fc3f5ab32df3e59a63f9dc9e5021b4a75886  liquidctl-1.16.0.tar.gz
+"

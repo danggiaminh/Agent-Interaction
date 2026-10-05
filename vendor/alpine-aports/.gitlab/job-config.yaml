@@ -1,0 +1,35 @@
+# Certain packages require a lot of resources
+- conditions:
+    changed_aports:
+      - chromium
+      - electron
+      - nodejs
+      - nodejs-current
+      - qt6-qtwebengine
+      - rio
+      - rust
+      - vector
+  job_conditions:
+    - has_tag: x86_64
+    - has_tag: aarch64
+  actions:
+    add_tags: [ci-large]
+
+# Large on aarch64 only (no need on x86_64)
+- conditions:
+    changed_aports:
+      - river
+      - river-classic
+  job_conditions:
+    - has_tag: aarch64
+  actions:
+    add_tags: [ci-large]
+
+# Larger rebuilds
+- conditions:
+    nr_changes: 5
+  job_conditions:
+    - has_tag: x86_64
+    - has_tag: aarch64
+  actions:
+    add_tags: [ci-large]

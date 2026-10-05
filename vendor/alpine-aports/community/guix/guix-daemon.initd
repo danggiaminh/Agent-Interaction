@@ -1,0 +1,52 @@
+#!/sbin/openrc-run
+
+: ${GUIX_PROFILE_USER:=root}
+
+# Set environment variables for locales.
+# Taken from the default Guix OpenRC services provided by upstream.
+export GUIX_LOCPATH=/var/guix/profiles/per-user/${GUIX_PROFILE_USER}/guix-profile/lib/locale
+export LC_ALL=en_US.utf8
+
+if yesno "$PREFER_PACKAGED_DAEMON"; then
+	command=/usr/bin/guix-daemon
+else
+	command="${GUIX_DAEMON:-/var/guix/profiles/per-user/${GUIX_PROFILE_USER}/current-guix/bin/guix-daemon}"
+	if [ ! -x "$command" ]; then
+		ewarn "Guix binary '${command}' not found, falling back to package binary."
+		command=/usr/bin/guix-daemon
+	fi
+fi
+
+# Optionally support the old setup where the daemon itself runs as root.
+# TODO: Remove this *after* Alpine Linux 3.24 has been released.
+#
+# See also:
+#
+#   • https://hpc.guix.info/blog/2025/03/build-daemon-drops-its-privileges/
+#   • https://guix.gnu.org/manual/1.5.0/en/html_node/Build-Environment-Setup.html#unprivileged_002ddaemon_002dmigration
+#   • https://guix.gnu.org/en/blog/2026/gnu-guix-1.5.0-released/
+if yesno "${ROOTLESS:-no}"; then
+	command_user="guix-daemon"
+	capabilities="^cap_chown"
+else
+	ewarn "Your Guix daemon runs as root, this is deprecated in Alpine Linux and will be removed in the future."
+	ewarn "See https://guix.gnu.org/manual/1.5.0/en/html_node/Build-Environment-Setup.html#unprivileged_002ddaemon_002dmigration"
+	command_args="--build-users-group=guixbuild"
+fi
+
+command_args="--discover=no${command_args:+ ${command_args}}"
+supervisor=supervise-daemon
+
+error_logger="logger -t '${RC_SVCNAME}' -p daemon.error"
+#output_logger="logger -t '${RC_SVCNAME}' -p daemon.info"
+
+start_pre() {
+	# Only need to create /var/log/guix in unprivileged mode.
+	yesno "${ROOTLESS:-no}" || return 0
+
+	checkpath \
+		--mode 0755 \
+		--directory \
+		--owner "guix-daemon:guix-daemon" \
+		"/gnu" "/etc/guix" "/var/guix" "/var/log/guix"
+}

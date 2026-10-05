@@ -1,0 +1,45 @@
+# Maintainer: Antoni Aloy <aaloytorrens@gmail.com>
+pkgname=pdfarranger
+pkgver=1.13.0
+pkgrel=1
+pkgdesc="Helps merge or split PDF documents and rotate, crop and rearrange pages"
+url="https://github.com/pdfarranger/pdfarranger"
+arch="noarch"
+license="GPL-3.0-or-later"
+depends="
+	desktop-file-utils
+	ghostscript
+	gsettings-desktop-schemas
+	gtk+3.0
+	poppler-glib
+	py3-atspi
+	py3-cairo
+	py3-dateutil
+	py3-gobject3
+	py3-img2pdf
+	py3-pikepdf
+	"
+makedepends="
+	intltool
+	py3-gpep517
+	py3-setuptools
+	py3-wheel
+	"
+options="!check" # tests require dogtail package
+subpackages="$pkgname-lang $pkgname-doc $pkgname-pyc"
+source="$pkgname-$pkgver.tar.gz::https://github.com/pdfarranger/pdfarranger/archive/$pkgver.tar.gz"
+
+build() {
+	gpep517 build-wheel \
+		--wheel-dir .dist \
+		--output-fd 3 3>&1 >&2
+}
+
+package() {
+	python3 -m installer -d "$pkgdir" \
+		.dist/*.whl
+}
+
+sha512sums="
+04921604019bccda0dee504594680d6311af1ff7ccfc57ce0c7e44e7abfd8cad0206e3f3d400862928d4a5ea1306c8fa9ebfd982563e198413c09f80dcc2af6d  pdfarranger-1.13.0.tar.gz
+"

@@ -1,0 +1,33 @@
+# Contributor: Umar Getagazov <umar@handlerug.me>
+maintainer="Achill Gilgenast <achill@achill.org>"
+pkgname=zfs-src
+_modname=${pkgname%-src}
+pkgver=2.4.4
+pkgrel=0
+pkgdesc="ZFS for Linux (sources, AKMS)"
+url="https://zfsonlinux.org"
+arch="noarch"
+license="CDDL-1.0"
+depends="akms"
+options="!check"  # irrelevant for a -src package
+source="https://github.com/openzfs/zfs/releases/download/zfs-${pkgver/_/-}/zfs-${pkgver/_/-}.tar.gz
+	AKMBUILD.in
+	"
+builddir="$srcdir/$_modname-${pkgver/_/-}"
+
+prepare() {
+	default_prepare
+
+	sed "s/modver=/&$pkgver-r$pkgrel/" "$srcdir"/AKMBUILD.in > AKMBUILD
+}
+
+package() {
+	mkdir -p "$pkgdir"/usr/src
+	cp -r "$builddir" "$pkgdir"/usr/src/zfs
+	install -Dm644 AKMBUILD "$pkgdir"/usr/src/zfs/AKMBUILD
+}
+
+sha512sums="
+8be81dedc0c0ec38728248151a33b8cbc78b042bc27a913279009bd735faa6149ad5b4a2db5811d25f4a03820dd398e14f59a4aec07f6bd4bc39405190c4e4ad  zfs-2.4.4.tar.gz
+620753f1ffa20c5741576d51c8ec23dbc794bb44333cabf4087ea34c17893d30b383ba0abee19ec3de920138ad5460f0125acf2693f6f9fa36f9a5365dd3fc6b  AKMBUILD.in
+"

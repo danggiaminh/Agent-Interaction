@@ -1,0 +1,107 @@
+# Contributor: Bartłomiej Piotrowski <bpiotrowski@alpinelinux.org>
+# Contributor: Rasmus Thomsen <oss@cogitri.dev>
+maintainer="Patrycja Rosa <alpine@ptrcnull.me>"
+pkgname=lldb
+pkgver=22.1.3
+_pkgver=${pkgver/_/-}
+pkgrel=0
+# NOTE: Upgrade together with the whole LLVM suite.
+_llvmver=${pkgver%%.*}
+pkgdesc="Next generation, high-performance debugger"
+arch="all"
+url="https://llvm.org/"
+license="Apache-2.0"
+depends_dev="$pkgname=$pkgver-r$pkgrel"
+makedepends="
+	clang$_llvmver
+	clang$_llvmver-dev
+	clang$_llvmver-extra-tools
+	clang$_llvmver-static
+	cmake
+	curl-dev
+	doxygen
+	gtest-dev
+	libedit-dev
+	libffi-dev
+	libxml2-dev
+	linux-headers
+	lld$_llvmver
+	llvm$_llvmver-dev
+	llvm$_llvmver-gtest
+	llvm$_llvmver-static
+	ncurses-dev
+	py3-sphinx
+	python3-dev
+	samurai
+	swig
+	xz
+	"
+subpackages="$pkgname-dev $pkgname-doc py3-$pkgname-pyc py3-$pkgname:py3"
+source="https://github.com/llvm/llvm-project/releases/download/llvmorg-$_pkgver/llvm-project-$_pkgver.src.tar.xz
+	llvm_slug.py
+	"
+_basedir="$srcdir/llvm-project-$_pkgver.src"
+builddir="$_basedir/lldb"
+options="!check"  # FIXME: enable tests
+
+prepare() {
+	default_prepare
+
+	# llvm_slug module copied from llvm-19.1.2.src/docs/llvm_slug.py
+	# needed by docs/conf.py
+	install -Dm0755 -t "$srcdir"/llvm/docs/ "$srcdir"/llvm_slug.py
+}
+
+build() {
+	export CC=clang-$_llvmver
+	export CXX=clang++-$_llvmver
+	export CFLAGS="$CFLAGS -flto"
+	export CXXFLAGS="$CXXFLAGS -flto"
+	export LDFLAGS="$LDFLAGS -fuse-ld=lld"
+
+	cmake -B build -G Ninja -Wno-dev \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_SKIP_RPATH=ON \
+		-DLLDB_BUILT_STANDALONE=ON \
+		-DLLDB_INCLUDE_TESTS="$(want_check && echo ON || echo OFF)" \
+		-DLLVM_ENABLE_SPHINX=ON \
+		-DLLVM_LINK_LLVM_DYLIB=ON \
+		-DCMAKE_POSITION_INDEPENDENT_CODE=ON
+
+	cmake --build build --target all docs-lldb-man
+}
+
+check() {
+	ninja -C build check-lldb
+}
+
+package() {
+	# backtracing/debugging pretty much anything is going to need libc debug symbols
+	# not everything, but the common case needs this, and it's a small dep in comparison
+	depends="musl-dbg"
+
+	DESTDIR="$pkgdir" cmake --install build
+	install -Dm644 build/docs/man/*.1 -t "$pkgdir"/usr/share/man/man1/
+	python3 -m compileall -fq "$pkgdir"/usr/lib/python3*
+}
+
+dev() {
+	default_dev
+
+	# move back main symlink, because py3-lldb links to it
+	mv "$subpkgdir"/usr/lib/liblldb.so "$pkgdir"/usr/lib/
+}
+
+py3() {
+	pkgdesc="Python3 module for LLDB"
+	depends="$pkgname=$pkgver-r$pkgrel python3"
+	replaces="py-lldb"
+
+	amove usr/lib/python3.*
+}
+
+sha512sums="
+3557a955d55471671ae2f7b9c809affd59a29a6fb1e70a2a5d040dc1c6376246deb0635be8ca36cae09112981760e9afb128c822e5554bd722589fb8dee3f0df  llvm-project-22.1.3.src.tar.xz
+5b65acf109e4b1e22411216d4b023f9975ea1fb04ec011fa71741fa7d13e3a0f1af2f9d4886782a73172f21c9debadf618fd814db04cfd98462a42b0f39e4c4a  llvm_slug.py
+"

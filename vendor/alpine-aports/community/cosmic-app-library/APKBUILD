@@ -1,0 +1,44 @@
+# Contributor: Clayton Craft <clayton@craftyguy.net>
+# Maintainer: Clayton Craft <clayton@craftyguy.net>
+pkgname=cosmic-app-library
+pkgver=1.0.15
+_upstreamver="${pkgver/_beta/-beta.}"
+_upstreamver="${_upstreamver/_p/.}"
+pkgrel=0
+pkgdesc="Application launcher for the COSMIC Desktop Environment"
+url="https://github.com/pop-os/cosmic-applibrary"
+# riscv64: too slow to build
+arch="all !riscv64"
+license="GPL-3.0-only"
+depends="
+	cosmic-icons
+"
+makedepends="
+	cargo-auditable
+	just
+	libxkbcommon-dev
+"
+options="net !check"  # fetch dependencies, no tests
+source="$pkgname-$pkgver.tar.gz::https://github.com/pop-os/cosmic-applibrary/archive/refs/tags/epoch-$_upstreamver.tar.gz"
+builddir="$srcdir/$pkgname-epoch-$_upstreamver"
+
+prepare() {
+	default_prepare
+	cargo fetch --target="$CHOST" --locked
+}
+
+build() {
+	cargo auditable build --release --frozen
+}
+
+check() {
+	cargo test --frozen
+}
+
+package() {
+	just rootdir="$pkgdir" install
+}
+
+sha512sums="
+b5d67c6161a15ca4b08b7f3d17215a96f522e0cd2df58efa18efd9a8d1bc5da840f7c16ed7489a0a3583cb45c578fb996aa3469d997578c51e23b1b1bbf6276a  cosmic-app-library-1.0.15.tar.gz
+"

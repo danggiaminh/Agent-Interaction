@@ -1,0 +1,58 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-frameworks
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=qqc2-desktop-style
+pkgver=6.26.0
+pkgrel=0
+pkgdesc="A style for Qt Quick Controls 2 to make it follow your desktop theme"
+# armhf blocked by qt6-qtdeclarative
+arch="all !armhf"
+url="https://community.kde.org/Frameworks"
+license="LGPL-3.0-only AND (GPL-2.0-only OR GPL-3.0-only)"
+depends="sonnet"
+depends_dev="
+	kconfigwidgets-dev
+	kiconthemes-dev
+	kirigami-dev
+	qt6-qtbase-dev
+	qt6-qtdeclarative-dev
+	"
+makedepends="$depends_dev
+	extra-cmake-modules
+	qt6-qtdeclarative-private-dev
+	samurai
+	"
+checkdepends="
+	kirigami
+	xwayland-run
+	"
+install_if="kirigami"
+subpackages="$pkgname-dev $pkgname-lang"
+_repo_url="https://invent.kde.org/frameworks/qqc2-desktop-style.git"
+source="https://download.kde.org/stable/frameworks/${pkgver%.*}/qqc2-desktop-style-$pkgver.tar.xz"
+
+# tests segfault, see issue #16533
+case "$CARCH" in
+	aarch64|armv7) options="$options !check" ;;
+esac
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib \
+		-DBUILD_TESTING=ON
+	cmake --build build
+}
+
+check() {
+	wlheadless-run -- ctest --test-dir build -E "animationspeedmodifiertest"
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+5a7f1d24991a1343c2f0618b491e1263559ed332cbc7f1b97f1b6df95a37faa7381ab4a2d44821a943f87b295d12030955894b749dca076d8ff74fee72d0e4e9  qqc2-desktop-style-6.26.0.tar.xz
+"

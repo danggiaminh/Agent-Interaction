@@ -1,0 +1,32 @@
+# Contributor: Hugo Osvaldo Barrera <hugo@whynothugo.nl>
+maintainer="Hugo Osvaldo Barrera <hugo@whynothugo.nl>"
+pkgname=lsplug
+pkgver=6
+pkgrel=1
+pkgdesc="Improved lsusb"
+url="https://git.sr.ht/~martijnbraam/lsplug"
+arch="noarch"
+license="MIT"
+makedepends="
+	py3-gpep517
+	py3-setuptools
+	py3-wheel
+	"
+subpackages="$pkgname-pyc"
+source="$pkgname-$pkgver.tar.gz::https://git.sr.ht/~martijnbraam/lsplug/archive/refs/tags/$pkgver.tar.gz"
+builddir="$srcdir/lsplug-refs/tags/$pkgver/"
+options="!check" # no tests provided by upstream
+
+build() {
+	gpep517 build-wheel \
+		--wheel-dir .dist \
+		--output-fd 3 3>&1 >&2
+}
+
+package() {
+	python3 -m installer -d "$pkgdir" .dist/*.whl
+}
+
+sha512sums="
+9ce9f5084bc62104e00de697df5e569e710012bf7cfcfd8b2dbcd9957c9643c53bed4ae266fbd2013f9847ea934b73d8c42d2dd3a1259e528b7a26f58aacc3f0  lsplug-6.tar.gz
+"

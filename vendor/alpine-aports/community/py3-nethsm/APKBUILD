@@ -1,0 +1,49 @@
+maintainer="Bart Ribbers <bribbers@disroot.org>"
+pkgname=py3-nethsm
+pkgver=2.1.2
+pkgrel=0
+pkgdesc="Python Library to manage NetHSM(s)"
+url="https://github.com/Nitrokey/nethsm-sdk-py"
+arch="noarch"
+license="Apache-2.0 AND MIT"
+depends="
+	py3-certifi
+	py3-cryptography
+	py3-dateutil
+	py3-typing-extensions
+	py3-urllib3
+	"
+makedepends="
+	poetry
+	py3-gpep517
+	py3-wheel
+	"
+checkdepends="
+	py3-docker-py
+	py3-pycryptodome
+	py3-pytest
+	"
+subpackages="$pkgname-pyc"
+source="$pkgname-$pkgver.tar.gz::https://github.com/Nitrokey/nethsm-sdk-py/archive/refs/tags/v$pkgver.tar.gz"
+builddir="$srcdir/nethsm-sdk-py-$pkgver"
+
+build() {
+	gpep517 build-wheel \
+		--wheel-dir .dist \
+		--output-fd 3 3>&1 >&2
+}
+
+check() {
+	python3 -m venv --system-site-packages .testenv
+	.testenv/bin/python3 -m installer .dist/*.whl
+	# All other tests require a running Docker daemon
+	.testenv/bin/python3 -m pytest tests/test_enums.py
+}
+
+package() {
+	python3 -m installer -d "$pkgdir" .dist/*.whl
+}
+
+sha512sums="
+e7e01bd6b45f2db49a2bb89f6b47b6bf7e74e71f2128bbb373f83b774d41b6d3054c1ecba4058066ea8ae024bcbcad04ec05741cb75edbdf8278aa61436c4a1c  py3-nethsm-2.1.2.tar.gz
+"

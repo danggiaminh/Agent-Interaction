@@ -1,0 +1,67 @@
+# Contributor: Marian Buschsieweke <marian.buschsieweke@posteo.net>
+# Maintainer: macmpi <spam@ipik.org>
+pkgname=raspberrypi-bootloader
+pkgver=1.20260915
+pkgrel=0
+pkgdesc="Bootloader files for the Raspberry Pi"
+url="https://github.com/raspberrypi/firmware"
+arch="armhf armv7 aarch64"
+license="custom"
+triggers="raspberrypi-bootloader-common.trigger=/boot"
+options="!check !strip !tracedeps !spdx"
+source="$pkgname-$pkgver.tar.xz::https://github.com/raspberrypi/firmware/releases/download/$pkgver/raspi-firmware_$pkgver.orig.tar.xz
+	update-raspberrypi-bootloader"
+subpackages="$pkgname-common $pkgname-experimental $pkgname-debug $pkgname-cutdown $pkgname-doc"
+depends="$pkgname-common=$pkgver-r$pkgrel"
+
+_dir="$srcdir/raspi-firmware-$pkgver/boot"
+
+package() {
+	local fw; for fw in bootcode.bin fixup.dat fixup4.dat start.elf start4.elf; do
+		install -D "$_dir"/$fw \
+			"$pkgdir"/boot/$fw
+	done
+	install -Dm 644 "$_dir"/LICENCE.broadcom \
+		"$pkgdir"/usr/share/licenses/$pkgname/COPYING
+	install -D -m755 "$srcdir"/update-raspberrypi-bootloader \
+		"$pkgdir"/usr/sbin/update-raspberrypi-bootloader
+}
+
+common() {
+	pkgdesc="Common files used by Raspberry Pi bootloaders"
+	depends=
+	amove boot/bootcode.bin \
+		usr/sbin/update-raspberrypi-bootloader
+}
+
+experimental() {
+	pkgdesc="Experimental firmware with additional codecs"
+	depends="$pkgname-common=$pkgver-r$pkgrel"
+	local fw; for fw in start_x.elf start4x.elf fixup_x.dat fixup4x.dat; do
+		install -D "$_dir"/$fw \
+				"$subpkgdir"/boot/$fw
+	done
+}
+
+debug() {
+	pkgdesc="Debug firmware"
+	depends="$pkgname-common=$pkgver-r$pkgrel"
+	local fw; for fw in start_db.elf start4db.elf fixup_db.dat fixup4db.dat; do
+		install -D "$_dir"/$fw \
+			"$subpkgdir"/boot/$fw
+	done
+}
+
+cutdown() {
+	pkgdesc="Cut-down firmware for lower memory settings"
+	depends="$pkgname-common=$pkgver-r$pkgrel"
+	local fw; for fw in start_cd.elf start4cd.elf fixup_cd.dat fixup4cd.dat; do
+		install -D "$_dir"/$fw \
+			"$subpkgdir"/boot/$fw
+	done
+}
+
+sha512sums="
+b20ea2799be59a2c16766206f2e020d180e67136061575cbe5f9fc0ab54634dea20ac9fea9d4e53b45e1a507f7dec2a7d89d6a85fbfc1206298fd0240f0188ff  raspberrypi-bootloader-1.20260915.tar.xz
+42a864c4b4b1c1090f0a8aa802c7e49a11dd17603f3ee3b1e75bd8b4174b22b1f0111ede748010df7554a35d548e729a57678725d38de5dd659a446aa24cfc09  update-raspberrypi-bootloader
+"

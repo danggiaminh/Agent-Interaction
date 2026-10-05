@@ -1,0 +1,30 @@
+maintainer="Bart Ribbers <bribbers@disroot.org>"
+pkgname=libmce-qt
+pkgver=1.5.2
+pkgrel=0
+pkgdesc="Qt client for mce, and a declarative plugin for it"
+url="https://github.com/sailfishos/libmce-qt"
+# armhf blocked by qt6-qtdeclarative
+arch="all !armhf"
+license="BSD-3-Clause"
+depends_dev="
+	mce-dev
+	qt6-qtbase-dev
+	qt6-qtdeclarative-dev
+	"
+makedepends="$depends_dev"
+subpackages="$pkgname-dev"
+source="https://github.com/sailfishos/libmce-qt/archive/$pkgver/libmce-qt-$pkgver.tar.gz"
+
+build() {
+	qmake6
+	make
+}
+
+package() {
+	INSTALL_ROOT="$pkgdir" make install
+}
+
+sha512sums="
+c5bb3a8de7409f8d31b71a1a00c8e7d399347b7735968b164e87d13885a2a0936928856caf299429c0d38b9c97cad9863798da1cec6039108a4df8476d7baae1  libmce-qt-1.5.2.tar.gz
+"

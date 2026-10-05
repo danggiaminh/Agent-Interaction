@@ -1,0 +1,84 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-plasma
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=libplasma
+pkgver=6.6.6
+pkgrel=0
+pkgdesc="Plasma library and runtime components based upon KDE Frameworks and Qt"
+# armhf blocked by qt6-qtdeclarative
+arch="all !armhf"
+url="https://community.kde.org/Frameworks"
+license="LGPL-2.1-or-later AND GPL-2.0-or-later"
+depends="kirigami"
+depends_dev="
+	karchive-dev
+	kcmutils-dev
+	kconfig-dev
+	kconfigwidgets-dev
+	kcoreaddons-dev
+	kdbusaddons-dev
+	kdeclarative-dev
+	kglobalaccel-dev
+	kguiaddons-dev
+	ki18n-dev
+	kiconthemes-dev
+	kio-dev
+	kirigami-dev
+	knotifications-dev
+	kpackage-dev
+	kservice-dev
+	ksvg-dev
+	kwayland-dev
+	kwindowsystem-dev
+	kxmlgui-dev
+	mesa-dev
+	plasma-activities-dev
+	qt6-qtbase-dev
+	qt6-qtdeclarative-dev
+	"
+makedepends="$depends_dev
+	doxygen
+	extra-cmake-modules
+	graphviz
+	kdoctools-dev
+	qt6-qtdeclarative-private-dev
+	qt6-qttools-dev
+	samurai
+	"
+checkdepends="
+	hicolor-icon-theme
+	xwayland-run
+	"
+
+case "$pkgver" in
+	*.*.9*) _rel=unstable;;
+	*) _rel=stable;;
+esac
+
+subpackages="$pkgname-dev $pkgname-doc $pkgname-lang"
+_repo_url="https://invent.kde.org/plasma/libplasma.git"
+source="https://download.kde.org/$_rel/plasma/$pkgver/libplasma-$pkgver.tar.xz"
+
+replaces="plasma-framework5 plasma-framework"
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib \
+		-DBUILD_QCH=ON
+	cmake --build build
+}
+
+check() {
+	# bug485688 requires working OpenGL
+	wlheadless-run -- ctest --test-dir build -E "(plasma-dialogstate|dialognative|quickviewsharedengine|bug485688)test"
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+709fbda2770eaf2eb28a7d56bb9b149033a893aaed27866c1cb3c063dd558b8c6219a64a6056c3c65a309902573f53f1f1e43695fb7ceefc5223df7b9fbe13c0  libplasma-6.6.6.tar.xz
+"

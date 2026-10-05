@@ -1,0 +1,27 @@
+maintainer="Hugo Osvaldo Barrera <hugo@whynothugo.nl>"
+pkgname=fuseiso
+pkgver=20260507
+pkgrel=0
+pkgdesc="FUSE module to mount ISO filesystem images"
+url="https://git.sr.ht/~whynothugo/fuseiso"
+arch="all"
+license="GPL-2.0-only"
+makedepends="fuse-dev glib-dev meson"
+subpackages="$pkgname-doc"
+source="$pkgname-$pkgver.tar.gz::https://git.sr.ht/~whynothugo/fuseiso/archive/v$pkgver.tar.gz"
+options="!check" # no tests
+builddir="$srcdir/fuseiso-v$pkgver/"
+
+build() {
+	abuild-meson . output
+	meson compile -C output
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
+	install -Dm 0644 README -t "$pkgdir"/usr/share/doc/fuseiso/
+}
+
+sha512sums="
+666fd43d2cb28a4891f5c0bbd1504cac8173353e07837e991589807a70c48a5436654ac7b8a5d7e2144cfab4d05038f983695f447f6dcff9478b2a52a217d867  fuseiso-20260507.tar.gz
+"

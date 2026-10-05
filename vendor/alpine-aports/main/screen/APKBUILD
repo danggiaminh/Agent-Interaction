@@ -1,0 +1,69 @@
+# Contributor: Michael Mason <ms13sp@gmail.com>
+# Maintainer: mio <miyopan@e.email>
+maintainer="mio <miyopan@e.email>"
+pkgname=screen
+pkgver=5.0.2
+pkgrel=0
+pkgdesc="Window manager that multiplexes a physical terminal"
+url="https://www.gnu.org/software/screen/"
+arch="all"
+license="GPL-3.0-or-later"
+makedepends="
+	autoconf
+	automake
+	linux-pam-dev
+	ncurses
+	ncurses-dev
+	"
+subpackages="$pkgname-doc"
+source="https://ftp.gnu.org/gnu/screen/screen-$pkgver.tar.gz"
+options="!check"  # No test suite.
+
+# secfixes:
+#   5.0.1-r0:
+#     - CVE-2025-46805
+#     - CVE-2025-46804
+#     - CVE-2025-46803
+#     - CVE-2025-46802
+#     - CVE-2025-23395
+#   4.9.0-r3:
+#     - CVE-2023-24626
+#   4.8.0-r4:
+#     - CVE-2021-26937
+#   4.8.0-r0:
+#     - CVE-2020-9366
+
+prepare() {
+	default_prepare
+	./autogen.sh
+}
+
+build() {
+	CFLAGS="$CFLAGS -flto=auto" \
+	./configure \
+		--build=$CBUILD \
+		--host=$CHOST \
+		--prefix=/usr \
+		--sysconfdir=/etc \
+		--with-system_screenrc=/etc/screenrc \
+		--mandir=/usr/share/man \
+		--infodir=/usr/share/info \
+		--localstatedir=/var \
+		--enable-telnet
+	make
+}
+
+package() {
+	make -j1 DESTDIR="$pkgdir" install
+
+	# remove suid root
+	find "$pkgdir" -type f -perm -u+s -print0 \
+		| xargs -0 chmod -c -s
+
+	install -Dm644 etc/etcscreenrc "$pkgdir"/etc/screenrc
+	install -Dm644 etc/screenrc "$pkgdir"/etc/skel/.screenrc
+}
+
+sha512sums="
+21f1bd395059b2c47fd26cfe71371996e81e2656c77620f4d894bac44dd55bc5bf95f0e60c2650d7c3f97691c4aaf071d96e43a2fa79c7f96205ddce36e4ef01  screen-5.0.2.tar.gz
+"

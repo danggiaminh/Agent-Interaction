@@ -1,0 +1,112 @@
+# Contributor: Mike Crute <mike@crute.us>
+# Contributor: Jake Buchholz Göktürk <tomalok@gmail.com>
+# Maintainer: Jake Buchholz Göktürk <tomalok@gmail.com>
+pkgname=tiny-cloud
+pkgver=3.4.1
+pkgrel=2
+pkgdesc="Tiny Cloud instance bootstrapper"
+url="https://gitlab.alpinelinux.org/alpine/cloud/tiny-cloud"
+arch="noarch"
+license="MIT"
+checkdepends="kyua xz lz4 zstd scdoc"
+depends="e2fsprogs-extra partx sfdisk yx openssh-server"
+provides="tiny-cloud-allclouds=$pkgver-r$pkgrel"
+source="
+	$url/-/archive/$pkgver/tiny-cloud-$pkgver.tar.gz
+	azure-autodetect.patch
+"
+install="
+	tiny-cloud.pre-upgrade
+	tiny-cloud-openrc.pre-upgrade
+	tiny-cloud-aws.post-install
+	tiny-cloud-azure.post-install
+	tiny-cloud-digitalocean.post-install
+	tiny-cloud-gcp.post-install
+	tiny-cloud-hetzner.post-install
+	tiny-cloud-incus.post-install
+	tiny-cloud-nocloud.post-install
+	tiny-cloud-oci.post-install
+	tiny-cloud-scaleway.post-install
+"
+subpackages="
+	$pkgname-openrc
+	$pkgname-doc
+	$pkgname-aws
+	$pkgname-azure
+	$pkgname-digitalocean
+	$pkgname-gcp
+	$pkgname-hetzner
+	$pkgname-incus
+	$pkgname-nocloud
+	$pkgname-oci
+	$pkgname-scaleway
+"
+
+check() {
+	make check
+}
+
+package() {
+	make PREFIX="$pkgdir" install
+}
+
+aws() {
+	pkgdesc="Tiny Cloud - Amazon Web Services module"
+	depends="$pkgname=$pkgver-r$pkgrel"
+	provides="tiny-ec2-bootstrap"
+	mkdir -p "$subpkgdir"
+}
+
+azure() {
+	pkgdesc="Tiny Cloud - Azure module"
+	depends="$pkgname=$pkgver-r$pkgrel"
+	mkdir -p "$subpkgdir"
+}
+
+digitalocean() {
+	pkgdesc="Tiny Cloud - DigitalOcean module"
+	depends="$pkgname=$pkgver-r$pkgrel"
+	mkdir -p "$subpkgdir"
+}
+
+gcp() {
+	pkgdesc="Tiny Cloud - Google Cloud Platform module"
+	depends="$pkgname=$pkgver-r$pkgrel"
+	mkdir -p "$subpkgdir"
+}
+
+hetzner() {
+	pkgdesc="Tiny Cloud - Hetzner Cloud module"
+	depends="$pkgname=$pkgver-r$pkgrel"
+	mkdir -p "$subpkgdir"
+}
+
+incus() {
+	pkgdesc="Tiny Cloud - Incus module"
+	depends="$pkgname=$pkgver-r$pkgrel"
+	mkdir -p "$subpkgdir"
+}
+
+nocloud() {
+	pkgdesc="Tiny Cloud - NoCloud module"
+	depends="$pkgname=$pkgver-r$pkgrel"
+	provides="tiny-cloud-alpine=$pkgver-r$pkgrel"
+	mkdir -p "$subpkgdir"
+}
+
+oci() {
+	pkgdesc="Tiny Cloud - Oracle Cloud Infrastructure module"
+	depends="$pkgname=$pkgver-r$pkgrel"
+	mkdir -p "$subpkgdir"
+}
+
+scaleway() {
+	pkgdesc="Tiny Cloud - Scaleway Cloud module"
+	depends="$pkgname=$pkgver-r$pkgrel"
+	mkdir -p "$subpkgdir"
+}
+
+sha512sums="
+23f6a88ddcced7f5f60433d2fd125e6547a89dd736b6a1d5f7b1f1745ddbc5bb374c7d7329db7ee8856dd5f7b051a88e048ffe5b286812bfa6a5caf4e9504c28  tiny-cloud-3.4.1.tar.gz
+80c720ebfcd17e0c3bf99763333fcdd2594c00a7860ea0f03d856b8da82c2137b47f2dff8ec9e99292483273a229045a5dec1218124d8d6d7bc49e8fffa5f3d0  azure-autodetect.patch
+"

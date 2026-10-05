@@ -1,0 +1,63 @@
+# Contributor: Galen Abell <galen@galenabell.com>
+# Maintainer: Galen Abell <galen@galenabell.com>
+pkgname=khard
+pkgver=0.20.1
+pkgrel=1
+pkgdesc="Console CardDAV client"
+url="https://github.com/lucc/khard"
+arch="noarch"
+license="GPL-3.0-only"
+depends="
+	python3
+	py3-configobj
+	py3-ruamel.yaml
+	py3-vobject
+	"
+makedepends="
+	py3-gpep517
+	py3-setuptools
+	py3-setuptools_scm
+	py3-sphinx
+	py3-wheel
+	"
+checkdepends="py3-pytest"
+subpackages="$pkgname-doc $pkgname-pyc"
+source="https://files.pythonhosted.org/packages/source/k/khard/khard-$pkgver.tar.gz"
+
+prepare() {
+	default_prepare
+
+	# Remove some dependencies from the sphinx config; we only generate the manpages, and
+	# they don't require these to build.
+	sed -i \
+		-e '/autoapi.extension/d' \
+		-e '/sphinx_autodoc_typehints/d' \
+		-e '/sphinxarg.ext/d' \
+		doc/source/conf.py
+}
+
+build() {
+	gpep517 build-wheel \
+		--wheel-dir dist \
+		--output-fd 3 3>&1 >&2
+	make -C doc man
+}
+
+check() {
+	python3 -m venv --clear --system-site-packages testenv
+	testenv/bin/python3 -m installer dist/*.whl
+	# LC_COLLATE is not yet fully supported in musl
+	testenv/bin/python3 -m pytest -s \
+		--deselect test/test_khard.py::TestSortContacts::test_sort_order_for_accentuated_names
+}
+
+package() {
+	python3 -m installer -d "$pkgdir" \
+		dist/*.whl
+	install -Dm644 doc/build/man/$pkgname.1 "$pkgdir"/usr/share/man/man1/$pkgname.1
+	install -Dm644 doc/build/man/$pkgname.conf.5 "$pkgdir"/usr/share/man/man5/$pkgname.conf.5
+}
+
+sha512sums="
+3e19edb1128a4afe3490cb69ec7a714d95f65cce4427cc6f8c673390b9dbba8a4259a24ff106190907d908e18bdb8e9257d3c4b8e6823fbc85abd0e2869c4ac5  khard-0.20.1.tar.gz
+"

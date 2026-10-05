@@ -1,0 +1,57 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-plasma
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=plasma-activities
+pkgver=6.6.6
+pkgrel=0
+# armhf blocked by qt6-qtdeclarative
+arch="all !armhf"
+pkgdesc="Core components for the KDE's Activities"
+url="https://invent.kde.org/plasma/plasma-activities.git"
+license="GPL-2.0-or-later AND LGPL-2.1-or-later AND (LGPL-2.1-only OR LGPL-3.0-only)"
+depends="qt6-qtbase-sqlite"
+depends_dev="
+	kconfig-dev
+	kcoreaddons-dev
+	kwindowsystem-dev
+	qt6-qtdeclarative-dev
+	"
+makedepends="$depends_dev
+	boost-dev
+	doxygen
+	extra-cmake-modules
+	qt6-qtdeclarative-private-dev
+	qt6-qttools-dev
+	samurai
+	"
+subpackages="$pkgname-dev $pkgname-libs $pkgname-doc"
+
+case "$pkgver" in
+	*.*.9*) _rel=unstable;;
+	*) _rel=stable;;
+esac
+
+_repo_url="https://invent.kde.org/plasma/plasma-activities.git"
+source="https://download.kde.org/$_rel/plasma/$pkgver/plasma-activities-$pkgver.tar.xz"
+options="!check" # No usable tests
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib \
+		-DBUILD_QCH=ON
+	cmake --build build
+}
+
+check() {
+	ctest --test-dir build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+861299c0c08da736fea9750a1abee7aab88b5710c1424560cbca701aa5544d57a0a560f41436df60b24ea8cb931ce3ca986dbdaa0dfc66506055d5c78acfb604  plasma-activities-6.6.6.tar.xz
+"

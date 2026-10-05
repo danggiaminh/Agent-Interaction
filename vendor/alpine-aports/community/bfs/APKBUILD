@@ -1,0 +1,49 @@
+# Contributor: dai9ah <dai9ah@protonmail.com>
+# Contributor: Celeste <cielesti@protonmail.com>
+# Maintainer: DWwanghao <wanghao03@loongson.cn>
+maintainer="DWwanghao <wanghao03@loongson.cn>"
+pkgname=bfs
+pkgver=4.1
+pkgrel=1
+pkgdesc="Breadth-first variant of the UNIX find command"
+url="https://github.com/tavianator/bfs"
+arch="all"
+license="0BSD"
+makedepends="
+	acl-dev
+	attr-dev
+	libcap-dev
+	liburing-dev
+	linux-headers
+	oniguruma-dev
+	"
+checkdepends="bash acl coreutils"
+subpackages="
+	$pkgname-doc
+	$pkgname-bash-completion
+	$pkgname-zsh-completion
+	$pkgname-fish-completion
+	"
+source="$pkgname-$pkgver.tar.gz::https://github.com/tavianator/bfs/archive/$pkgver.tar.gz"
+
+build() {
+	./configure \
+		--enable-release \
+		--with-libacl \
+		--with-libcap \
+		--with-liburing \
+		--with-oniguruma
+	make
+}
+
+check() {
+	TEST_FLAGS="--verbose" make check
+}
+
+package() {
+	make DESTDIR="$pkgdir" install
+}
+
+sha512sums="
+24a79724a9b6eb7c2ec10bcebffaf6fbc31dcfd595f7a38fc17cdf3250131b4616d3c89e0cbb4de044bab3680d1398d3eeff41e8071809cc8e03afee43a5d061  bfs-4.1.tar.gz
+"

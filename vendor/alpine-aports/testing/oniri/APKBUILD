@@ -1,0 +1,42 @@
+# Contributor: Robin Candau <robincandau@protonmail.com>
+# Maintainer: Robin Candau <robincandau@protonmail.com>
+pkgname=oniri
+pkgver=1.2.2
+pkgrel=0
+pkgdesc="A tool that automatically maximizes the only window of a niri workspace"
+url="https://github.com/Antiz96/oniri"
+# s390x and 32-bit architectures excluded due to niri
+arch="all !armv7 !armhf !x86 !s390x"
+license="GPL-3.0-or-later"
+depends="niri"
+makedepends="cargo cargo-auditable scdoc"
+subpackages="$pkgname-doc $pkgname-bash-completion $pkgname-zsh-completion $pkgname-fish-completion"
+source="$pkgname-$pkgver.tar.gz::https://github.com/Antiz96/oniri/archive/refs/tags/v$pkgver.tar.gz"
+options="net" # cargo crates
+
+prepare() {
+	default_prepare
+	cargo fetch --locked --target="$CTARGET"
+}
+
+build() {
+	cargo auditable build --release --locked
+	scdoc < "doc/man/$pkgname.1.scd" > "doc/man/$pkgname.1"
+}
+
+check() {
+	cargo test --locked
+}
+
+package() {
+	install -Dm 755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
+	install -Dm 644 "res/completions/$pkgname.bash" "$pkgdir/usr/share/bash-completion/completions/$pkgname"
+	install -Dm 644 "res/completions/$pkgname.zsh" "$pkgdir/usr/share/zsh/site-functions/_$pkgname"
+	install -Dm 644 "res/completions/$pkgname.fish" "$pkgdir/usr/share/fish/vendor_completions.d/$pkgname.fish"
+	install -Dm 644 "doc/man/$pkgname.1" "$pkgdir/usr/share/man/man1/$pkgname.1"
+	install -Dm 644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}
+
+sha512sums="
+2f4243ae498196c674f34061f36e8ba9717e5b187d60888e18e2861aa3fd07fdb3e84f82611f3d6f1e968e2206d27cdf2c1650222a52afd623299e4d9f16c2d4  oniri-1.2.2.tar.gz
+"

@@ -1,0 +1,30 @@
+# Maintainer: mio <miyopan@e.email>
+maintainer="mio <miyopan@e.email>"
+pkgname=chawan
+pkgver=0.4.4
+pkgrel=0
+pkgdesc="TUI web browser"
+url="https://git.sr.ht/~bptato/chawan"
+license="Unlicense"
+arch="all !s390x" # limited by nim
+makedepends="brotli-dev libssh2-dev nim openssl-dev"
+subpackages="$pkgname-doc"
+source="$pkgname-$pkgver.tar.gz::https://git.sr.ht/~bptato/chawan/archive/v$pkgver.tar.gz"
+builddir="$srcdir"/$pkgname-v$pkgver
+
+build() {
+	make
+}
+
+check() {
+	make test
+}
+
+package() {
+	DESTDIR="$pkgdir" PREFIX=/usr make install
+	install -Dm644 UNLICENSE -t "$pkgdir"/usr/share/licenses/$pkgname
+}
+
+sha512sums="
+b107e0b12e05f64bf7c2ccbde75bb6bb5f1568b54528033ac6e1a4dd6b9a21dec9d2d084ced5c86605c0a76789122216600f5de9383d2a6e675bb2668df949a0  chawan-0.4.4.tar.gz
+"

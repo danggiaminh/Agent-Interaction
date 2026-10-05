@@ -1,0 +1,43 @@
+# Maintainer: Natanael Copa <ncopa@alpinelinux.org>
+pkgname=tumbler
+pkgver=4.20.0
+pkgrel=0
+pkgdesc="D-Bus thumbnail service"
+url="https://gitlab.xfce.org/xfce/tumbler"
+arch="all"
+license="GPL-2.0-or-later"
+makedepends="
+	curl-dev
+	ffmpegthumbnailer-dev
+	gst-plugins-base-dev
+	libgepub-dev
+	libgsf-dev
+	libjpeg-turbo-dev
+	libopenraw-dev
+	libxfce4util-dev
+	poppler-dev
+	xfce4-dev-tools
+	"
+subpackages="$pkgname-dev $pkgname-lang $pkgname-doc"
+source="https://archive.xfce.org/src/xfce/tumbler/${pkgver%.*}/tumbler-$pkgver.tar.bz2"
+
+build() {
+	./configure \
+		--build=$CBUILD \
+		--host=$CHOST \
+		--prefix=/usr \
+		--sysconfdir=/etc \
+		--mandir=/usr/share/man \
+		--infodir=/usr/share/info \
+		--localstatedir=/var
+	make
+}
+
+package() {
+	make DESTDIR="$pkgdir" install
+	rm -r "$pkgdir"/usr/lib/systemd
+}
+
+sha512sums="
+9de43565099c61c8a5227fb69e99f432d44435e717524f71a2c8751ef67d23d0aa06ed63aec15f035fcdbb0940a9a583bb724e59d27d600814c983269b937783  tumbler-4.20.0.tar.bz2
+"

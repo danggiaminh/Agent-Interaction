@@ -1,0 +1,69 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-plasma
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=plasma-sdk
+pkgver=6.6.6
+pkgrel=0
+pkgdesc="Applications useful for Plasma Development"
+# armhf blocked by qt6-qtdeclarative
+arch="all !armhf"
+url="https://kde.org/plasma-desktop/"
+license="GPL-2.0-or-later"
+depends="kirigami"
+makedepends="
+	extra-cmake-modules
+	karchive-dev
+	kcompletion-dev
+	kconfig-dev
+	kconfigwidgets-dev
+	kcoreaddons-dev
+	kdbusaddons-dev
+	kdeclarative-dev
+	kdoctools-dev
+	ki18n-dev
+	kiconthemes-dev
+	kio-dev
+	kitemmodels-dev
+	kparts-dev
+	kservice-dev
+	ksvg-dev
+	ktexteditor-dev
+	kwidgetsaddons-dev
+	libplasma-dev
+	plasma5support-dev
+	qt6-qtbase-dev
+	qt6-qtdeclarative-dev
+	qt6-qtdeclarative-private-dev
+	qt6-qtsvg-dev
+	samurai
+	"
+checkdepends="xwayland-run"
+
+case "$pkgver" in
+	*.*.9*) _rel=unstable;;
+	*) _rel=stable;;
+esac
+
+subpackages="$pkgname-doc $pkgname-lang $pkgname-zsh-completion"
+_repo_url="https://invent.kde.org/plasma/plasma-sdk.git"
+source="https://download.kde.org/$_rel/plasma/$pkgver/plasma-sdk-$pkgver.tar.xz"
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+}
+
+check() {
+	wlheadless-run -- ctest --test-dir build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+6dae0c3c331867871b1c634a80b52ad25e59af1783c5d193f80caa449e487c06c34dcb7723e9b3acc829510e5c465fe9329e688d73831bf5c0597aaf5911bc14  plasma-sdk-6.6.6.tar.xz
+"

@@ -1,0 +1,61 @@
+# Contributor: Matthias Ahouansou <matthias@ahouansou.cz>
+# Maintainer: Matthias Ahouansou <matthias@ahouansou.cz>
+pkgname=cargo-deny
+pkgver=0.18.6
+pkgrel=0
+pkgdesc="Cargo plugin for linting your dependencies"
+url="https://github.com/EmbarkStudios/cargo-deny"
+arch="all"
+license="MIT OR Apache-2.0"
+makedepends="
+	cargo
+	cargo-auditable
+	"
+source="$pkgname-$pkgver.tar.gz::https://github.com/EmbarkStudios/cargo-deny/archive/refs/tags/$pkgver.tar.gz"
+options="net"
+
+export CARGO_HOME="$srcdir"/cargo
+
+prepare() {
+	default_prepare
+	# remove upstream's compile flags for musl target
+	rm -r .cargo/
+	cargo fetch --target="$CTARGET" --locked
+}
+
+build() {
+	cargo auditable build --release --frozen
+}
+
+check() {
+	# These tests require the advisory repos to be cloned via git
+	cargo test --frozen -- \
+		--skip detects_unmaintained \
+		--skip detects_unsound \
+		--skip detects_vulnerabilities \
+		--skip downgrades_lint_levels \
+		--skip fails_on_stale_advisory_database \
+		--skip fetches_with_git \
+		--skip fetches_with_gix \
+		--skip warns_on_ignored_and_withdrawn \
+		--skip warns_on_index_failures \
+		--skip sarif_advisories \
+		--skip accepts_exceptions \
+		--skip accepts_licenses \
+		--skip detects_unlicensed \
+		--skip handles_dev_dependencies \
+		--skip rejects_licenses
+}
+
+package() {
+	install -Dm 755 target/release/cargo-deny "$pkgdir"/usr/bin/cargo-deny
+
+	for l in APACHE MIT
+	do
+		install -Dm 644 LICENSE-"$l" "$pkgdir"/usr/share/licenses/"$pkgname"/LICENSE-"$l"
+	done
+}
+
+sha512sums="
+5f019e293536cdb2af2112d38a90da7f7fb208fd6334bca72a54493f0f695199a908ac0ccb4c72311035221bcfd437b8bb36ecbb70f0ce71214c09b6fa767a29  cargo-deny-0.18.6.tar.gz
+"

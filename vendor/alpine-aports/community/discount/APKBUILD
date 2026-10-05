@@ -1,0 +1,50 @@
+# Contributor: Daniel Sabogal <dsabogalcc@gmail.com>
+# Contributor: Daniel Fancsali <fancsali@gmail.com>
+# Contributor: Carlo Landmeter <clandmeter@alpinelinux.org>
+# Contributor: Celeste <cielesti@protonmail.com>
+# Maintainer: John Vogel <jvogel@stygian.me>
+maintainer="John Vogel <jvogel@stygian.me>"
+pkgname=discount
+pkgver=3.0.1.2
+pkgrel=1
+pkgdesc="Markdown to HTML translator written in C"
+url="https://www.pell.portland.or.us/~orc/Code/discount/"
+arch="all"
+license="BSD-3-Clause"
+depends="!markdown"
+subpackages="$pkgname-dev $pkgname-doc $pkgname-libs"
+source="$pkgname-$pkgver.tar.gz::https://github.com/Orc/discount/archive/v$pkgver.tar.gz
+	configure.inc.patch
+	"
+
+build() {
+	./configure.sh \
+		--prefix=/usr \
+		--mandir=/usr/share/man \
+		--enable-all-features \
+		--with-fenced-code \
+		--pkg-config \
+		--shared \
+		--container
+	make -j1
+}
+
+check() {
+	msg "Running testsuites..."
+	make test
+}
+
+package() {
+	make PREFIX=/usr DESTDIR="$pkgdir" install.everything
+	local bin; for bin in theme makepage mkd2html; do
+		mv "$pkgdir"/usr/bin/$bin \
+			"$pkgdir"/usr/bin/$pkgname-$bin
+		mv "$pkgdir"/usr/share/man/man1/$bin.1 \
+			"$pkgdir"/usr/share/man/man1/$pkgname-$bin.1
+	done
+}
+
+sha512sums="
+ca10220e4a4f8cd5c3e849873d24a61f8bcbb85f230fe554537d9cdd4e3d4d23c5f5fbc9c917da379000e331c40473038b481f5ac2db29dfa7011a634526688a  discount-3.0.1.2.tar.gz
+a7d6924b45afbf9a12ec3fdd38e810a76f2557cae5d3f852839c75ada36942ac52237ff6ca39a01d812de90a9f3fc1dcfda9af80521757a1524e46af3609be5a  configure.inc.patch
+"

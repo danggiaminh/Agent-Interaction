@@ -1,0 +1,45 @@
+# Contributor: Daniel Isaksen <d@duniel.no>
+# Contributor: Victor Schroeder <me@vschroeder.net>
+# Contributor: Marlus Saraiva <marlus.saraiva@gmail.com>
+# Maintainer: Michal Jirků <box@wejn.org>
+pkgname=elixir
+pkgver=1.19.6
+pkgrel=0
+pkgdesc="Elixir is a dynamic, functional language designed for building scalable and maintainable applications"
+url="https://elixir-lang.org/"
+arch="noarch"
+license="Apache-2.0"
+depends="erlang erlang-dev"
+makedepends="erlang-dialyzer"
+checkdepends="erlang-doc git"
+subpackages="$pkgname-doc"
+source="$pkgname-$pkgver.tar.gz::https://github.com/elixir-lang/elixir/archive/v$pkgver.tar.gz"
+
+# secfixes:
+#   1.19.6-r0:
+#     - CVE-2026-75758
+
+build() {
+	LANG="C.UTF-8" make
+}
+
+check() {
+	set +e
+	ELIXIR_ASSERT_TIMEOUT=10000 LANG="C.UTF-8" make test
+	ret=$?
+	set -e
+
+	# test starts epmd, which then hangs presubmit pipeline.
+	# so we kill it here.
+	killall -q epmd
+
+	return $ret
+}
+
+package() {
+	make DESTDIR="$pkgdir" PREFIX=/usr install
+}
+
+sha512sums="
+fc1fcfe8833356c0c15e0e1eba73c56ce1f58f29cc12de1324c2f3567915ce1811226a334798ca6ec76a48c643de1c6a9aba765232035c3a9c77b60f5aaee3a2  elixir-1.19.6.tar.gz
+"

@@ -1,0 +1,46 @@
+# Maintainer: Juergen Mang <mail@jcgames.de>
+pkgname=mympd
+pkgver=25.1.1
+pkgrel=0
+pkgdesc="Standalone and mobile friendly web-based MPD client"
+url="https://jcorporation.github.io/myMPD/"
+arch="all"
+license="GPL-3.0-or-later"
+depends="newt"
+makedepends="
+	cmake
+	flac-dev
+	gzip
+	jq
+	libcap
+	lua5.4
+	lua5.4-dev
+	libid3tag-dev
+	linux-headers
+	openssl-dev
+	pcre2-dev
+	perl
+	samurai
+	"
+install="$pkgname.pre-install"
+subpackages="$pkgname-doc $pkgname-openrc"
+source="$pkgname-$pkgver.tar.gz::https://github.com/jcorporation/myMPD/archive/refs/tags/v$pkgver.tar.gz"
+options="!check" # no test suite
+builddir="$srcdir/myMPD-$pkgver"
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib \
+		-DCMAKE_BUILD_TYPE=MinSizeRel \
+		-DMYMPD_STARTUP_SCRIPT=OPENRC
+	cmake --build build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+c0973782e8a09f23088f69bf28ecfe99bcc63001cba9f1d6b3dd0e19fea697b0141d15a51a98a0b06124babb1451d722d87171c5ec374eeb325533862cd168d7  mympd-25.1.1.tar.gz
+"

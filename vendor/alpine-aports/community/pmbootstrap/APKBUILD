@@ -1,0 +1,41 @@
+# Contributor: Bart Ribbers <bribbers@disroot.org>
+maintainer="Oliver Smith <ollieparanoid@postmarketos.org>"
+pkgname=pmbootstrap
+pkgver=3.11.1
+pkgrel=0
+pkgdesc="Sophisticated chroot/build/flash tool to develop and install postmarketOS"
+url="https://gitlab.postmarketos.org/postmarketOS/pmbootstrap"
+arch="noarch"
+license="GPL-3.0-or-later"
+depends="
+	git
+	losetup
+	cmd:kpartx
+	openssl
+	python3
+	"
+makedepends="py3-gpep517 py3-setuptools py3-wheel python3-dev"
+checkdepends="py3-pytest"
+subpackages="$pkgname-pyc"
+source="https://gitlab.postmarketos.org/postmarketOS/pmbootstrap/-/archive/$pkgver/pmbootstrap-$pkgver.tar.bz2
+	modules-load.conf
+	"
+install="$pkgname.post-install"
+options="!check" # Tests require chroot etc.
+
+build() {
+	gpep517 build-wheel \
+		--wheel-dir dist \
+		--output-fd 3 3>&1 >&2
+}
+
+package() {
+	python3 -m installer -d "$pkgdir" \
+		dist/*.whl
+	install -Dm644 "$srcdir"/modules-load.conf "$pkgdir"/usr/lib/modules-load.d/pmbootstrap.conf
+}
+
+sha512sums="
+f78ea56b0e4c6b72ce410bdd2076de2f30d1c1938f6a680ea448187bc1a5d40a7e5c13b3f4541a33295993505e936b0e14f5f3a829d1c1b34b4aa0d95158a253  pmbootstrap-3.11.1.tar.bz2
+f8026ab32234b885e69252459047f70160c54319113bc449000aa7c05bd016f00a46cee05c8f5251682f967ab44a12c06fbbb3c02d0a57ccb836cff810ce1a40  modules-load.conf
+"

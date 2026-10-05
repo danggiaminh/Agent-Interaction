@@ -1,0 +1,56 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-plasma
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=flatpak-kcm
+pkgver=6.6.6
+pkgrel=0
+pkgdesc="Flatpak Permissions Management KCM"
+# armhf blocked by qt6-qtdeclarative
+arch="all !armhf"
+url="https://kde.org/plasma-desktop/"
+license="GPL-2.0-or-later"
+depends="kirigami"
+makedepends="
+	extra-cmake-modules
+	flatpak-dev
+	kcmutils-dev
+	kconfig-dev
+	kdeclarative-dev
+	ki18n-dev
+	kitemmodels-dev
+	qt6-qtdeclarative-dev
+	qt6-qtsvg-dev
+	samurai
+	"
+checkdepends="xwayland-run"
+
+case "$pkgver" in
+	*.*.9*) _rel=unstable;;
+	*) _rel=stable;;
+esac
+
+subpackages="$pkgname-lang"
+_repo_url="https://invent.kde.org/plasma/flatpak-kcm.git"
+source="https://download.kde.org/$_rel/plasma/$pkgver/flatpak-kcm-$pkgver.tar.xz"
+install_if="flatpak systemsettings"
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+}
+
+check() {
+	# flatpakpermissiontest is broken
+	wlheadless-run -- ctest --test-dir build -E "flatpakpermissiontest"
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+6e771859ce2fb62737fa36b59ba094af99acde583f6d350df6bcdac8391fa5f16e4c9acdfd60c990c80be2cf799750d7e6e8748c621963b05a9f9f4e0545c16f  flatpak-kcm-6.6.6.tar.xz
+"

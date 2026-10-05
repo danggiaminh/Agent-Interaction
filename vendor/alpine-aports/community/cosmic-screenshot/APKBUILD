@@ -1,0 +1,46 @@
+# Contributor: Clayton Craft <clayton@craftyguy.net>
+# Maintainer: Clayton Craft <clayton@craftyguy.net>
+pkgname=cosmic-screenshot
+pkgver=1.0.15
+_upstreamver="${pkgver/_beta/-beta.}"
+_upstreamver="${_upstreamver/_p/.}"
+pkgrel=0
+pkgdesc="Screenshot application for the COSMIC Desktop Environment"
+url="https://github.com/pop-os/cosmic-screenshot"
+# 32-bit: xdg-desktop-portal-cosmic
+# s390x: xdg-desktop-portal-cosmic
+# riscv64: too slow to build
+arch="all !armhf !armv7 !x86 !s390x !riscv64"
+license="GPL-3.0-only"
+depends="
+	cosmic-icons
+	xdg-desktop-portal-cosmic
+"
+makedepends="
+	cargo-auditable
+	just
+"
+options="net !check"  # fetch dependencies, no tests
+source="$pkgname-$pkgver.tar.gz::https://github.com/pop-os/cosmic-screenshot/archive/refs/tags/epoch-$_upstreamver.tar.gz"
+builddir="$srcdir/$pkgname-epoch-$_upstreamver"
+
+prepare() {
+	default_prepare
+	cargo fetch --target="$CHOST" --locked
+}
+
+build() {
+	cargo auditable build --release --frozen
+}
+
+check() {
+	cargo test --frozen
+}
+
+package() {
+	just rootdir="$pkgdir" install
+}
+
+sha512sums="
+8e0b1e7ae0995c443a3a1a0b95d2323f50b77cc266da3f6ddab3177291386b36bd95d93db8dc768ea2e66329d5a219d2d7410b9f79dfb6f7dad483d288d17089  cosmic-screenshot-1.0.15.tar.gz
+"

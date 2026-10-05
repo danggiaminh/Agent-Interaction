@@ -1,0 +1,88 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-frameworks
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=kxmlgui
+pkgver=6.26.0
+pkgrel=0
+pkgdesc="User configurable main windows"
+# armhf blocked by qt6-qtdeclarative -> ki18n, qt6-qtmultimedia -> ktextwidgets
+arch="all !armhf"
+url="https://community.kde.org/Frameworks"
+license="LGPL-2.1-only AND LGPL-2.1-or-later"
+depends_dev="
+	attica-dev
+	kconfig-dev
+	kconfigwidgets-dev
+	kcoreaddons-dev
+	kglobalaccel-dev
+	ki18n-dev
+	kiconthemes-dev
+	kitemviews-dev
+	ktextwidgets-dev
+	kwidgetsaddons-dev
+	py3-build
+	py3-setuptools
+	py3-shiboken6
+	pyside6-dev
+	python3-dev
+	qt6-qtbase-dev
+	"
+makedepends="$depends_dev
+	doxygen
+	extra-cmake-modules
+	kde-qdoc-common
+	qt6-qttools-dev
+	samurai
+	"
+checkdepends="
+	mesa-dri-gallium
+	xwayland-run
+	"
+subpackages="
+	$pkgname-dev
+	$pkgname-doc
+	$pkgname-lang
+	py3-$pkgname:_py3
+	"
+_repo_url="https://invent.kde.org/frameworks/kxmlgui.git"
+source="https://download.kde.org/stable/frameworks/${pkgver%.*}/kxmlgui-$pkgver.tar.xz"
+
+build() {
+	export KDE_DOCS=/usr/share/kde/documentation
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+
+	cmake --build build --target prepare_docs
+	cmake --build build --target generate_docs
+	cmake --build build --target generate_qch
+}
+
+check() {
+	local jobs=0
+
+	case "$CARCH" in
+		riscv64) jobs=1 ;;
+	esac
+
+	# kxmlgui_unittest, ktoolbar_unittest and ktooltiphelper_unittest are broken
+	# kmainwindow_unittest has no apparent failures but is marked as failed anyway...
+	LC_ALL=C.UTF-8 wlheadless-run -- ctest -j "$jobs" --test-dir build -E '(kxmlgui|ktoolbar|ktooltiphelper|kmainwindow)_unittest'
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+
+	DESTDIR="$pkgdir" cmake --build build --target install_html_docs
+	DESTDIR="$pkgdir" cmake --build build --target install_qch_docs
+}
+
+_py3() {
+	amove usr/lib/python*
+}
+
+sha512sums="
+d68b72f9bec7a9f467009fed30bc35aa1dea0a2f71c616a683f98b162f06ac4dde4869a31e76f38df462951cbabd7f324dfc348e989a881d3e8db5d61d98a3e1  kxmlgui-6.26.0.tar.xz
+"

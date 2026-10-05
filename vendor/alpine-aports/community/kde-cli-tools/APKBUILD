@@ -1,0 +1,64 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-plasma
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=kde-cli-tools
+pkgver=6.6.6
+pkgrel=0
+pkgdesc="Tools based on KDE Frameworks 5 to better interact with the system"
+# armhf blocked by qt6-qtdeclarative -> ki18n
+arch="all !armhf"
+url="https://invent.kde.org/plasma/kde-cli-tools"
+license="(GPL-2.0-only OR GPL-3.0-only) AND GPL-2.0-or-later AND GPL-2.0-only AND LGPL-2.1-only"
+# kinfo binary requires kinfocenter KCM, but it causes a circular dep,
+# kinfocenter -> kde-cli-tools -> plasma-workspace -> systemsettings -> kinfocenter,
+# and it causes the desktop systemsettings to be installed on mobile images.
+# So for now the user has to install it themselves.
+makedepends="
+	extra-cmake-modules
+	kcmutils-dev
+	kconfig-dev
+	kdeclarative-dev
+	kdesu-dev
+	kdoctools-dev
+	ki18n-dev
+	kiconthemes-dev
+	kio-dev
+	kparts-dev
+	kservice-dev
+	kwindowsystem-dev
+	plasma-activities-dev
+	qt6-qtbase-dev
+	qt6-qtsvg-dev
+	samurai
+	"
+checkdepends="xwayland-run"
+
+case "$pkgver" in
+	*.*.9*) _rel=unstable;;
+	*) _rel=stable;;
+esac
+
+subpackages="$pkgname-doc $pkgname-lang $pkgname-zsh-completion"
+_repo_url="https://invent.kde.org/plasma/kde-cli-tools.git"
+source="https://download.kde.org/$_rel/plasma/$pkgver/kde-cli-tools-$pkgver.tar.xz"
+# Broken
+options="!check"
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+}
+
+check() {
+	wlheadless-run -- ctest --test-dir build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+sha512sums="
+93a61573bf42aa4a01d52629e0e01bdca015c57ee4c4557f4a2af9dfe25b56730bd571a6c6343d8bc48f55474ae94b7ba54e0bd1715df9acd0fc4a5040c0459d  kde-cli-tools-6.6.6.tar.xz
+"

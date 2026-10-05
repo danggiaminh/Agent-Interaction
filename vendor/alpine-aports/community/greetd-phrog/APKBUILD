@@ -1,0 +1,69 @@
+# Maintainer: Sam Day <me@samcday.com>
+pkgname=greetd-phrog
+pkgver=0.50.0
+pkgrel=2
+pkgdesc="Mobile device greeter"
+url="https://github.com/samcday/phrog"
+# armhf: blocked by phosh
+arch="all !armhf"
+license="GPL-3.0-only"
+depends="
+	phosh
+	greetd
+	greetd-phrog-schemas
+	libphosh"
+makedepends="
+	cargo
+	cargo-auditable
+	foot
+	libphosh-dev
+	"
+checkdepends="xvfb-run"
+subpackages="$pkgname-schemas::noarch $pkgname-systemd $pkgname-dbg"
+source="https://github.com/samcday/phrog/archive/$pkgver/phrog-$pkgver.tar.gz
+	timeout.patch
+	"
+builddir="$srcdir/phrog-$pkgver"
+# net: cargo fetch
+options="net"
+
+export RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$builddir=/build/"
+
+prepare() {
+	default_prepare
+	cargo fetch --target="$CTARGET" --locked
+}
+
+build() {
+	cargo auditable build --release --frozen
+}
+
+package() {
+	install -Dm644 data/mobi.phosh.phrog.gschema.xml -t "$pkgdir"/usr/share/glib-2.0/schemas/
+	install -Dm644 data/phrog.session -t "$pkgdir"/usr/share/gnome-session/sessions/
+	install -Dm644 data/mobi.phosh.Phrog.desktop -t "$pkgdir"/usr/share/applications/
+	install -Dm644 dist/alpine/greetd-config.toml -t "$pkgdir"/etc/phrog/
+	install -d "$pkgdir"/usr/share/phrog/autostart
+	install -d "$pkgdir"/etc/phrog/autostart
+	install -Dm755 target/release/phrog -t "$pkgdir"/usr/bin/
+	install -Dm755 data/phrog-greetd-session -t "$pkgdir"/usr/libexec/
+
+	install -Dm644 data/mobi.phosh.Phrog.service -t "$pkgdir"/usr/lib/systemd/user/
+	install -Dm644 data/mobi.phosh.Phrog.target -t "$pkgdir"/usr/lib/systemd/user/
+	install -Dm644 data/systemd-session.conf -t "$pkgdir"/usr/lib/systemd/user/gnome-session@phrog.target.d/
+}
+
+check() {
+	export XDG_RUNTIME_DIR="$builddir"
+	dbus-run-session xvfb-run -a phoc -E "cargo test --frozen"
+}
+
+schemas() {
+	pkgdesc="Phrog schema files"
+	depends=""
+	amove usr/share/glib-2.0/schemas
+}
+sha512sums="
+e2cfd7826dd87ff6f89335a2ce0ac4139b28b58fc7c5576b95f26d58fae5c20ae70b28ad7c6ef341815449913d8bef4bf80c768efa7eccb78ff505c86637b385  phrog-0.50.0.tar.gz
+829f78b3171d3e705d4da807e8acd3c64650a6bb437b634066e6d15d61670a3470813c23ac0fe67be32f13b502df38cbb6fd5a7c06456cf711162862bcdbf48a  timeout.patch
+"

@@ -1,0 +1,39 @@
+# Contributor: Francesco Colista <fcolista@alpinelinux.org>
+# Maintainer: Francesco Colista <fcolista@alpinelinux.org>
+pkgname=py3-pypdf
+pkgver=6.12.1
+pkgrel=0
+pkgdesc="Pure-Python library built as a PDF toolkit"
+url="https://github.com/py-pdf/pypdf"
+arch="noarch"
+license="BSD-3-Clause"
+options="!check" # issues with reading pdf files from test dirs
+makedepends="py3-gpep517 py3-installer py3-flit-core"
+checkdepends="py3-pillow py3-pytest"
+subpackages="$pkgname-pyc"
+source="$pkgname-$pkgver.tar.gz::https://github.com/py-pdf/pypdf/archive/refs/tags/$pkgver.tar.gz"
+builddir="$srcdir/pypdf-$pkgver"
+
+provides="py3-pypdf2=$pkgver-r$pkgrel"
+replaces="py3-pypdf2"
+
+build() {
+	gpep517 build-wheel \
+		--wheel-dir .dist \
+		--output-fd 3 3>&1 >&2
+}
+
+check() {
+	python3 -m venv --clear --without-pip --system-site-packages .testenv
+	.testenv/bin/python3 -m installer .dist/*.whl
+	.testenv/bin/python3 -m pytest
+}
+
+package() {
+	python3 -m installer -d "$pkgdir" \
+		.dist/*.whl
+}
+
+sha512sums="
+06622020ae3d1613a00a6b9db776a7338c2b2c1c5ae0a69fa499856b4802308a26f52e48461d2db794a7d4dcf3dcb8a2751a9abafe1e840f90914bdf201176b6  py3-pypdf-6.12.1.tar.gz
+"

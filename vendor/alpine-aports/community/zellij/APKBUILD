@@ -1,0 +1,66 @@
+# Contributor: guddaff <guddaff@protonmail.com>
+# Maintainer: guddaff <guddaff@protonmail.com>
+pkgname=zellij
+pkgver=0.42.2
+pkgrel=0
+pkgdesc="Terminal multiplexer"
+url="https://zellij.dev/"
+license="MIT"
+# armv7, armhf: warning: inline asm clobber list contains reserved registers: D16, D17, D18, D19, D20, D21, D22, D23, D24, D25, D26, D27, D28, D29, D30, D31
+# x86: error[E0425]: cannot find value `REG_EIP` in crate `libc`
+# s390x, ppc64le, loongarch64 : corosensei-0.1.3 unsupported target
+arch="all !armhf !armv7 !ppc64le !s390x !x86 !loongarch64"
+makedepends="
+	cargo
+	cargo-auditable
+	mandown
+	openssl-dev>3
+	"
+subpackages="
+	$pkgname-doc
+	$pkgname-bash-completion
+	$pkgname-fish-completion
+	$pkgname-zsh-completion
+	"
+source="https://github.com/zellij-org/zellij/archive/v$pkgver/zellij-$pkgver.tar.gz"
+options="!check" # troublesome
+
+# use system openssl
+export OPENSSL_NO_VENDOR=1
+
+prepare() {
+	default_prepare
+
+	cargo fetch --target="$CTARGET" --locked
+}
+
+build() {
+	cargo auditable build --frozen --release
+
+	mandown docs/MANPAGE.md > target/$pkgname.1
+
+	mkdir -p target/completions
+	for sh in bash fish zsh; do
+		target/release/$pkgname setup --generate-completion $sh \
+			> target/completions/$pkgname.$sh
+	done
+}
+
+package() {
+	install -D -m755 target/release/$pkgname -t "$pkgdir"/usr/bin/
+
+	install -D -m644 target/$pkgname.1 -t "$pkgdir"/usr/share/man/man1/
+
+	install -D -m644 target/completions/$pkgname.bash \
+		"$pkgdir"/usr/share/bash-completion/completions/$pkgname
+
+	install -D -m644 target/completions/$pkgname.fish \
+		"$pkgdir"/usr/share/fish/vendor_completions.d/$pkgname.fish
+
+	install -D -m644 target/completions/$pkgname.zsh \
+		"$pkgdir"/usr/share/zsh/site-functions/_$pkgname
+}
+
+sha512sums="
+23e1f39955c8066bd4efc5fb9a62b95f11d9e4691f47720f51b3a5818b54531a5e4eb8ccd6400b923c4aea2ce69c1a6a4be89185a2e8e795aadd78f48112b24b  zellij-0.42.2.tar.gz
+"

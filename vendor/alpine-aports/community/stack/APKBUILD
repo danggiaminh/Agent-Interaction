@@ -1,0 +1,112 @@
+# Contributor: gay <gay@disroot.org>
+# Contributor: Celeste <cielesti@protonmail.com>
+# Maintainer:
+pkgname=stack
+pkgver=3.9.3
+pkgrel=0
+pkgdesc="The Haskell Tool Stack"
+url="https://haskellstack.org/"
+arch="aarch64 x86_64" # limited by ghc
+license="BSD-3-Clause"
+makedepends="
+	cabal
+	ghc
+	gmp-dev
+	sqlite-dev
+	uusi
+	zlib-dev
+	"
+checkdepends="ncurses-dev"
+subpackages="
+	$pkgname-bash-completion
+	$pkgname-fish-completion
+	$pkgname-zsh-completion
+	"
+source="https://hackage.haskell.org/package/stack-$pkgver/stack-$pkgver.tar.gz
+	cabal.project.freeze
+	"
+
+export CABAL_DIR="${CABAL_DIR:-"$srcdir/cabal"}"
+
+cabal_relax() {
+	# Following what Homebrew does
+	cat > "$builddir"/cabal.project <<-'END'
+		packages: .
+	END
+
+	uusi -u directory -u filepath "$builddir"/$pkgname.cabal
+}
+
+cabal_update() {
+	local repo="hackage.haskell.org"
+
+	# Default config uses HTTP, change it to HTTPS.
+	[ -f "$CABAL_DIR"/config ] || {
+		cabal user-config init
+		cabal user-config update -a \
+			"repository $repo {url: https://$repo/}"
+	}
+
+	cd "$startdir"
+	[ -d "$builddir" ] || abuild unpack
+	msg "Freezing $pkgname dependencies"
+
+	# Resolve deps and generate fresh cabal.project.freeze with version constraints.
+	(
+		cd "$builddir" || {
+			error 'Is $builddir set correctly?'
+			return 1
+		}
+		cabal_relax
+
+		cabal v2-update
+		cabal v2-freeze --shadow-installed-packages
+
+		mv -v cabal.project.freeze "$startdir"/
+	)
+
+	if ! abuild checksum; then
+		die "Failed to update checksum, run 'abuild checksum' manually"
+	fi
+}
+
+prepare() {
+	cabal_relax
+	default_prepare
+
+	ln -svf "$srcdir"/cabal.project.freeze "$builddir"/
+}
+
+build() {
+	cabal v2-update
+	# Temporarily disable --enable-relocatable due to error:
+	# "Error: [Cabal-6000] Installation directories are not prefix_relative:
+	# internal error InstallDirs.libsubdir"
+	# https://github.com/haskell/cabal/issues/10755
+	cabal v2-build stack:exes \
+		--jobs=${JOBS:-1} \
+		--prefix=/usr \
+		--docdir=/usr/share/doc/$pkgname \
+		--sysconfdir=/etc
+}
+
+check() {
+	cabal test
+}
+
+package() {
+	cd dist-newstyle/build/*-linux/ghc-*/$pkgname-$pkgver/build/$pkgname
+	install -Dvm755 $pkgname -t "$pkgdir"/usr/bin/
+
+	./stack --bash-completion-script stack | install -Dm644 /dev/stdin \
+		"$pkgdir"/usr/share/bash-completion/completions/$pkgname
+	./stack --fish-completion-script stack | install -Dm644 /dev/stdin \
+		"$pkgdir"/usr/share/fish/vendor_completions.d/$pkgname.fish
+	./stack --zsh-completion-script stack | install -Dm644 /dev/stdin \
+		"$pkgdir"/usr/share/zsh/site-functions/_$pkgname
+}
+
+sha512sums="
+93583fee02e596f89a08f72429eee4b048d41934da61851fc6fd9724eefa2cfda8a66acee81cef5a96f0eda82c4024698ee4cf6ffe324b31c182ee7361df66d9  stack-3.9.3.tar.gz
+56d787376c1dd00b5ee2079c35d12a3f6ea680331c7f0e01b96a2132f9c667b6c10c2a7c106e576dbe9f23c9628d687a8f647225175f68b8117cb190bab8453c  cabal.project.freeze
+"

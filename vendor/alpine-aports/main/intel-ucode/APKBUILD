@@ -1,0 +1,139 @@
+# Contributor: Marian Buschsieweke <marian.buschsieweke@posteo.net>
+# Maintainer: omni <omni+alpine@hack.org>
+maintainer="omni <omni+alpine@hack.org>"
+pkgname=intel-ucode
+pkgver=20260812
+pkgrel=0
+pkgdesc="Microcode update files for Intel CPUs"
+arch="x86 x86_64"
+url="https://github.com/intel/Intel-Linux-Processor-Microcode-Data-Files"
+license="custom"
+makedepends="iucode-tool"
+source="https://github.com/intel/Intel-Linux-Processor-Microcode-Data-Files/archive/microcode-$pkgver.tar.gz"
+options="!check !archcheck" # intel microcode is only relevant for x86 and x86_64
+builddir="$srcdir/Intel-Linux-Processor-Microcode-Data-Files-microcode-$pkgver"
+
+# (Taken from https://github.com/intel/Intel-Linux-Processor-Microcode-Data-Files/blob/main/releasenote.md)
+# secfixes:
+#   20260812-r0:
+#     - CVE-2025-35973
+#     - CVE-2026-20713
+#     - CVE-2026-20716
+#     - CVE-2026-20760
+#     - CVE-2026-20917
+#   20260512-r0:
+#     - CVE-2025-35979
+#   20260210-r0:
+#     - CVE-2024-24853
+#     - CVE-2025-31648
+#   20250812-r0:
+#     - CVE-2025-20053
+#     - CVE-2025-20109
+#     - CVE-2025-21090
+#     - CVE-2025-22839
+#     - CVE-2025-22840
+#     - CVE-2025-22889
+#     - CVE-2025-24305
+#     - CVE-2025-26403
+#     - CVE-2025-32086
+#   20250512-r0:
+#     - CVE-2024-28956
+#     - CVE-2024-43420
+#     - CVE-2024-45332
+#     - CVE-2025-20012
+#     - CVE-2025-20054
+#     - CVE-2025-20103
+#     - CVE-2025-20623
+#     - CVE-2025-24495
+#   20250211-r0:
+#     - CVE-2024-31068
+#     - CVE-2024-36293
+#     - CVE-2023-43758
+#     - CVE-2024-39355
+#     - CVE-2024-37020
+#   20241112-r0:
+#     - CVE-2024-21853
+#     - CVE-2024-23918
+#     - CVE-2024-24968
+#     - CVE-2024-23984
+#   20240910-r0:
+#     - CVE-2024-23984
+#     - CVE-2024-24968
+#   20240813-r0:
+#     - CVE-2024-24853
+#     - CVE-2024-25939
+#     - CVE-2024-24980
+#     - CVE-2023-42667
+#     - CVE-2023-49141
+#   20240514-r0:
+#     - CVE-2023-45733
+#     - CVE-2023-46103
+#     - CVE-2023-45745
+#   20240312-r0:
+#     - CVE-2023-39368
+#     - CVE-2023-38575
+#     - CVE-2023-28746
+#     - CVE-2023-22655
+#     - CVE-2023-43490
+#   20231114-r0:
+#     - CVE-2023-23583
+#   20230808-r0:
+#     - CVE-2022-40982
+#     - CVE-2022-41804
+#     - CVE-2023-23908
+#   20230214-r0:
+#     - CVE-2022-21216
+#     - CVE-2022-33196
+#     - CVE-2022-38090
+#   20220809-r0:
+#     - CVE-2022-21233
+#   20220510-r0:
+#     - CVE-2022-21151
+#   20220207-r0:
+#     - CVE-2021-0127
+#     - CVE-2021-0146
+#   20210608-r0:
+#     - CVE-2020-24489
+#     - CVE-2020-24511
+#     - CVE-2020-24513
+#   20210216-r0:
+#     - CVE-2020-8698
+#   20201112-r0:
+#     - CVE-2020-8694
+#     - CVE-2020-8698
+#   20201110-r0:
+#     - CVE-2020-8694
+#     - CVE-2020-8698
+#   20200609-r0:
+#     - CVE-2020-0548
+#   20191113-r0:
+#     - CVE-2019-11135
+#   20191112-r0:
+#     - CVE-2018-12126
+#     - CVE-2019-11135
+#   20190918-r0:
+#     - CVE-2019-11135
+#   20190618-r0:
+#     - CVE-2018-12126
+#   20190514a-r0:
+#     - CVE-2018-12126
+#     - CVE-2017-5754
+#     - CVE-2017-5753
+
+build() {
+	rm -f intel-ucode/list intel-ucode-with-caveats/list
+	mkdir -p kernel/x86/microcode
+	iucode_tool -w kernel/x86/microcode/GenuineIntel.bin \
+		intel-ucode/ intel-ucode-with-caveats/
+	echo kernel/x86/microcode/GenuineIntel.bin | \
+		 cpio -o -H newc -R 0:0 > intel-ucode.img
+}
+
+package() {
+	install -D -m0644 intel-ucode.img "$pkgdir"/boot/intel-ucode.img
+	install -Dm644 license "$pkgdir"/usr/share/licenses/$pkgname/LICENSE
+}
+
+sha512sums="
+847935813453368ba890839e422a71912a8f53cc1256cd6800849976b58929d8415641d521ab3a7523262e0ef76058fb5db228f68e467424d45846d0f1ab2ebc  microcode-20260812.tar.gz
+"

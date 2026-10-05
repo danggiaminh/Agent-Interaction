@@ -1,0 +1,39 @@
+# Maintainer: Luca Weiss <luca@lucaweiss.eu>
+pkgname=net-cpp
+pkgver=3.2.1
+pkgrel=0
+pkgdesc="A simple yet beautiful networking API for C++11"
+url="https://gitlab.com/ubports/core/lib-cpp/net-cpp"
+arch="all"
+license="LGPL-3.0-only"
+makedepends="cmake cmake-extras boost-dev curl-dev process-cpp-dev
+	properties-cpp-dev jsoncpp-dev gtest-dev samurai"
+checkdepends="py3-httpbin"
+subpackages="$pkgname-dev"
+source="https://gitlab.com/ubports/core/lib-cpp/net-cpp/-/archive/$pkgver/net-cpp-$pkgver.tar.gz"
+
+build() {
+	if [ "$CBUILD" != "$CHOST" ]; then
+		CMAKE_CROSSOPTS="-DCMAKE_SYSTEM_NAME=Linux -DCMAKE_HOST_SYSTEM_NAME=Linux"
+	fi
+	cmake -B build -G Ninja \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib \
+		-DBUILD_SHARED_LIBS=True \
+		-DCMAKE_BUILD_TYPE=MinSizeRel \
+		$CMAKE_CROSSOPTS .
+	cmake --build build
+}
+
+check() {
+	# core::net::http::Status::ok: ok(200) != request_entity_too_large(413)
+	ctest --test-dir build -E "http_client_test"
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+a6ce26e7893aa0d95b543036b256dd3fd06bcb214b789071bd9d2916ea880d5084087632dfe855084c23102ed01f5e74e92f8c3a7c11dd5545b9178fb8006784  net-cpp-3.2.1.tar.gz
+"

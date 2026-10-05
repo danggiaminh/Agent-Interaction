@@ -1,0 +1,34 @@
+# Contributor: Duncan Bellamy <dunk@denkimushi.com>
+# Maintainer: Duncan Bellamy <dunk@denkimushi.com>
+pkgname=perl-ppix-regexp
+pkgver=0.091
+pkgrel=0
+pkgdesc="Represent a regular expression of some sort"
+url="https://metacpan.org/pod/PPIx::Regexp"
+arch="noarch"
+license="GPL-1.0-only OR Artistic-1.0-Perl"
+depends="perl-ppi"
+makedepends="perl-dev"
+subpackages="$pkgname-doc"
+source="https://cpan.metacpan.org/authors/id/W/WY/WYANT/PPIx-Regexp-$pkgver.tar.gz"
+builddir="$srcdir/PPIx-Regexp-$pkgver"
+
+build() {
+	export CFLAGS=$(perl -MConfig -E 'say $Config{ccflags}')
+	PERL_MM_USE_DEFAULT=1 perl -I. Makefile.PL INSTALLDIRS=vendor
+	make
+}
+
+check() {
+	export CFLAGS=$(perl -MConfig -E 'say $Config{ccflags}')
+	make test
+}
+
+package() {
+	make DESTDIR="$pkgdir" install
+	find "$pkgdir" \( -name perllocal.pod -o -name .packlist \) -delete
+}
+
+sha512sums="
+186ad07c6ffa16fa01c1b8ba65ba09aafba105655c17b0a5d3dfce47434b289c9260a2dd1d194f8820696a06a4d0f2341ca6752f3aa6880b6966862b9faa810b  PPIx-Regexp-0.091.tar.gz
+"

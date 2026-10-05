@@ -1,0 +1,59 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-plasma
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=kde-gtk-config
+pkgver=6.6.6
+pkgrel=0
+pkgdesc="Syncs KDE settings to GTK applications"
+# armhf blocked by qt6-qtdeclarative
+# s390x blocked by xsettingsd
+arch="all !armhf !s390x"
+url="https://invent.kde.org/plasma/kde-gtk-config"
+license="GPL-2.0 AND LGPL-2.1-only OR LGPL-3.0-only"
+depends="
+	gsettings-desktop-schemas
+	xdg-desktop-portal-gtk
+	xsettingsd
+	"
+makedepends="
+	extra-cmake-modules
+	gsettings-desktop-schemas-dev
+	gtk+3.0-dev
+	karchive-dev
+	kcmutils-dev
+	kconfigwidgets-dev
+	kdecoration-dev
+	ki18n-dev
+	kiconthemes-dev
+	kio-dev
+	knewstuff-dev
+	qt6-qtbase-dev
+	qt6-qtsvg-dev
+	samurai
+	sassc
+	"
+
+case "$pkgver" in
+	*.*.9*) _rel=unstable;;
+	*) _rel=stable;;
+esac
+
+_repo_url="https://invent.kde.org/plasma/kde-gtk-config.git"
+source="https://download.kde.org/$_rel/plasma/$pkgver/kde-gtk-config-$pkgver.tar.xz"
+options="!check" # No tests
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+848999f0b767971892347cf6710879c5b05ec5ba0bdab99d6830de2d081aece852a42b2e94a040cc85d25d98e08da6426ccf005e41b02da510bfabd59225cc54  kde-gtk-config-6.6.6.tar.xz
+"

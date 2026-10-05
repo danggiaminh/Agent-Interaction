@@ -1,0 +1,80 @@
+# Contributor: Fabian Affolter <fabian@affolter-engineering.ch>
+# Contributor: Celeste <cielesti@protonmail.com>
+# Maintainer: John Vogel <jvogel@stygian.me>
+maintainer="John Vogel <jvogel@stygian.me>"
+pkgname=tcpreplay
+pkgver=4.6.1
+pkgrel=0
+pkgdesc="Replay captured network traffic"
+url="https://tcpreplay.appneta.com/"
+arch="all"
+license="GPL-3.0-or-later"
+makedepends="
+	autoconf
+	automake
+	libdnet-dev
+	libpcap-dev
+	libtool
+	linux-headers
+	tcpdump
+	"
+subpackages="$pkgname-doc"
+source="https://downloads.sourceforge.net/tcpreplay/tcpreplay-$pkgver.tar.gz
+	remove-tx_ring-checks.patch
+	"
+
+case "$CARCH" in
+arm*)
+	options="$options !check" # bus error
+	;;
+esac
+
+# secfixes:
+#   4.6.1-r0:
+#     - GHSA-p3f2-88rg-9mch
+#     - GHSA-pmmx-m8p5-969j
+#     - GHSA-4hqm-8v2c-9pwj
+#   4.4.1-r0:
+#     - CVE-2021-45386
+#     - CVE-2021-45387
+#   4.3.2-r0:
+#     - CVE-2019-8381
+#     - CVE-2019-8376
+#     - CVE-2019-8377
+#   4.3.4-r0:
+#     - CVE-2020-24265
+#     - CVE-2020-24266
+
+prepare() {
+	default_prepare
+
+	autoreconf -fvi
+}
+
+build() {
+	./configure \
+		--build=$CBUILD \
+		--host=$CHOST \
+		--prefix=/usr \
+		--sysconfdir=/etc \
+		--mandir=/usr/share/man \
+		--infodir=/usr/share/info \
+		--localstatedir=/var \
+		--enable-dynamic-link \
+		--enable-local-libopts \
+		--disable-libopts-install
+	make
+}
+
+check() {
+	make -C test tcpprep
+}
+
+package() {
+	make DESTDIR="$pkgdir" install
+}
+
+sha512sums="
+ebd18f5c495a85fdf8e6372e5614155695244a2d38b5c03c68a5ac21004ea8bcbf38dec3227f765ddee9fbc1abfbe972569593ae3617c591aefae8ad44de009d  tcpreplay-4.6.1.tar.gz
+4704a5af8c3c265e4b667f38d62c802838f123dd5b76ca49628168531da0ebcf4314664923797fd296d037a588db8b172ee4c1eaff7923ae04620feb0e14d741  remove-tx_ring-checks.patch
+"

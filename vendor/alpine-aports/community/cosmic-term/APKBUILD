@@ -1,0 +1,50 @@
+# Contributor: Clayton Craft <clayton@craftyguy.net>
+# Maintainer: Clayton Craft <clayton@craftyguy.net>
+pkgname=cosmic-term
+pkgver=1.0.15
+_upstreamver="${pkgver/_beta/-beta.}"
+_upstreamver="${_upstreamver/_p/.}"
+pkgrel=0
+pkgdesc="Terminal emulator for the COSMIC Desktop Environment"
+url="https://github.com/pop-os/cosmic-term"
+# 32-bit: mismatched types in compio-driver-0.9.0 crate
+# riscv64: too slow to build
+arch="all !armhf !armv7 !x86 !riscv64"
+license="GPL-3.0-only"
+depends="
+	cosmic-icons
+"
+makedepends="
+	cargo-auditable
+	just
+	libxkbcommon-dev
+	wayland-dev
+"
+options="net !check"  # fetch dependencies, no tests
+source="$pkgname-$pkgver.tar.gz::https://github.com/pop-os/cosmic-term/archive/refs/tags/epoch-$_upstreamver.tar.gz"
+builddir="$srcdir/$pkgname-epoch-$_upstreamver"
+
+prepare() {
+	default_prepare
+
+	cargo fetch --target="$CHOST" --locked
+}
+
+build() {
+	export VERGEN_GIT_COMMIT_DATE="$(date -d @"$SOURCE_DATE_EPOCH" '+%Y-%m-%d')"
+	export VERGEN_GIT_SHA="unknown"
+
+	cargo auditable build --release --frozen
+}
+
+check() {
+	cargo test --frozen
+}
+
+package() {
+	just rootdir="$pkgdir" install
+}
+
+sha512sums="
+f330870f6c859ec725f399809ca67e8221042c3e53dde38494df70a79349d8882c7b7ed4904f98e55172a83e0e214b6256f9cc73d09ef403991f603218ea635c  cosmic-term-1.0.15.tar.gz
+"

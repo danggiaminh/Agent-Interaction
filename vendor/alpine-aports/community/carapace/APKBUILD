@@ -1,0 +1,33 @@
+# Contributor: Andrej Kolčin <self@kaathewise.net>
+# Maintainer: Andrej Kolčin <self@kaathewise.net>
+pkgname=carapace
+pkgver=1.5.7
+pkgrel=6
+pkgdesc="Multi-shell multi-command argument completer"
+url="https://carapace.sh/"
+arch="all"
+license="MIT"
+makedepends="go"
+source="$pkgname-$pkgver.tar.gz::https://github.com/rsteube/carapace-bin/archive/v$pkgver.tar.gz"
+builddir="$srcdir/carapace-bin-$pkgver"
+options="net"
+
+build() {
+	# I couldn't get the "-X" option to work from outside
+	cd cmd/carapace/
+	go generate ./...
+	go build -tags release -ldflags "-X main.version=$pkgver" .
+}
+
+check() {
+	go test ./cmd/...
+}
+
+package() {
+	install -Dm755 cmd/carapace/carapace -t "$pkgdir"/usr/bin
+	install -Dm644 LICENSE -t "$pkgdir"/usr/share/licenses/$pkgname/
+}
+
+sha512sums="
+7f98cd7fc0d9abfb582ce9ea7b2f1f3c482097b0320fe9dda5224778f905b86d9eab9140213f3b59e31fd1973bcab7fc1d84e8b87fab7cbf7c6c37e60b9d21bf  carapace-1.5.7.tar.gz
+"

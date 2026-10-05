@@ -1,0 +1,51 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-plasma
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=milou
+pkgver=6.6.6
+pkgrel=0
+pkgdesc="A dedicated search application built on top of Baloo"
+# armhf blocked by qt6-qtdeclarative
+arch="all !armhf"
+url="https://kde.org/plasma-desktop/"
+license="GPL-2.0-or-later AND (GPL-2.0-only OR GPL-3.0-only) AND (LGPL-2.1-only OR LGPL-3.0-only)"
+makedepends="
+	extra-cmake-modules
+	kcoreaddons-dev
+	kdeclarative-dev
+	ki18n-dev
+	kitemmodels-dev
+	krunner-dev
+	kservice-dev
+	libplasma-dev
+	qt6-qtbase-dev
+	qt6-qtdeclarative-dev
+	qt6-qtdeclarative-private-dev
+	samurai
+	"
+
+case "$pkgver" in
+	*.*.9*) _rel=unstable;;
+	*) _rel=stable;;
+esac
+
+subpackages="$pkgname-lang"
+_repo_url="https://invent.kde.org/plasma/milou.git"
+source="https://download.kde.org/$_rel/plasma/$pkgver/milou-$pkgver.tar.xz"
+options="!check" # No tests
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+24edc1fb362a8a3b33cfa422ef5e49442fd41061c26830657c94efeb613f290f55e06ea90293679405efefab54e310ba5a61690eaaec1e55151e0adfd0bdd3a2  milou-6.6.6.tar.xz
+"

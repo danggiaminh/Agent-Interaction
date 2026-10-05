@@ -1,0 +1,60 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-other
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=haruna
+pkgver=1.8.0
+pkgrel=0
+# armhf blocked by qt6-qtdeclarative
+arch="all !armhf"
+url="https://invent.kde.org/multimedia/haruna"
+pkgdesc="Open-source video player built with Qt/QML and libmpv"
+license="GPL-2.0-or-later AND GPL-3.0-or-later AND BSD-3-Clause"
+depends="
+	kirigami
+	kitemmodels
+	qt6-qt5compat
+	yt-dlp
+	"
+makedepends="
+	breeze-dev
+	extra-cmake-modules
+	ffmpeg-dev
+	kconfig-dev
+	kcoreaddons-dev
+	kdoctools-dev
+	kdsingleapplication-dev
+	kfilemetadata-dev
+	ki18n-dev
+	kiconthemes-dev
+	kio-dev
+	kirigami-dev
+	kxmlgui-dev
+	mpvqt-dev
+	qt6-qtbase-dev
+	qt6-qtdeclarative-dev
+	qt6-qtdeclarative-private-dev
+	samurai
+	"
+subpackages="$pkgname-lang"
+_repo_url="https://invent.kde.org/multimedia/haruna.git"
+source="haruna-$pkgver.tar.xz::https://download.kde.org/stable/haruna/$pkgver/haruna-$pkgver.tar.xz"
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=MinSizeRel \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+}
+
+check() {
+	ctest --test-dir build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+6d2575ab46eb42274673d68167fc562913ff6058551a12a6f6090d61194ec9a06fa55ffb1288b968f75b14be937323290fd03b800afac04a9b68dca3e9f6a889  haruna-1.8.0.tar.xz
+"

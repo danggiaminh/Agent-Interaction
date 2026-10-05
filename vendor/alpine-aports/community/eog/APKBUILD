@@ -1,0 +1,48 @@
+# Contributor: Rasmus Thomsen <oss@cogitri.dev>
+maintainer="Achill Gilgenast <achill@achill.org>"
+pkgname=eog
+pkgver=50.2
+pkgrel=0
+pkgdesc="Image viewer for GNOME"
+url="https://gitlab.gnome.org/GNOME/eog"
+arch="all"
+license="GPL-2.0-or-later"
+depends="gsettings-desktop-schemas"
+depends_dev="
+	exempi-dev
+	gnome-desktop-dev
+	jpeg-dev
+	lcms2-dev
+	libexif-dev
+	libpeas-dev
+	libportal-dev
+	librsvg-dev
+	libxml2-dev
+	"
+makedepends="
+	$depends_dev
+	itstool
+	libhandy1-dev
+	meson
+	"
+subpackages="$pkgname-dev $pkgname-doc $pkgname-lang"
+source="https://download.gnome.org/sources/eog/${pkgver%.*}/eog-$pkgver.tar.xz"
+
+build() {
+	abuild-meson \
+		-Db_lto=true \
+		. output
+	meson compile -C output
+}
+
+check() {
+	meson test --print-errorlogs -C output
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
+}
+
+sha512sums="
+0ded789d51370924a44b9f5df6e889ef68510c5afad637b00601686081aaf1b452a0fec75ebd885c6aa548232df2ffb417463085cd283f16207e501211c1f63e  eog-50.2.tar.xz
+"

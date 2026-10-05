@@ -1,0 +1,55 @@
+maintainer="Bart Ribbers <bribbers@disroot.org>"
+pkgname=songrec
+pkgver=0.7.3
+pkgrel=0
+pkgdesc="Open-source Shazam client for Linux"
+url="https://github.com/marin-m/SongRec"
+# loongarch64 and s390x blocked by nix crate
+# x86, armhf and armv7 blocked by no 64-bit time support in pipewire crate on 32-bit arches
+arch="all !loongarch64 !s390x !x86 !armhf !armv7"
+license="GPL-3.0-only"
+makedepends="
+	alsa-lib-dev
+	cargo
+	cargo-auditable
+	clang-dev
+	gdk-pixbuf-dev
+	glib-dev
+	graphene-dev
+	gtk4.0-dev
+	libadwaita-dev
+	libsoup3-dev
+	openssl-dev>3
+	pango-dev
+	pipewire-dev
+	pulseaudio-dev
+	"
+subpackages="$pkgname-doc"
+source="https://github.com/marin-m/songrec/archive/$pkgver/songrec-$pkgver.tar.gz"
+# net required to download Rust dependencies
+# no tests
+options="net !check"
+builddir="$srcdir/SongRec-$pkgver"
+
+prepare() {
+	default_prepare
+
+	cargo fetch --target="$CTARGET" --locked
+}
+
+build() {
+	cargo auditable build --release --frozen
+}
+
+check() {
+	cargo test --frozen
+}
+
+package() {
+	install -Dm755 target/release/songrec -t "$pkgdir"/usr/bin/
+	mv packaging/rootfs/usr/share "$pkgdir"/usr
+}
+
+sha512sums="
+9dcf0b5abcf5668c2db92cd32f0c3d0410c168bd423e2f3e6e28275c76cde93931494f5fd4953ebc46fe8c6d4ceaf9d541a4c5994fd1585b63a7aa78d94387f3  songrec-0.7.3.tar.gz
+"

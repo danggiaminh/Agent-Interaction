@@ -1,0 +1,29 @@
+# Contributor: Clayton Craft <clayton@craftyguy.net>
+# Maintainer: Clayton Craft <clayton@craftyguy.net>
+pkgname=unudhcpd
+pkgver=0.3.0
+pkgrel=0
+pkgdesc="extremely basic DHCP server that only issues 1 IP address to any client"
+url="https://gitlab.postmarketos.org/postmarketOS/unudhcpd"
+arch="all"
+license="GPL-3.0-or-later"
+makedepends="meson"
+subpackages="$pkgname-openrc $pkgname-systemd"
+source="https://gitlab.postmarketos.org/postmarketOS/unudhcpd/-/archive/$pkgver/unudhcpd-$pkgver.tar.gz"
+
+build() {
+	abuild-meson output
+	meson compile -C output
+}
+
+check() {
+	meson test --print-errorlogs -C output
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
+}
+
+sha512sums="
+27b9c39313f6738ff59da5210e3e37a70481b7ac5146cd01287a035456e7ae116223145390addab133debfbe48977e8de5c024c6b40e41e8b9e5c8d62b4d4570  unudhcpd-0.3.0.tar.gz
+"

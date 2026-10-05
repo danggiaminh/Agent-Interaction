@@ -1,0 +1,58 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-other
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=marknote
+pkgver=1.5.2
+pkgrel=0
+pkgdesc="A simple markdown note management app"
+# armhf blocked by qt6-qtdeclarative
+arch="all !armhf"
+url="https://apps.kde.org/marknote/"
+license="GPL-3.0-or-later AND CC0-1.0"
+depends="
+	kirigami
+	kirigami-addons
+	kitemmodels
+	qqc2-desktop-style
+	"
+makedepends="
+	extra-cmake-modules
+	kcolorscheme-dev
+	kconfig-dev
+	kcoreaddons-dev
+	ki18n-dev
+	kirigami-addons-dev
+	kirigami-dev
+	kmime-dev
+	knotifications-dev
+	kxmlgui-dev
+	qt6-qtbase-dev
+	qt6-qtdeclarative-dev
+	qt6-qtdeclarative-private-dev
+	qt6-qtsvg-dev
+	samurai
+	"
+subpackages="$pkgname-lang"
+_repo_url="https://invent.kde.org/office/marknote.git"
+source="https://download.kde.org/stable/marknote/marknote-$pkgver.tar.xz"
+options="!check" # No tests
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+}
+
+check() {
+	ctest --test-dir build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+7651d0fb53b02b982d70b529809d8a94e3eb6e2b4c35245c195cbc9c6aeb78bd68b421b93f80d132e8772454c54cb89aa6b81c83a3d12287ed6c7d11f88f5578  marknote-1.5.2.tar.xz
+"

@@ -1,0 +1,83 @@
+# Maintainer: Natanael Copa <ncopa@alpinelinux.org>
+pkgname=apr-util
+pkgver=1.6.4
+pkgrel=0
+pkgdesc="The Apache Portable Runtime Utility Library"
+url="https://apr.apache.org/"
+arch="all"
+license="Apache-2.0"
+subpackages="
+	$pkgname-dev
+	$pkgname-dbd_pgsql
+	$pkgname-dbd_mysql
+	$pkgname-dbd_sqlite3
+	$pkgname-dbm_gdbm
+	$pkgname-ldap
+	"
+depends_dev="
+	expat-dev
+	gdbm-dev
+	libpq-dev
+	mariadb-dev
+	openldap-dev
+	openssl-dev>3
+	sqlite-dev
+	"
+makedepends="$depends_dev apr-dev bash chrpath openssl>3"
+source="https://www.apache.org/dist/apr/apr-util-$pkgver.tar.bz2
+	musl-fix-testsuite.patch"
+
+# secfixes:
+#   1.6.4-r0:
+#     - CVE-2025-49506
+#     - CVE-2026-32327
+#     - CVE-2026-34191
+#     - CVE-2026-34501
+#     - CVE-2026-34502
+#   1.6.3-r0:
+#     - CVE-2022-25147
+
+build() {
+	./configure \
+		--build=$CBUILD \
+		--host=$CHOST \
+		--prefix=/usr \
+		--with-apr=/usr \
+		--with-ldap \
+		--with-pgsql \
+		--with-mysql \
+		--with-sqlite3 \
+		--with-crypto \
+		--with-openssl \
+		--without-sqlite2 \
+		--with-dbm=gdbm \
+		--with-gdbm
+	make
+}
+
+check() {
+	make -j1 check
+}
+
+package() {
+	make DESTDIR="$pkgdir" install
+	rm "$pkgdir"/usr/lib/*.exp
+	chrpath -d "$pkgdir"/usr/lib/*.so.*
+}
+
+_mv_mod() {
+	pkgdesc="The Apache Portable Runtime Utility Library - $2 driver"
+	depends=
+	amove usr/lib/apr-util-1/apr_$1*.so
+}
+
+dbd_pgsql() { _mv_mod dbd_pgsql "PostgreSQL"; }
+dbd_mysql() { _mv_mod dbd_mysql "MySQL"; }
+dbd_sqlite3() { _mv_mod dbd_sqlite "SQLite3"; }
+dbm_gdbm() { _mv_mod dbm_gdbm "GNU dbm"; }
+ldap() { _mv_mod ldap "LDAP"; }
+
+sha512sums="
+e3adaaa13c48a7394ed56f29b5543f247241487bb47fe4863bd097ba51a10bce650878b3554ceff7cd0af6ad1b09484b5c12c99bec1bb7679398a23179dd11ff  apr-util-1.6.4.tar.bz2
+a29ba512a7984495fdd352cbd40c27bae89f54596ff50929e3f88e22e78c27c53e056ba90a407bb4afa69a3f9d13f56ae48e7a0edeea386d587b58fe134cb73e  musl-fix-testsuite.patch
+"

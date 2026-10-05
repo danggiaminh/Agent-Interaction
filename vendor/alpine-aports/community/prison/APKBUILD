@@ -1,0 +1,62 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-frameworks
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=prison
+pkgver=6.26.0
+pkgrel=0
+pkgdesc="A barcode API to produce QRCode barcodes and DataMatrix barcodes"
+# armhf blocked by qt6-qtdeclarative
+arch="all !armhf"
+url="https://community.kde.org/Frameworks"
+license="MIT"
+depends_dev="
+	libdmtx-dev
+	qt6-qtbase-dev
+	qt6-qtdeclarative-dev
+	qt6-qtmultimedia-dev
+	zxing-cpp-dev
+	"
+makedepends="$depends_dev
+	doxygen
+	extra-cmake-modules
+	kde-qdoc-common
+	libqrencode-dev
+	qt6-qtdeclarative-private-dev
+	qt6-qttools-dev
+	samurai
+	"
+subpackages="$pkgname-dev $pkgname-doc"
+_repo_url="https://invent.kde.org/frameworks/prison.git"
+source="https://download.kde.org/stable/frameworks/${pkgver%.*}/prison-$pkgver.tar.xz"
+
+build() {
+	export KDE_DOCS=/usr/share/kde/documentation
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+
+	cmake --build build --target prepare_docs
+	cmake --build build --target generate_docs
+	cmake --build build --target generate_qch
+}
+
+check() {
+	# prison-datamatrixtest and prison-qrtest are broken on s390x
+	case "$CARCH" in
+		s390x) ctest --test-dir build -E "prison-(datamatrix|qr)test" ;;
+		*) ctest --test-dir build ;;
+	esac
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+
+	DESTDIR="$pkgdir" cmake --build build --target install_html_docs
+	DESTDIR="$pkgdir" cmake --build build --target install_qch_docs
+}
+
+sha512sums="
+5dcbc1920209d85c135741d2906a24121bec05203df011a55b1443160aa08455740e497485b6b303c6737ea0d8e71063467be08596033cba152aa38dc7de5ad5  prison-6.26.0.tar.xz
+"

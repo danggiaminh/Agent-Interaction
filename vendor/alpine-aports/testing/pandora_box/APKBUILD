@@ -1,0 +1,33 @@
+# Contributor: Robin Candau <robincandau@protonmail.com>
+# Maintainer: Robin Candau <robincandau@protonmail.com>
+pkgname=pandora_box
+_pkgname=pandora
+pkgver=0.21.1
+pkgrel=0
+pkgdesc="A log inspector & profile writer for sydbox"
+url="https://gitlab.exherbo.org/sydbox/sydbox/-/tree/main/pandora"
+# s390x: limited by sydbox
+arch="all !s390x"
+license="GPL-3.0-only"
+depends="sydbox"
+makedepends="cargo cargo-auditable"
+source="$pkgname-$pkgver.tar.gz::https://gitlab.exherbo.org/sydbox/sydbox/-/archive/pandora-$pkgver/sydbox-pandora-$pkgver.tar.gz"
+builddir="$srcdir/sydbox-$_pkgname-$pkgver/$_pkgname"
+options="net !check" # cargo crates, no test suite
+
+prepare() {
+	default_prepare
+	cargo fetch --locked --target="$CTARGET"
+}
+
+build() {
+	cargo auditable build --release --locked
+}
+
+package() {
+	install -Dm 755 "$srcdir/sydbox-$_pkgname-$pkgver/target/release/$_pkgname" "$pkgdir/usr/bin/$_pkgname"
+}
+
+sha512sums="
+2af6db3f62e3037d91d39d98bdf74ab07bc7ba7c2e5303856f2fc3fb7e4521d0c1e613b104800fa5bc7d8da2d087740400cc0ccac708072575000666a7a7aa1c  pandora_box-0.21.1.tar.gz
+"

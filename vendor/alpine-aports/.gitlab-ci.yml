@@ -1,0 +1,161 @@
+stages:
+  - verify
+  - trigger
+
+variables:
+  GIT_STRATEGY: clone
+  GIT_DEPTH: "500"
+  REGISTRY: registry.alpinelinux.org
+
+.k8s-limits-small-job:
+  variables:
+    KUBERNETES_CPU_REQUEST: 2
+    KUBERNETES_MEMORY_REQUEST: 256Mi
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "pipeline" || $CI_PIPELINE_SOURCE == "parent_pipeline"
+    - if: $CI_COMMIT_TAG
+
+lint:
+  extends: [.k8s-limits-small-job]
+  stage: verify
+  image: $REGISTRY/alpine/infra/docker/apkbuild-lint-tools:latest
+  interruptible: true
+  script:
+    - lint
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  tags:
+    - docker-alpine
+    - ci-fast
+
+generate-build-jobs:
+  extends: [.k8s-limits-small-job]
+  stage: verify
+  image:
+    name: $REGISTRY/alpine/infra/docker/alpine-gitlab-ci:latest
+  script:
+    - pipeline generate .gitlab-ci.yml .gitlab/job-config.yaml >.gitlab/build-jobs.yaml
+  artifacts:
+    paths:
+      - .gitlab/build-jobs.yaml
+  tags:
+    - docker-alpine
+    - ci-fast
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+build-jobs:
+  stage: verify
+  needs:
+    - generate-build-jobs
+  trigger:
+    include:
+      - artifact: .gitlab/build-jobs.yaml
+        job: generate-build-jobs
+    strategy: depend
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+.build:
+  stage: verify
+  image:
+    name: $REGISTRY/alpine/infra/docker/alpine-gitlab-ci:latest
+  interruptible: true
+  script:
+    - build.sh
+  artifacts:
+    paths:
+      - packages/
+      - keys/
+      - logs/
+    expire_in: 1 day
+    when: always
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "parent_pipeline"
+
+build-x86_64:
+  extends: .build
+  artifacts:
+    name: MR${CI_MERGE_REQUEST_ID}_x86_64
+  tags:
+    - ci-build
+    - x86_64
+
+build-x86:
+  extends: .build
+  image:
+    name: $REGISTRY/alpine/infra/docker/alpine-gitlab-ci:latest-x86
+    entrypoint: ["linux32", "sh", "-c"]
+  artifacts:
+    name: MR${CI_MERGE_REQUEST_ID}_x86
+  tags:
+    - ci-build
+    - x86
+
+build-s390x:
+  extends: .build
+  artifacts:
+    name: MR${CI_MERGE_REQUEST_ID}_s390x
+  tags:
+    - ci-build
+    - s390x
+
+build-ppc64le:
+  extends: .build
+  artifacts:
+    name: MR${CI_MERGE_REQUEST_ID}_ppc64le
+  tags:
+    - ci-build
+    - ppc64le
+
+build-aarch64:
+  extends: .build
+  artifacts:
+    name: MR${CI_MERGE_REQUEST_ID}_aarch64
+  tags:
+    - ci-build
+    - aarch64
+
+build-armv7:
+  extends: .build
+  image:
+    entrypoint: ["linux32", "sh", "-c"]
+    docker:
+      platform: linux/arm/v7
+  artifacts:
+    name: MR${CI_MERGE_REQUEST_ID}_armv7
+  tags:
+    - ci-build
+    - armv7
+
+build-armhf:
+  extends: .build
+  image:
+    entrypoint: ["linux32", "sh", "-c"]
+    docker:
+      platform: linux/arm/v6
+  artifacts:
+    name: MR${CI_MERGE_REQUEST_ID}_armhf
+  tags:
+    - ci-build
+    - armhf
+
+build-riscv64:
+  extends: .build
+  artifacts:
+    name: MR${CI_MERGE_REQUEST_ID}_riscv64
+  tags:
+    - ci-build
+    - riscv64
+
+build-loongarch64:
+  extends: .build
+  artifacts:
+    name: MR${CI_MERGE_REQUEST_ID}_loongarch64
+  tags:
+    - ci-build
+    - loongarch64

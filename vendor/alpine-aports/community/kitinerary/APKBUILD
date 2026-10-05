@@ -1,0 +1,55 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-applications
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=kitinerary
+pkgver=26.04.2
+pkgrel=0
+# armhf blocked by qt6-qtdeclarative
+arch="all !armhf"
+url="https://kontact.kde.org/"
+pkgdesc="Data model and extraction system for travel reservation information"
+license="LGPL-2.0-or-later"
+depends_dev="
+	kcalendarcore-dev
+	kcontacts-dev
+	kmime-dev
+	kpkpass-dev
+	libphonenumber-dev
+	zxing-cpp-dev
+	"
+makedepends="$depends_dev
+	extra-cmake-modules
+	ki18n-dev
+	libxml2-dev
+	poppler-dev
+	qt6-qtbase-dev
+	qt6-qtdeclarative-dev
+	samurai
+	shared-mime-info
+	zlib-dev
+	"
+subpackages="$pkgname-dev $pkgname-lang"
+_repo_url="https://invent.kde.org/pim/kitinerary.git"
+source="https://download.kde.org/stable/release-service/$pkgver/src/kitinerary-$pkgver.tar.xz"
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib \
+		-DBUILD_TESTING=ON
+	cmake --build build
+}
+
+check() {
+	# extractortest fails, we're talking with upstream about it
+	ctest --test-dir build -E "extractortest"
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+7d90ddc6fd77f1fdfc345e4a1db196d7bc72ab3b6353e2230b2fbbcbe4d0f6b4898cacc7d807d0ef92721c69ab99642a4321bcb9a564d39e8503ed61db93346c  kitinerary-26.04.2.tar.xz
+"

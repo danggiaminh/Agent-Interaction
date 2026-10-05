@@ -1,0 +1,50 @@
+# Contributor: Iskren Chernev <me@iskren.info>
+# Maintainer: Iskren Chernev <me@iskren.info>
+pkgname=py3-dt-schema
+pkgver=2025.12
+pkgrel=1
+pkgdesc="Devicetree schema tools"
+url="https://github.com/devicetree-org/dt-schema"
+arch="noarch"
+license="BSD-2-Clause"
+depends="python3 py3-ruamel.yaml py3-jsonschema py3-rfc3987 py3-libfdt"
+makedepends="py3-setuptools py3-setuptools_scm py3-wheel py3-gpep517 py3-installer"
+checkdepends="dtc"
+subpackages="$pkgname-pyc"
+source="dt-schema-$pkgver.tar.gz::https://github.com/devicetree-org/dt-schema/archive/v$pkgver.tar.gz"
+builddir="$srcdir/dt-schema-$pkgver"
+options="net"
+
+prepare() {
+	default_prepare
+	# The project uses setuptools_scm, which handles adding the schema
+	# files to the package, but there is no SCM here..
+	{
+		echo '[tools.setuptools.package.find]'
+		echo 'where=["."]'
+	} >> pyproject.toml
+	echo "recursive-include dtschema/*schemas *.yaml" > MANIFEST.in
+}
+
+build() {
+	SETUPTOOLS_SCM_PRETEND_VERSION="$pkgver" \
+		gpep517 build-wheel \
+		--wheel-dir .dist \
+		--output-fd 3 3>&1 >&2
+}
+
+check() {
+	python3 -m venv --clear --without-pip --system-site-packages .testenv
+	.testenv/bin/python3 -m installer .dist/*.whl
+	.testenv/bin/python3 test/test-dt-validate.py
+}
+
+package() {
+	SETUPTOOLS_SCM_PRETEND_VERSION="$pkgver" \
+		python3 -m installer -d "$pkgdir" \
+		.dist/dtschema-*-py3-none-any.whl
+}
+
+sha512sums="
+eff074caa5104f31c2f0ade355671831a2600637d5b0bcb6319107ee7e851f5f4528fb7018f33665aeb118ccd4e33f652bdaee2ad55f8f16c6d65625b67a0eb0  dt-schema-2025.12.tar.gz
+"

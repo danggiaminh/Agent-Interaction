@@ -1,0 +1,58 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-frameworks
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=syndication
+pkgver=6.26.0
+pkgrel=0
+pkgdesc="An RSS/Atom parser library"
+arch="all"
+url="https://community.kde.org/Frameworks"
+license="LGPL-2.0-or-later AND BSD-3-Clause"
+depends_dev="
+	kcodecs-dev
+	qt6-qtbase-dev
+	"
+makedepends="$depends_dev
+	extra-cmake-modules
+	doxygen
+	graphviz
+	kde-qdoc-common
+	qt6-qttools-dev
+	samurai
+	"
+subpackages="$pkgname-dev"
+_repo_url="https://invent.kde.org/frameworks/syndication.git"
+source="syndication-$pkgver.tar.xz::https://download.kde.org/stable/frameworks/${pkgver%.*}/syndication-$pkgver.tar.xz"
+case "$CARCH" in
+	armhf) ;;
+	*) subpackages="$subpackages $pkgname-doc" ;;
+esac
+
+build() {
+	export KDE_DOCS=/usr/share/kde/documentation
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib \
+		-DBUILD_QCH=ON
+	cmake --build build
+
+	cmake --build build --target prepare_docs
+	cmake --build build --target generate_docs
+	cmake --build build --target generate_qch
+}
+
+check() {
+	ctest --test-dir build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+
+	DESTDIR="$pkgdir" cmake --build build --target install_html_docs
+	DESTDIR="$pkgdir" cmake --build build --target install_qch_docs
+}
+
+sha512sums="
+e3b663e1300d23ce4b3b1d22e5662584e8feeab22777aba132b35a592bcb0fed292f7e660dd90abf6ddc698d3f67da451d59cae1420731cc042509f0cd11fe85  syndication-6.26.0.tar.xz
+"

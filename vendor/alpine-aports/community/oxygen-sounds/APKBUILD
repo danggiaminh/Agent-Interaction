@@ -1,0 +1,40 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-plasma
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=oxygen-sounds
+pkgver=6.6.6
+pkgrel=0
+pkgdesc="The Oxygen Sound Theme"
+arch="noarch"
+url="https://kde.org/plasma-desktop/"
+license="GPL-2.0-or-later"
+makedepends="
+	extra-cmake-modules
+	qt6-qtbase-dev
+	samurai
+	"
+
+case "$pkgver" in
+	*.*.9*) _rel=unstable;;
+	*) _rel=stable;;
+esac
+
+_repo_url="https://invent.kde.org/plasma/oxygen-sounds.git"
+source="https://download.kde.org/$_rel/plasma/$pkgver/oxygen-sounds-$pkgver.tar.xz"
+options="!check" # No tests
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+1952a2f11b777d6fecea2133b09354dd8dd859c0c27bd327684dcf9226ac6c711501b4c64335e27243812c4a3484e05d249629e7c0d20bb0723f6da2add8ae74  oxygen-sounds-6.6.6.tar.xz
+"

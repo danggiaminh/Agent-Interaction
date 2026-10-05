@@ -1,0 +1,44 @@
+# Contributor: Sören Tempel <soeren+alpine@soeren-tempel.net>
+# Contributor: Carlo Landmeter <clandmeter@alpinelinux.org>
+# Maintainer: mio <miyopan@e.email>
+maintainer="mio <miyopan@e.email>"
+pkgname=htop
+pkgver=3.5.3
+pkgrel=0
+pkgdesc="Interactive process viewer"
+url="https://htop.dev/"
+arch="all"
+license="GPL-2.0-or-later"
+# lsof is needed for the "open files" screen (keybinding: l).
+# Without this dependency, this screen doesn't emit an error
+# as busybox provides lsof but its output format is incompatible.
+depends="lsof"
+makedepends="ncurses-dev linux-headers lm-sensors-dev"
+subpackages="$pkgname-doc"
+source="https://github.com/htop-dev/htop/releases/download/$pkgver/htop-$pkgver.tar.xz"
+options="!check" # no upstream/available test-suite
+
+# secfixes:
+#   3.5.3-r0:
+#     - CVE-2024-37676
+
+build() {
+	./configure \
+		--build=$CBUILD \
+		--host=$CHOST \
+		--prefix=/usr \
+		--sysconfdir=/etc \
+		--mandir=/usr/share/man \
+		--localstatedir=/var \
+		--enable-cgroup \
+		--enable-taskstats
+	make
+}
+
+package() {
+	make DESTDIR="$pkgdir" pixmapdir=/usr/share/icons/hicolor/128x128/apps install
+}
+
+sha512sums="
+54def5519eb63493740542012f29d3e9f31d58d9438fae63ac59cfb2d9bcab2139505130466ccdf4447217f0ac076234ef4e1c4eb760a502ee1aa5fedf02cb19  htop-3.5.3.tar.xz
+"

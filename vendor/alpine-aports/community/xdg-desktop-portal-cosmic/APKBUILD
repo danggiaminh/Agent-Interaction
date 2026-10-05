@@ -1,0 +1,55 @@
+# Contributor: Clayton Craft <clayton@craftyguy.net>
+# Maintainer: Clayton Craft <clayton@craftyguy.net>
+pkgname=xdg-desktop-portal-cosmic
+pkgver=1.0.15
+_upstreamver="${pkgver/_beta/-beta.}"
+_upstreamver="${_upstreamver/_p/.}"
+pkgrel=0
+pkgdesc="xdg-desktop-portal implementation for the COSMIC Desktop Environment"
+url="https://github.com/pop-os/xdg-desktop-portal-cosmic"
+# 32-bit: mismatched types in compio-driver-0.9.0 crate
+# s390x: nix
+# riscv64: too slow to build
+arch="all !armhf !armv7 !x86 !s390x !riscv64"
+license="GPL-3.0-only"
+depends="
+	cosmic-icons
+	xdg-desktop-portal
+"
+makedepends="
+	cargo-auditable
+	clang-libclang
+	findutils
+	glib-dev
+	gstreamer-dev
+	libxkbcommon-dev
+	mesa-dev
+	pipewire-dev
+	wayland-dev
+	xdg-desktop-portal-dev
+"
+options="net !check"  # fetch dependencies, no tests
+subpackages="$pkgname-systemd"
+source="$pkgname-$pkgver.tar.gz::https://github.com/pop-os/xdg-desktop-portal-cosmic/archive/refs/tags/epoch-$_upstreamver.tar.gz"
+builddir="$srcdir/$pkgname-epoch-$_upstreamver"
+
+prepare() {
+	default_prepare
+	cargo fetch --target="$CHOST" --locked
+}
+
+build() {
+	cargo auditable build --release --frozen
+}
+
+check() {
+	cargo test --frozen
+}
+
+package() {
+	make prefix="/usr" DESTDIR="$pkgdir" install
+}
+
+sha512sums="
+34fa159b652bd3a5dd2e734c8d54d4e45d0a20f545751e25cf656aa066d5362a4ace8ca81c354e6ad0a21d19bf573a0af91d8fa8458b23d9a0472cc21ceaa529  xdg-desktop-portal-cosmic-1.0.15.tar.gz
+"

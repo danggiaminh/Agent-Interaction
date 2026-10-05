@@ -1,0 +1,84 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-other
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=ktextaddons
+pkgver=2.0.2
+pkgrel=0
+pkgdesc="Various text handling addons"
+# armhf blocked by qt6-qtdeclarative -> syntax-highlighting
+arch="all !armhf"
+url="https://invent.kde.org/libraries/ktextaddons/"
+license="LGPL-2.0-or-later AND GPL-2.0-or-later"
+depends_dev="
+	karchive-dev
+	kconfigwidgets-dev
+	kcoreaddons-dev
+	ki18n-dev
+	kio-dev
+	kxmlgui-dev
+	qt6-qtbase-dev
+	qtkeychain-dev
+	syntax-highlighting-dev
+	"
+makedepends="$depends_dev
+	doxygen
+	extra-cmake-modules
+	graphviz
+	kde-qdoc-common
+	samurai
+	"
+checkdepends="xwayland-run"
+subpackages="
+	$pkgname-dev
+	$pkgname-lang
+	"
+_repo_url="https://invent.kde.org/libraries/ktextaddons.git"
+source="https://download.kde.org/stable/ktextaddons/ktextaddons-$pkgver.tar.xz"
+
+build() {
+	export KDE_DOCS=/usr/share/kde/documentation
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib \
+		-DBUILD_DESIGNERPLUGIN=ON
+	cmake --build build
+
+	#cmake --build build --target prepare_docs
+	#cmake --build build --target generate_docs
+	#cmake --build build --target generate_qch
+}
+
+check() {
+	local skipped_tests="(languagetoolconfigwidget"
+	local tests="
+		grammalecte(resultwidget|resultjob|configwidget)
+		translator-translator(widget|engineloader)
+		textgotolinewidget
+		"
+	case "$CARCH" in
+		arm*|x86) tests="$tests
+			textautogenerate-core-textautogenerateattachments
+			textautogenerate-core-textautogeneratechat
+			textautogenerate-core-textautogeneratemessage
+			"
+		;;
+	esac
+
+	for test in $tests; do
+		skipped_tests="$skipped_tests|$test"
+	done
+
+	skipped_tests="$skipped_tests)test"
+	wlheadless-run -- ctest --test-dir build -E "$skipped_tests"
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+
+	#DESTDIR="$pkgdir" cmake --build build --target install_html_docs
+	#DESTDIR="$pkgdir" cmake --build build --target install_qch_docs
+}
+sha512sums="
+310942b5eb982a6021beb90cea0773aee1ec2b333e08efa1f85177fa23c2d5631c44db80a7e1645f485fa63b85d5943c3908a1265a668ea0f2f1ee3c621b94de  ktextaddons-2.0.2.tar.xz
+"

@@ -1,0 +1,55 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-frameworks
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=kcolorscheme
+pkgver=6.26.0
+pkgrel=0
+pkgdesc="Classes to read and interact with KColorScheme"
+# armhf blocked by qt6-qtdeclarative -> ki18n
+arch="all !armhf"
+url="https://community.kde.org/Frameworks"
+license="LGPL-2.0-or-later AND LGPL-2.0-only AND LGPL-2.1-or-later"
+makedepends="
+	doxygen
+	extra-cmake-modules
+	graphviz
+	kconfig-dev
+	kde-qdoc-common
+	kguiaddons-dev
+	ki18n-dev
+	qt6-qtbase-dev
+	qt6-qttools-dev
+	samurai
+	"
+checkdepends="xwayland-run"
+subpackages="$pkgname-dev $pkgname-doc $pkgname-lang"
+_repo_url="https://invent.kde.org/frameworks/kcolorscheme.git"
+source="https://download.kde.org/stable/frameworks/${pkgver%.*}/kcolorscheme-$pkgver.tar.xz"
+options="!check" # Only test segfaults
+
+build() {
+	export KDE_DOCS=/usr/share/kde/documentation
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+
+	cmake --build build --target prepare_docs
+	cmake --build build --target generate_docs
+	cmake --build build --target generate_qch
+}
+
+check() {
+	wlheadless-run -- ctest --test-dir build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+
+	DESTDIR="$pkgdir" cmake --build build --target install_html_docs
+	DESTDIR="$pkgdir" cmake --build build --target install_qch_docs
+}
+sha512sums="
+b11dd51ffdc10a76476052c69927187620ada4152a0d40a2c19c5d6d82300cad81917c6e64917634ec3eede737150761b6c929a1c20da55e4261d89a0b19fde9  kcolorscheme-6.26.0.tar.xz
+"

@@ -1,0 +1,48 @@
+# Contributor: knuxify <knuxify@gmail.com>
+# Maintainer: knuxify <knuxify@gmail.com>
+pkgname=blackbox-terminal
+pkgver=0.14.0
+pkgrel=1
+pkgdesc="A beautiful GTK 4 terminal"
+url="https://gitlab.gnome.org/raggesilver/blackbox"
+arch="all"
+license="GPL-3.0-or-later"
+makedepends="
+	desktop-file-utils
+	glib-dev
+	gtk4.0-dev
+	json-glib-dev
+	libadwaita-dev
+	libgee-dev
+	librsvg-dev
+	meson
+	pqmarble-dev
+	vala
+	vte3-dev
+	"
+subpackages="$pkgname-lang $pkgname-dbg"
+source="https://gitlab.gnome.org/raggesilver/blackbox/-/archive/v$pkgver/blackbox-v$pkgver.tar.gz
+	gcc14.patch
+	"
+builddir="$srcdir/blackbox-v$pkgver"
+
+build() {
+	abuild-meson \
+		-Db_lto=true \
+		-Dblackbox_is_flatpak=false \
+		. output
+	meson compile -C output
+}
+
+check() {
+	meson test --print-errorlogs -C output
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
+}
+
+sha512sums="
+aec6c4f553e13cd732befb3a61236ad67cf610b5a85e280107cbf0c17fdc7c139bb66d22eb24eeeef71f496ae228b44d4bfbaa1376e82b1e16beb91740ad556c  blackbox-v0.14.0.tar.gz
+3bf2d8a1752f107734f9af40a125f17218076b8614c6c5c51c75d272e2e03193b0f747aded6ec1576eb0dbd1c89913eaca07108cdba889fe8138f33e1b41643a  gcc14.patch
+"

@@ -1,0 +1,36 @@
+# Contributor: Milan P. Stanić <mps@arvanta.net>
+# Maintainer: Milan P. Stanić <mps@arvanta.net>
+pkgname=asahi-audio
+pkgver=3.4
+pkgrel=1
+pkgdesc="userspace audio configuration for Apple Silicon Macs"
+url="https://github.com/AsahiLinux/asahi-audio"
+arch="aarch64" # only needed for asahi/aarch64 on apple silicon
+license="MIT"
+options="!check"
+depends="
+	bankstown-lv2
+	lsp-plugins-lv2
+	pipewire
+	pipewire-alsa
+	pipewire-pulse
+	pipewire-filter-graph
+	pipewire-filter-graph-builtin
+	pipewire-filter-graph-lv2
+	pipewire-udev
+	speakersafetyd
+	wireplumber
+	"
+source="$pkgname-$pkgver.tar.gz::https://github.com/AsahiLinux/asahi-audio/archive/refs/tags/v$pkgver.tar.gz"
+
+build() {
+	make
+}
+
+package() {
+	make DESTDIR=$pkgdir install
+}
+
+sha512sums="
+d7c9d32ad520bf48f267c6b26d103e730d8b952ba1eb6518ba976090b8f773edc43024ebf3282dcab6d9753f4afc848783a362cb699885d961625fa017f55be5  asahi-audio-3.4.tar.gz
+"

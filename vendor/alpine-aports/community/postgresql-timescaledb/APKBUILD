@@ -1,0 +1,62 @@
+# Contributor: wener <wenermail@gmail.com>
+# Contributor: Jakub Jirutka <jakub@jirutka.cz>
+# Maintainer: wener <wenermail@gmail.com>
+pkgname=postgresql-timescaledb
+pkgver=2.25.2
+pkgrel=0
+pkgdesc="PostgreSQL extension for time‑series data"
+url="https://github.com/timescale/timescaledb"
+arch="all"
+license="Apache-2.0"
+provides="timescaledb=$pkgver-r$pkgrel"  # for backward compatibility
+makedepends="
+	bash
+	cmake
+	openssl-dev>3
+	perl-ipc-run
+	perl-utils
+	postgresql
+	postgresql-dev
+	samurai
+	"
+source="https://github.com/timescale/timescaledb/archive/$pkgver/postgresql-timescaledb-$pkgver.tar.gz
+	fix-build.patch
+	"
+builddir="$srcdir/timescaledb-$pkgver"
+options="!check"  # FIXME: see comment on REGRESS_CHECKS=OFF below
+
+# secfixes:
+#   2.9.3-r0:
+#     - CVE-2023-25149
+
+export USE_PGXS=1
+
+build() {
+	# REGRESS_CHECKS=OFF - disable regress test
+	#   regress need https://github.com/timescale/timescaledb/blob/master/test/pg_isolation_regress.sh
+	#   which need to compile pg - https://github.com/timescale/timescaledb/issues/1655#issuecomment-578683986
+	# APACHE_ONLY - we cannot provide non-free software in Alpine repos
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_VERBOSE_MAKEFILE=ON \
+		-DREGRESS_CHECKS="$(want_check && echo ON || echo OFF)" \
+		-DTAP_CHECKS="$(want_check && echo ON || echo OFF)" \
+		-DAPACHE_ONLY=ON
+	cmake --build build
+}
+
+check() {
+	cmake --build build --target test
+}
+
+package() {
+	depends="postgresql$(pg_config --major-version)"
+
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+c4a3c6feb49a71dc373fa19316d617c442dfcd94ed2284a9f43bf845dac1a2e6e754dfb50072c80b57e3f986298a25a3d0631b2883465f7b1857f9ee670d36ae  postgresql-timescaledb-2.25.2.tar.gz
+fe542830c3aad330c6c1da6e83cc308d749787f7ef7bb23eec7e834f1264aa2ca93b9e272f34c92b42dbb5ca9ea93e311831dd5910d6ac8e9afbc92725439eaf  fix-build.patch
+"

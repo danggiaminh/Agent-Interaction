@@ -1,0 +1,60 @@
+# Contributor: Rasmus Thomsen <oss@cogitri.dev>
+maintainer="team/gnome <achill@achill.org>"
+pkgname=gnome-music
+pkgver=49.1
+pkgrel=2
+pkgdesc="Play and organize your music collection"
+url="https://apps.gnome.org/Music"
+arch="noarch"
+license="GPL-2.0-or-later"
+depends="
+	gnome-online-accounts
+	grilo
+	grilo-plugins
+	gst-plugins-good
+	libdazzle
+	libmediaart
+	libsoup3
+	py3-cairo
+	py3-gobject3
+	tinysparql
+	localsearch
+	"
+makedepends="
+	desktop-file-utils
+	gnome-online-accounts-dev
+	gobject-introspection-dev
+	grilo-dev
+	grilo-plugins-dev
+	gtk4.0-dev
+	itstool
+	libadwaita-dev
+	libmediaart-dev
+	libsoup3-dev
+	meson
+	py3-cairo-dev
+	py3-gobject3-dev
+	tinysparql-dev
+	"
+checkdepends="
+	appstream-glib
+	"
+subpackages="$pkgname-lang $pkgname-doc $pkgname-pyc"
+source="https://download.gnome.org/sources/gnome-music/${pkgver%%.*}/gnome-music-$pkgver.tar.xz"
+
+build() {
+	abuild-meson . output
+	meson compile -C output
+}
+
+check() {
+	meson test --print-errorlogs -C output
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
+}
+
+sha512sums="
+9b553bbabcf98fb60cfea709bf3da4ccf318ba9b1ef59ef384f22c24794044fb59de6c791c7aaf348f96ae086f52f8583d4764ac26510b6761f050974810a614  gnome-music-49.1.tar.xz
+"

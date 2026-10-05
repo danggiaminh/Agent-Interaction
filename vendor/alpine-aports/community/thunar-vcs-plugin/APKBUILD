@@ -1,0 +1,58 @@
+# Maintainer: Natanael Copa <ncopa@alpinelinux.org>
+pkgname=thunar-vcs-plugin
+pkgver=0.3.0
+pkgrel=0
+pkgdesc="Version Contol System plugin for the Thunar filemanager"
+url="https://docs.xfce.org/xfce/thunar/thunar-vcs-plugin"
+arch="all"
+license="GPL-2.0-or-later"
+options="!check" # no test suite
+makedepends="thunar-dev subversion-dev apr-dev apr-util-dev util-linux-dev"
+subpackages="$pkgname-git:_git $pkgname-svn:_svn $pkgname-lang"
+source="https://archive.xfce.org/src/thunar-plugins/thunar-vcs-plugin/${pkgver%.*}/thunar-vcs-plugin-$pkgver.tar.bz2"
+
+build() {
+	./configure \
+		--build=$CBUILD \
+		--host=$CHOST \
+		--prefix=/usr \
+		--libexecdir=/usr/lib/xfce4 \
+		--disable-static \
+		--enable-subversion \
+		--enable-git
+	make
+}
+
+package() {
+	make DESTDIR="$pkgdir" install
+}
+
+_mv_files() {
+	local i
+	for i in "$@"; do
+		mkdir -p "$subpkgdir"/${i%/*}
+		mv "$pkgdir"/$i "$subpkgdir"/$i
+	done
+}
+
+_git() {
+	pkgdesc="Git support for thunar-vcs-plugin"
+	depends=""
+	install_if="$pkgname=$pkgver-r$pkgrel git"
+	cd "$pkgdir"
+	_mv_files usr/lib/xfce4/tvp-git-helper \
+		usr/share/icons/hicolor/*/apps/git.png
+}
+
+_svn() {
+	pkgdesc="Subversion support for thunar-vcs-plugin"
+	depends=""
+	install_if="$pkgname=$pkgver-r$pkgrel subversion"
+	cd "$pkgdir"
+	_mv_files usr/lib/xfce4/tvp-svn-helper \
+		usr/share/icons/hicolor/*/apps/subversion.png
+}
+
+sha512sums="
+81f9a545d55dc09f0008ab54b5a9edebd5d72526d18e78722df2b3ee2e475e453e9a4113cb2e87b64d74d8bc31d6e112a30b8077ad3ac485d0e810fb3a0d20e7  thunar-vcs-plugin-0.3.0.tar.bz2
+"

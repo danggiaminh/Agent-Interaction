@@ -1,0 +1,38 @@
+# Maintainer: Kevin Daudt <kdaudt@alpinelinux.org>
+pkgname=py3-flit-core
+pkgver=3.12.0
+pkgrel=1
+pkgdesc="simple packaging tool for simple packages (core)"
+url="https://flit.readthedocs.io/"
+arch="noarch"
+license="BSD-3-Clause"
+makedepends="py3-installer"
+checkdepends="py3-pytest py3-testpath"
+subpackages="$pkgname-pyc"
+source="https://files.pythonhosted.org/packages/source/f/flit/flit-$pkgver.tar.gz
+	vendor-licenses.patch"
+builddir="$srcdir/flit-$pkgver/flit_core"
+options="!check" # py3-testpath depends on this
+
+# split from py3-flit, allow replacing files
+replaces="py3-flit<3.5.1-r3"
+
+build() {
+	# don't need this with py3.11 for tomli
+	rm -rf flit_core/vendor/
+	python3 build_dists.py
+}
+
+check() {
+	python3 -m pytest
+}
+
+package() {
+	python3 -m installer -d "$pkgdir" \
+		dist/flit_core-$pkgver-py3-none-any.whl
+}
+
+sha512sums="
+f8ed1f0e53452def182453db91a44c9ded5413fe74e2678bb7d56b3640d6ba6f43cccb55ad73e939cc5ca236fa2bf7b3e0f6d77fe4a4f12f90a9e437b561edb2  flit-3.12.0.tar.gz
+37f5382e565752e27fe27fb60c73dafe2ecae02a74fd3a48846885542e7209a2ee73c9a522e6cf9e494f7be7f50831b24218f0d4572242d722b74907657797ec  vendor-licenses.patch
+"

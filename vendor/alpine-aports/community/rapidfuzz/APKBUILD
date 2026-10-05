@@ -1,0 +1,45 @@
+# Maintainer: Antoine Martin (ayakael) <dev@ayakael.net>
+pkgname=rapidfuzz
+pkgver=3.3.4
+pkgrel=0
+pkgdesc="Rapid fuzzy string matching in C++ using the Levenshtein Distance"
+url="https://github.com/maxbachmann/rapidfuzz-cpp"
+arch="all"
+license="MIT"
+makedepends="
+	cmake
+	samurai
+	"
+checkdepends="catch2-3"
+source="$pkgname-cpp-$pkgver.tar.gz::https://github.com/maxbachmann/rapidfuzz-cpp/archive/refs/tags/v$pkgver.tar.gz
+	cstdint.patch
+	"
+builddir="$srcdir/rapidfuzz-cpp-$pkgver"
+
+case "$CARCH" in
+x86)
+	# float rounding
+	options="!check"
+	;;
+esac
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DRAPIDFUZZ_BUILD_TESTING="$(want_check && echo ON || echo OFF)"
+	cmake --build build
+}
+
+check() {
+	ctest --test-dir build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+f20e3bc23cc51c89df5ac26f3ab43daed5a3715eda1c47db59c6460e6a97f7a6afe4aa1f6557192d3b7b6a4591631192fa61d77a991dbe3ea38b68b0391e544f  rapidfuzz-cpp-3.3.4.tar.gz
+216c5082498830d42d2eb14d3eba35dd08446008916c920db7b55eaf3dd2358f86a61c238315b85fefecf08b9e902dc4db172f91a8479cfd735e53c7b3e03bf5  cstdint.patch
+"

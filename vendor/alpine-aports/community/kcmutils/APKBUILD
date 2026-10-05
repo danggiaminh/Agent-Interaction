@@ -1,0 +1,68 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-frameworks
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=kcmutils
+pkgver=6.26.0
+pkgrel=0
+pkgdesc="Utilities for interacting with KCModules"
+# armhf blocked by qt6-qtdeclarative
+arch="all !armhf"
+url="https://community.kde.org/Frameworks"
+license="LGPL-2.1-only AND LGPL-2.1-or-later"
+depends_dev="
+	kconfigwidgets-dev
+	kcoreaddons-dev
+	kdeclarative-dev
+	ki18n-dev
+	kiconthemes-dev
+	kitemviews-dev
+	kservice-dev
+	kxmlgui-dev
+	"
+makedepends="$depends_dev
+	doxygen
+	extra-cmake-modules
+	kde-qdoc-common
+	qt6-qtdeclarative-private-dev
+	qt6-qttools-dev
+	samurai
+	"
+checkdepends="
+	kirigami
+	xwayland-run
+	"
+subpackages="$pkgname-dev $pkgname-doc $pkgname-lang"
+_repo_url="https://invent.kde.org/frameworks/kcmutils.git"
+source="https://download.kde.org/stable/frameworks/${pkgver%.*}/kcmutils-$pkgver.tar.xz"
+
+case "$CARCH" in
+	armhf) options="!check" ;; # No kirigami
+esac
+
+build() {
+	export KDE_DOCS=/usr/share/kde/documentation
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+
+	cmake --build build --target prepare_docs
+	cmake --build build --target generate_docs
+	cmake --build build --target generate_qch
+}
+
+check() {
+	wlheadless-run -- ctest --test-dir build -E "kcmultidialogtest"
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+
+	DESTDIR="$pkgdir" cmake --build build --target install_html_docs
+	DESTDIR="$pkgdir" cmake --build build --target install_qch_docs
+}
+
+sha512sums="
+b6bedf05106d9b53a755aa58afd425546ca3a9fc40e3ec7509f2657b82f39a30806bde3433d2dc8cd81815357d30244585d23d4792d5cba1c05a9d9918230350  kcmutils-6.26.0.tar.xz
+"

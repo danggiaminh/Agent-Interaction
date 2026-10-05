@@ -1,0 +1,54 @@
+maintainer="Bart Ribbers <bribbers@disroot.org>"
+pkgname=poco
+pkgver=1.15.1
+pkgrel=0
+pkgdesc="C++ class libraries for building network- and internet-based applications"
+url="https://pocoproject.org/"
+arch="all"
+license="BSL-1.0"
+depends_dev="
+	expat-dev
+	libpng-dev
+	libpq-dev
+	mariadb-connector-c-dev
+	openssl-dev
+	pcre2-dev
+	sqlite-dev
+	unixodbc-dev
+	zlib-dev
+	"
+makedepends="$depends_dev
+	chrpath
+	cmake
+	linux-headers
+	samurai
+	utf8proc-dev
+	"
+subpackages="
+	$pkgname-bin
+	$pkgname-dev
+	"
+source="https://pocoproject.org/releases/poco-$pkgver/poco-$pkgver-all.tar.gz"
+options="!check" # No testsuite
+
+builddir="$srcdir/$pkgname-$pkgver-all"
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DPOCO_UNBUNDLED=ON
+	cmake --build build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+bin() {
+	amove usr/bin
+}
+
+sha512sums="
+6aab701b811e4903cfe595f41fc53b2c62758c4cc4a0c3a7b0468e64c18279bf2006cb13ecf6360a97da725eaac82ff4129d10f36281ee77dd29b4a95053b594  poco-1.15.1-all.tar.gz
+"

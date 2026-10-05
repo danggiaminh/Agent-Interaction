@@ -1,0 +1,49 @@
+# Contributor: Eloi Torrents <eloitor@disroot.org>
+# Maintainer: John Vogel <jvogel@stygian.me>
+maintainer="John Vogel <jvogel@stygian.me>"
+pkgname=lyx
+pkgver=2.5.2
+pkgrel=0
+pkgdesc="Advanced WYSIWYM document processor & LaTeX front-end"
+url="https://www.lyx.org"
+arch="all"
+license="GPL-2.0-or-later"
+makedepends="
+	boost-dev
+	enchant2-dev
+	file-dev
+	mythes-dev
+	qt6-qtbase-dev
+	qt6-qtsvg-dev
+	"
+depends="
+	imagemagick
+	python3
+	"
+subpackages="$pkgname-doc $pkgname-lang $pkgname-pyc"
+source="https://ftp.lip6.fr/pub/lyx/stable/${pkgver%.*}.x/lyx-$pkgver.tar.xz"
+
+build() {
+	./configure \
+		--prefix=/usr \
+		--sysconfdir=/etc \
+		--enable-qt6 \
+		--without-included-boost \
+		--without-included-mythes \
+		--disable-callstack-printing
+	make
+}
+
+package() {
+	make DESTDIR="$pkgdir" install
+}
+
+pyc() {
+	default_pyc
+	local IFS=$'\n'
+	amove "$(find usr/share/lyx -type d -name __pycache__)"
+}
+
+sha512sums="
+301d8e4aa63bcf2cdaadee2a5dbbe2b5bf33d9ea6dd767db2e59c07fde83f1191d747d883adaf22690ccc0aed03e438ea2dbff19a45dcdadf5fab0d1b4f5fb28  lyx-2.5.2.tar.xz
+"

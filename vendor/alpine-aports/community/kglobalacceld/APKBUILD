@@ -1,0 +1,66 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-plasma
+maintainer="Bart Ribbers <bribbers@disroot.org>"
+pkgname=kglobalacceld
+pkgver=6.6.6
+pkgrel=0
+pkgdesc="Daemon providing Global Keyboard Shortcut (Accelerator) functionality"
+# armhf blocked by qt6-qtdeclarative -> kio
+arch="all !armhf"
+url="https://invent.kde.org/plasma/kglobalacceld"
+license="LGPL-2.0-or-later AND LGPL-2.0-only AND LGPL-2.1-or-later"
+depends_dev="$pkgname
+	kconfig-dev
+	kcoreaddons-dev
+	kcrash-dev
+	kdbusaddons-dev
+	kglobalaccel-dev
+	kio-dev
+	knotifications-dev
+	kservice-dev
+	kwindowsystem-dev
+	qt6-qtbase-dev
+	xcb-util-keysyms-dev
+	"
+makedepends="$depends_dev
+	doxygen
+	extra-cmake-modules
+	graphviz
+	qt6-qttools-dev
+	samurai
+	"
+checkdepends="
+	dbus
+	xwayland-run
+	"
+subpackages="
+	$pkgname-systemd
+	$pkgname-dev
+	"
+case "$pkgver" in
+	*.*.9*) _rel=unstable;;
+	*) _rel=stable;;
+esac
+_repo_url="https://invent.kde.org/plasma/kglobalacceld.git"
+source="https://download.kde.org/$_rel/plasma/$pkgver/kglobalacceld-$pkgver.tar.xz"
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+}
+
+check() {
+	# shortcutstest fails to register dbus service
+	dbus-run-session wlheadless-run -- ctest --test-dir build \
+		-E "(shortcuts|migrateconfig)test"
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+sha512sums="
+59602ec3d6f53cd15b9f75a680794a9ecd78821337947d9c1909e51dbcd989c21cf5942fc6ba2e5b952268d410f38843e3e70690a913f5c2f3bf1659a70f0fb3  kglobalacceld-6.6.6.tar.xz
+"

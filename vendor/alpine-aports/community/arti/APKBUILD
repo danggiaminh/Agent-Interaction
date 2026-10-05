@@ -1,0 +1,130 @@
+# Maintainer: omni <omni+alpine@hack.org>
+maintainer="omni <omni+alpine@hack.org>"
+pkgname=arti
+pkgver=2.5.1
+pkgrel=0
+pkgdesc="An implementation of Tor, in Rust"
+url="https://tpo.pages.torproject.net/core/arti/"
+license="GPL-3.0-or-later"
+# s390x: merlin crate doesn't support big-endian targets
+arch="all !s390x"
+makedepends="cargo
+	cargo-auditable
+	curl
+	openssl-dev>3
+	sqlite-dev
+	xz-dev
+	zstd-dev
+	"
+subpackages="$pkgname-doc $pkgname-openrc"
+source="$pkgname-$pkgver.tar.gz::https://gitlab.torproject.org/tpo/core/arti/-/archive/arti-v$pkgver/arti-arti-v$pkgver.tar.gz
+	arti-example-config.patch
+	no-journald-build.patch
+	tor-async-utils-tokio-dep.patch
+	32b_arti_example_config_patch
+	32b_time_conversion_tests_patch
+	32b_tor-memquota_patch
+	arti.initd
+	"
+builddir="$srcdir/$pkgname-$pkgname-v$pkgver"
+install="$pkgname.pre-install $pkgname.pre-upgrade"
+pkgusers="arti"
+pkggroups="arti"
+
+case "$CARCH" in
+arm*|loongarch64|ppc64le|riscv64|x86)
+	# for aws-lc-sys
+	checkdepends="$checkdepends cmake clang-dev"
+	;;
+esac
+
+case "$CARCH" in
+x86)
+	# OOM during tests on the package builder
+	# try removing on next iteration
+	options="$options !check"
+	;;
+esac
+
+export OPENSSL_NO_VENDOR=1
+
+prepare() {
+	default_prepare
+
+	case "$CARCH" in
+	arm*|x86)
+		patch crates/arti/src/arti-example-config.toml \
+			"$srcdir"/32b_arti_example_config_patch
+		patch crates/tor-hsservice/src/time_store.rs \
+			"$srcdir"/32b_time_conversion_tests_patch
+		patch crates/tor-memquota/src/config.rs \
+			"$srcdir"/32b_tor-memquota_patch
+		;;
+	esac
+
+	cargo fetch --target="$CTARGET" --locked
+
+	# Build against system-provided libs
+	mkdir -p .cargo
+	cat >> .cargo/config.toml <<-EOF
+		[target.$CHOST]
+		zstd = { rustc-link-lib = ["zstd"] }
+	EOF
+}
+
+build() {
+	RUST_BACKTRACE=full \
+	cargo auditable build --release --frozen --features=full --package arti
+}
+
+check() {
+	case "$CARCH" in
+	arm*|x86)
+		# https://gitlab.torproject.org/tpo/core/arti/-/issues/2084
+		cargo test --frozen --workspace --exclude tor-memquota -- \
+			--skip "cfg::test::memquota" \
+			--skip "time_store::test::system_time_conversions"
+		;;
+	riscv64)
+		# https://gitlab.torproject.org/tpo/core/arti/-/issues/1398
+		cargo build --tests --frozen --keep-going
+		RUST_BACKTRACE=full cargo test --tests --frozen --no-fail-fast || true
+		# NOTE: we're currently allowing tests to fail here
+		;;
+	*)
+		cargo test --frozen
+		;;
+	esac
+}
+
+package() {
+	install -Dm755 -t "$pkgdir"/usr/bin/ target/release/arti
+	install -dm0755 "$pkgdir"/etc/"$pkgname"/
+	install -dm755 -o "$pkgusers" -g "$pkggroups" \
+		"$pkgdir"/var/lib/"$pkgname"/
+	install -dm750 -o "$pkgusers" -g "$pkggroups" \
+		"$pkgdir"/var/log/"$pkgname"/
+
+	install -Dm755 -t "$pkgdir"/usr/share/doc/"$pkgname"/ \
+		doc/bridges.md \
+		doc/Compatibility.md \
+		doc/FAQ.md \
+		doc/OnionService.md \
+		doc/SupportPolicy.md \
+		CHANGELOG.md README.md \
+		crates/arti/src/arti-example-config.toml
+
+	install -Dm755 "$srcdir"/"$pkgname".initd \
+		"$pkgdir"/etc/init.d/"$pkgname"
+}
+
+sha512sums="
+23fd71e6a9ca55cf92faa1ddac35bd65061ce48ead89675651f0811199605dc32751778a71165bd05cacafcfa53abc255b9d146fa0ff844acf2e23a3d56e9313  arti-2.5.1.tar.gz
+c83a1c344758b606f255a0a839c04de75897379474e34d341364d46d591f5bf01bfa5f8dcb323d9ae542650d0e871dea9fa71b38765e5065ca47922683b20d7c  arti-example-config.patch
+b80ed23dc043d6f01d5e1b9626b5362f09c930b5b993ea4e807185a6e6bc765281da73469a2bdf6e33f26adb77f5eddfffa5e6568a58181dfccd226c2ce808a6  no-journald-build.patch
+2c161edb04b4ba161544277d026fa3adefd2d4c6ae9fb406e79d27ec26b6679eb6d2148dd6931b9e8a20212a18b107e67a2fdb1328638948aa88c2de8c3af423  tor-async-utils-tokio-dep.patch
+f125e8af24f71a07a6fc45744c0aad43516752ff55d7a4761c780cb27db96b02e5d7e57363b61bdd8b8a5d3d3b8221436c4aa3c50940bba515d1c4d52d37d842  32b_arti_example_config_patch
+0bed448eaa5606fc959a68671fcfbfa009f43b4f04497ea646838a7db088e9a3d4c1119a9bc1f6448cd69f26f9fb42be1b869dc2fe799f4791852053f547604d  32b_time_conversion_tests_patch
+1f3123f2968a4f8c04fed8d45cbbf76f08557fcfc03111c45872cc914b5908a2d3c212ddf2a7ccb796c4560767c81b7a8670fb6f5b95b9439a4abd1d77c8903d  32b_tor-memquota_patch
+c6e214875455b1101aaade6a3ec2d9d0653abd1cf49b3b562da1c8ebc7b3a6bee708540cfa1c5a60c1b3bfb6921bc064504baba2dde50010e896c708a0a8f352  arti.initd
+"

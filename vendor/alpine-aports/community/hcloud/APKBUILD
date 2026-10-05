@@ -1,0 +1,51 @@
+maintainer="Michał Polański <michal@polanski.me>"
+pkgname=hcloud
+pkgver=1.62.2
+pkgrel=2
+pkgdesc="Command-line interface for Hetzner Cloud"
+url="https://github.com/hetznercloud/cli"
+license="MIT"
+arch="all"
+makedepends="go"
+subpackages="
+	$pkgname-bash-completion
+	$pkgname-fish-completion
+	$pkgname-zsh-completion
+	"
+source="https://github.com/hetznercloud/cli/archive/v$pkgver/hcloud-$pkgver.tar.gz
+	test-storage-box-fix-describe-test.patch
+	"
+builddir="$srcdir/cli-$pkgver"
+options="net" # Go modules
+
+build() {
+	go build \
+		-trimpath \
+		-ldflags "\
+			-X github.com/hetznercloud/cli/internal/version.Version=$pkgver \
+			-X github.com/hetznercloud/cli/internal/version.versionPrerelease= \
+			" \
+		-v \
+		./cmd/hcloud
+
+	./hcloud completion bash >$pkgname.bash
+	./hcloud completion fish >$pkgname.fish
+	./hcloud completion zsh >$pkgname.zsh
+}
+
+check() {
+	go test ./...
+}
+
+package() {
+	install -Dm755 hcloud -t "$pkgdir"/usr/bin/
+
+	install -Dm644 $pkgname.bash "$pkgdir"/usr/share/bash-completion/completions/$pkgname
+	install -Dm644 $pkgname.fish "$pkgdir"/usr/share/fish/vendor_completions.d/$pkgname.fish
+	install -Dm644 $pkgname.zsh "$pkgdir"/usr/share/zsh/site-functions/_$pkgname
+}
+
+sha512sums="
+e423919201a6eb3f4d015238b3590edff1a380aba756b371905aef98d2db658f8aa45216a652be813300b8bdc9df6c49d956b48c9a7183ad87ec9ed840f6a75c  hcloud-1.62.2.tar.gz
+38482ba50461da8dd7d95872275f6e7b46b0f608d3ac1f9937dcf5e40d968894455b071b27a62dccdc712dce467cbc4a80990b5b6cd84b0544a391cf2331e1ed  test-storage-box-fix-describe-test.patch
+"

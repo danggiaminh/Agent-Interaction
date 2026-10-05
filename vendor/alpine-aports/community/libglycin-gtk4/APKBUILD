@@ -1,0 +1,63 @@
+maintainer="team/gnome <achill@achill.org>"
+pkgname=libglycin-gtk4
+pkgver=2.1.5
+pkgrel=0
+# NOTE: community/glycin, community/libglycin & community/libglycin-gtk4 MUST be kept in sync.
+#       These packages are split in seperate packages, to be distributed across
+#       the build chain which resolves cyclic dependencies.
+pkgdesc="Sandboxed and extendable image decoding"
+url="https://gitlab.gnome.org/GNOME/glycin"
+arch="all"
+license="MPL-2.0 OR LGPL-2.0-or-later"
+makedepends="
+	cargo
+	clang-dev
+	gobject-introspection-dev
+	gtk4.0-dev
+	lcms2-dev
+	libseccomp-dev
+	meson
+	vala
+	"
+subpackages="
+	$pkgname-dev
+	"
+source="https://gitlab.gnome.org/GNOME/glycin/-/archive/$pkgver/glycin-$pkgver.tar.gz
+	bwrap-blocked.patch
+	bump-nix.patch
+	"
+builddir="$srcdir/glycin-$pkgver"
+# !check: tests hang
+# net: cargo crates
+options="!check net"
+
+build() {
+	abuild-meson \
+		-Dlibglycin-gtk4=true \
+		-Dlibglycin=false \
+		-Dglycin-thumbnailer=false \
+		-Dglycin-loaders=false \
+		-Dtest_skip_install=true \
+		-Dtests="$(want_check && echo true || echo false)" \
+		. output
+	meson compile -C output
+}
+
+check() {
+	meson test --print-errorlogs -C output
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
+}
+
+dev() {
+	default_dev
+	amove usr/lib/girepository-1.0
+}
+
+sha512sums="
+fbb3d3a06c1c9e8da37b10d9cac6d8ac1bc1daef057baf5e96c0866f72c1a010ea68423cb3a21d1abc439652ecb71cad2343cfb7ac0c5b0b9504202cbfceb70e  glycin-2.1.5.tar.gz
+43798f4433a9574a70097fc5295c30e0110affd20c7f9539d9548bfd2a20a03fc8e0d1fd9d219de6f9b1bc86fcbf87c7388eb7d9702ea8699cbcafb9af1097bc  bwrap-blocked.patch
+879e35da36eb31bb89a5a681429eb0142f78622d123154ed475a7529ff7a6bbc9ec1061f3b739e2e2ef463cd4a29303d55f9aa7aec62fd03897bc41c19c1d014  bump-nix.patch
+"

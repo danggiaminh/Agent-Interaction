@@ -1,0 +1,20 @@
+# Maintainer: Saijin-Naib <Saijin-Naib_package-maintenance@outlook.com>
+pkgname=wine-mono
+pkgver=10.4.1
+pkgrel=0
+pkgdesc="Wine's built-in replacement for Microsoft's .NET"
+url="https://wiki.winehq.org/Mono"
+arch="x86_64 x86"
+license="MIT"
+depends="wine"
+options="!check"
+source="https://github.com/madewokherd/wine-mono/releases/download/wine-mono-$pkgver/wine-mono-$pkgver-x86.msi"
+
+package() {
+	install -Dm644 "$srcdir"/$pkgname-$pkgver-x86.msi \
+		-t "$pkgdir"/usr/share/wine/mono/
+}
+
+sha512sums="
+e71294f2b095303d5af7ae7dd194aea683edb2b5ca00b8a54e889d927c80253e87adb1c8dd7ec90a7bf99a93e17c376549c413b6f148694d22a9b6c5b811965f  wine-mono-10.4.1-x86.msi
+"

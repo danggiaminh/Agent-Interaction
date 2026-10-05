@@ -1,0 +1,67 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=asteroid
+maintainer="Bart Ribbers <bribbers@disroot.org>"
+pkgname=asteroid-launcher
+pkgver=2.1_git20260515
+pkgrel=0
+_commit="0f676ef5e87e481a71fac527c0c72c63d607d179"
+pkgdesc="AsteroidOS launcher and Wayland compositor based on Qt, QML and QtWayland via Lipstick"
+url="https://github.com/AsteroidOS/asteroid-launcher"
+# armhf blocked by qt6-qtdeclarative
+# armhf blocked by libqofono -> nemo-qml-plugin-systemsettings
+# loongarch64 blocked due to for some reason not finding the nemo-qml-plugin-calendar QML module
+arch="all !armhf !riscv64 !loongarch64"
+license="BSD-3-Clause AND MIT"
+depends="
+	asteroid-icons-ion
+	asteroid-languages
+	asteroid-wallpapers
+	mce
+	nemo-qml-plugin-calendar
+	nemo-qml-plugin-configuration
+	nemo-qml-plugin-systemsettings
+	nemo-qml-plugin-time
+	qt6-qt5compat
+	qt6-qtmultimedia
+	"
+# Normally we shouldn't hard depend on fonts, but in this case these fonts are
+# hardcoded for some supported watchfaces
+depends="$depends
+	font-noto-emoji
+	font-opensans
+	font-raleway-otf
+	font-roboto
+	"
+makedepends="
+	extra-cmake-modules
+	lipstick-dev
+	mlite-dev
+	qml-asteroid-dev
+	qt6-qtbase-dev
+	qt6-qtdeclarative-dev
+	samurai
+	"
+subpackages="$pkgname-dbg"
+source="$pkgname-$_commit.tar.gz::https://github.com/AsteroidOS/asteroid-launcher/archive/$_commit.tar.gz"
+options="!check" # no tests
+builddir="$srcdir/$pkgname-$_commit"
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=MinSizeRel \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+
+	install -dm755 "$pkgdir"/usr/share/translations
+	lrelease6 -idbased i18n/asteroid-launcher.*.ts
+	cp i18n/asteroid-launcher.*.qm "$pkgdir"/usr/share/translations/
+}
+
+sha512sums="
+c74d3fe8b87cb7ade00d464387b5cf06d62d6ccde2c37a62ee48b4bbb79ce9c80c2ce206b67632d667a5c758fd6a6d3221478f61fd905629bed4f271c06cbf51  asteroid-launcher-0f676ef5e87e481a71fac527c0c72c63d607d179.tar.gz
+"

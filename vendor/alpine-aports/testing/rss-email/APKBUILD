@@ -1,0 +1,45 @@
+# Contributor: Thomas Böhler <witcher@wiredspace.de>
+maintainer="Hugo Osvaldo Barrera <hugo@whynothugo.nl>"
+pkgname=rss-email
+pkgver=0.5.1
+pkgrel=0
+pkgdesc="Send RSS/Atom posts as email"
+url="https://git.sr.ht/~witcher/rss-email"
+arch="all"
+license="WTFPL"
+makedepends="
+	cargo
+	cargo-auditable
+	scdoc
+	"
+subpackages="$pkgname-doc"
+source="$pkgname-$pkgver.tar.gz::https://git.sr.ht/~witcher/rss-email/archive/v$pkgver.tar.gz"
+builddir="$srcdir/$pkgname-v$pkgver"
+options="!check" # no tests
+
+
+prepare() {
+	default_prepare
+
+	cargo fetch --target="$CTARGET" --locked
+}
+
+build() {
+	cargo auditable build --release --frozen
+	scdoc < docs/rss-email.1.scd > rss-email.1
+	scdoc < docs/rss-email.5.scd > rss-email.5
+}
+
+package() {
+	install -Dm755 target/release/rss-email "$pkgdir"/usr/bin/rss-email
+	install -Dm644 rss-email.1 "$pkgdir"/usr/share/man/man1/rss-email.1
+	install -Dm644 rss-email.5 "$pkgdir"/usr/share/man/man5/rss-email.5
+	install -Dm644 LICENSE "$pkgdir"/usr/share/licenses/"$pkgname"/LICENSE
+	install -Dm644 README.md "$pkgdir"/usr/share/doc/"$pkgname"/README.md
+	install -Dm644 config.example.toml "$pkgdir"/usr/share/"$pkgname"/config.toml
+}
+
+
+sha512sums="
+531438b1edf1e95f5d44f92208cfd0c577cb01414b3608c66d0ca2243291e6286bc0f3a377611d3ebc138f149854f1b0a8aa0e514c105e2d81206342859ce51c  rss-email-0.5.1.tar.gz
+"

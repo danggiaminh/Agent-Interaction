@@ -1,0 +1,57 @@
+# Maintainer: omni <omni+alpine@hack.org>
+maintainer="omni <omni+alpine@hack.org>"
+pkgname=libpcap
+pkgver=1.10.7
+pkgrel=0
+pkgdesc="Portable library for network traffic capture"
+url="https://www.tcpdump.org/"
+arch="all"
+license="BSD-3-Clause"
+options="!check"
+makedepends="bison flex autoconf linux-headers"
+subpackages="$pkgname-doc $pkgname-dev"
+source="https://www.tcpdump.org/release/libpcap-$pkgver.tar.gz"
+
+# secfixes:
+#   1.10.7-r0:
+#     - CVE-2026-0799
+#     - CVE-2026-6244
+#     - CVE-2026-6554
+#     - CVE-2026-31911
+#     - CVE-2026-31912
+#   1.10.6-r0:
+#     - CVE-2025-11961
+#   1.9.1-r0:
+#     - CVE-2018-16301
+#     - CVE-2019-15161
+#     - CVE-2019-15162
+#     - CVE-2019-15163
+#     - CVE-2019-15164
+#     - CVE-2019-15165
+#   0:
+#     - CVE-2025-11964
+
+build() {
+	./configure \
+		--build=$CBUILD \
+		--host=$CHOST \
+		--prefix=/usr \
+		--sysconfdir=/etc \
+		--mandir=/usr/share/man \
+		--localstatedir=/var \
+		--enable-ipv6
+
+	# seems to be problem with timestamps
+	sleep 1
+	./config.status
+
+	make all shared
+}
+
+package() {
+	make -j1 DESTDIR="$pkgdir" install install-shared
+}
+
+sha512sums="
+905ad8bacb4aa820f55bc88017130f7bf2dc15ff4917f20fe603fc6e4f637f21d56909fe921065ccc615448af0537726a4df6d7fade82083603c94239ea947bc  libpcap-1.10.7.tar.gz
+"

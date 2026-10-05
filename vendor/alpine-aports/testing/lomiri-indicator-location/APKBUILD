@@ -1,0 +1,46 @@
+maintainer="Aster Boese <asterboese@mailbox.org>"
+pkgname=lomiri-indicator-location
+pkgver=25.10.2
+pkgrel=2
+pkgdesc="Indicator controlling access to physical location data"
+url="https://gitlab.com/ubports/development/core/indicator-location"
+arch="all !armhf" # blocked by qt5-qtdeclarative
+license="GPL-3.0-only"
+source="https://gitlab.com/ubports/development/core/indicator-location/-/archive/$pkgver/lomiri-indicator-location-$pkgver.tar.gz"
+makedepends="
+	cmake-extras
+	glib-dev
+	gmenuharness-dev
+	gmock
+	gtest-dev
+	intltool
+	libqtdbusmock
+	libqtdbustest
+	lomiri-api-dev
+	lomiri-app-launch-dev
+	lomiri-url-dispatcher-dev
+	samurai
+	"
+checkdepends="py3-dbusmock"
+subpackages="$pkgname-lang $pkgname-systemd"
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib \
+		-DBUILD_SHARED_LIBS=ON \
+		-DCMAKE_BUILD_TYPE=None
+	cmake --build build
+}
+
+check() {
+	ctest --test-dir build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+814eb33aa62bc49554e08742c769efc48f545479929895bd552f65d151b14beed6038aea27602473307b47e09adb0969403fabb09b287efec78895e4f4063c4c  lomiri-indicator-location-25.10.2.tar.gz
+"

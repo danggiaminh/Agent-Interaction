@@ -1,0 +1,70 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-frameworks
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=kwidgetsaddons
+pkgver=6.26.0
+pkgrel=0
+pkgdesc="Addons to QtWidgets"
+# armhf blocked by qt6-qtdeclarative
+arch="all !armhf"
+url="https://community.kde.org/Frameworks"
+license="GPL-2.0-only AND LGPL-2.1-only AND Unicode-DFS-2016"
+depends_dev="qt6-qtbase-dev"
+makedepends="$depends_dev
+	doxygen
+	extra-cmake-modules
+	kde-qdoc-common
+	py3-build
+	py3-setuptools
+	py3-shiboken6
+	pyside6-dev
+	python3-dev
+	qt6-qttools-dev
+	samurai
+	"
+checkdepends="
+	font-noto
+	mesa-dri-gallium
+	xwayland-run
+	"
+subpackages="
+	$pkgname-dev
+	$pkgname-doc
+	$pkgname-lang
+	py3-$pkgname:_py3
+	"
+_repo_url="https://invent.kde.org/frameworks/kwidgetsaddons.git"
+source="https://download.kde.org/stable/frameworks/${pkgver%.*}/kwidgetsaddons-$pkgver.tar.xz"
+
+build() {
+	export KDE_DOCS=/usr/share/kde/documentation
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+
+	cmake --build build --target prepare_docs
+	cmake --build build --target generate_docs
+	cmake --build build --target generate_qch
+}
+
+check() {
+	# ktwofingertaptest and ktwofingerswipetest are broken
+	wlheadless-run -- ctest --test-dir build -E '(ktwofinger(tap|swipe)|kdatecombobox|kmessagewidgetauto|kselectaction_unit|ktooltipwidget)test'
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+
+	DESTDIR="$pkgdir" cmake --build build --target install_html_docs
+	DESTDIR="$pkgdir" cmake --build build --target install_qch_docs
+}
+
+_py3() {
+	amove usr/lib/python*
+}
+
+sha512sums="
+5c9abf04b10291b967a6064924d35a12e11e779172fd3e43ff8692b717d77ea3a4db7db44301721522c4650d52255c034577ace186c5e6165a6bca75596e9f47  kwidgetsaddons-6.26.0.tar.xz
+"

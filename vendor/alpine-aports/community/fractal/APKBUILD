@@ -1,0 +1,69 @@
+# Contributor: Rasmus Thomsen <oss@cogitri.dev>
+maintainer="Achill Gilgenast <achill@achill.org>"
+pkgname=fractal
+pkgver=13
+pkgrel=0
+pkgdesc="Matrix messaging app for GNOME written in Rust"
+url="https://gitlab.gnome.org/World/fractal"
+# 32 bits OOM
+# s390x nix
+arch="all !armv7 !armhf !x86 !s390x"
+license="GPL-3.0-or-later"
+depends="
+	dbus:org.freedesktop.Secrets
+	glycin-image-rs
+	xdg-utils
+	gst-plugins-rs-gtk4
+	"
+makedepends="
+	blueprint-compiler
+	cargo
+	clang-libclang
+	cmake
+	dbus-dev
+	desktop-file-utils
+	glib-dev
+	gmp-dev
+	grass
+	gspell-dev
+	gst-editing-services-dev
+	gst-plugins-bad-dev
+	gst-plugins-base-dev
+	gstreamer-dev
+	gtk4.0-dev
+	gtksourceview5-dev
+	lcms2-dev
+	libadwaita-dev
+	libseccomp-dev
+	libshumate-dev
+	meson
+	openssl-dev
+	pipewire-dev
+	xdg-desktop-portal-dev
+	"
+subpackages="$pkgname-lang"
+source="$pkgname-$pkgver.tar.gz::https://gitlab.gnome.org/GNOME/fractal/-/archive/$pkgver/fractal-$pkgver.tar.gz
+	unused-import.patch
+	cargo-update-glycin.patch
+	"
+options="net" # rust crates
+
+build() {
+	abuild-meson \
+		output .
+	meson compile -C output
+}
+
+check() {
+	meson test --print-errorlogs -C output
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
+}
+
+sha512sums="
+c89bf10767a84f303a4280ba5856c7e0319f21ee6b3eb64bf808d5dd1a9372cdac01a70a11253f2856b28fd3cd67c746a3e8e79b51272e976ef7b3a335bd790f  fractal-13.tar.gz
+9986e1d9d078d066b8cbd69d6206da43e8750e5cfd45fc87a29939e1069e347a84ed738fa028c3b9b7d9e8c5f6752c5e943225bcf873eaa79d70827de7ce4d2e  unused-import.patch
+4a5b8b3845e2f7cf968a717de1f7e38a272f10ac6217b43c2c170d28c22d2a7ebd062827375a2a0a5eba35255437a94b6b064331d17cbf82140fcf4a0cbae104  cargo-update-glycin.patch
+"

@@ -1,0 +1,47 @@
+# Contributor: Jake Buchholz Göktürk <tomalok@gmail.com>
+# Maintainer: Jake Buchholz Göktürk <tomalok@gmail.com>
+pkgname=docker-cli-buildx
+pkgver=0.34.1
+pkgrel=1
+_commit=e0b0e77d18d3379bc1e0d55f3b37de288d36fe47
+pkgdesc="A Docker CLI plugin for extended build capabilities"
+url="https://docs.docker.com/engine/reference/commandline/buildx_build"
+arch="all"
+license="Apache-2.0"
+makedepends="go"
+checkdepends="git"
+options="net"
+source="buildx-$pkgver.tar.gz::https://github.com/docker/buildx/archive/v$pkgver.tar.gz"
+
+_buildx_installdir="/usr/libexec/docker/cli-plugins"
+
+builddir="$srcdir"/buildx-"$pkgver"
+
+export GOCACHE="${GOCACHE:-"$srcdir/go-cache"}"
+export GOTMPDIR="${GOTMPDIR:-"$srcdir"}"
+export GOMODCACHE="${GOMODCACHE:-"$srcdir/go"}"
+
+build() {
+	PKG=github.com/docker/buildx
+	local ldflags="-X $PKG/version.Version=v$pkgver -X $PKG/version.Revision=$_commit -X $PKG/version.Package=$PKG"
+	go build -v -modcacherw -ldflags "$ldflags" -o docker-buildx ./cmd/buildx
+}
+
+check() {
+	# git_test.go:TestGetGitAttributesBadGitRepo fails outside of rootbld unless these are unset
+	unset GOCACHE GOTMPDIR GOMODCACHE
+	# integration tests need a git repository
+	git init -q .
+	# gitutil tests do not succeed inside abuild environment
+	local pkgs="$(go list -modcacherw ./... | grep -Ev 'gitutil')"
+	go test -modcacherw -short $pkgs
+	./docker-buildx version
+}
+
+package() {
+	install -Dm755 docker-buildx "$pkgdir$_buildx_installdir"/docker-buildx
+}
+
+sha512sums="
+be69ff92a136e169456710c369099bd33ed0ae17271133fe0322fe1664c868ad76dd74265879fa783fa257a6ed6dca37c213d1153de9e903833b59cde4181d0b  buildx-0.34.1.tar.gz
+"

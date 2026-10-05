@@ -1,0 +1,28 @@
+# Maintainer: David Demelier <markand@malikania.fr>
+pkgname=zix
+pkgver=0.8.0
+pkgrel=0
+pkgdesc="lightweight C99 portability and data structure library"
+url="http://drobilla.net/category/zix"
+arch="all"
+license="ISC"
+makedepends="meson"
+subpackages="$pkgname-dev $pkgname-libs"
+source="https://download.drobilla.net/zix-$pkgver.tar.xz"
+
+build() {
+	abuild-meson -Db_lto=true . output
+	meson compile -C output
+}
+
+check() {
+	meson test --print-errorlogs -C output
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
+}
+
+sha512sums="
+fccb3e3b05c4d28e7fa6ed94537681167e2ee22a23dd4e1b4f3e5474da8dce3fe682cc6ccda219d140b956014c444a6f721d7272f3dba52df3a07e13b594f963  zix-0.8.0.tar.xz
+"

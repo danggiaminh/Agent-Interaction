@@ -1,0 +1,34 @@
+# Contributor: Leon Marz <main@lmarz.org>
+# Maintainer: Leon Marz <main@lmarz.org>
+pkgname=openimagedenoise
+pkgver=2.4.1
+pkgrel=0
+pkgdesc="Intel Open Image Denoise library"
+url="https://www.openimagedenoise.org/"
+arch="aarch64 x86_64" # openimagedenoise only really supports these
+license="Apache-2.0"
+makedepends="cmake python3 onetbb-dev ispc samurai"
+subpackages="$pkgname-dev $pkgname-doc"
+source="$pkgname-$pkgver.tar.gz::https://github.com/OpenImageDenoise/oidn/releases/download/v$pkgver/oidn-$pkgver.src.tar.gz"
+builddir="$srcdir/oidn-$pkgver"
+options="!check" # doesn't have a test suite
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib \
+		-DBUILD_SHARED_LIBS=True \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_SKIP_RPATH=ON \
+		-DOIDN_APPS=OFF
+
+	cmake --build build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+ef7f39975808f2812da147461d2f8ad310d58846bd62be801280ba2dbf7dc3ceecb73aafe9d1fb9d49cc4fec4429623b7a0f16e798e6f13aad83db4f6d862c9a  openimagedenoise-2.4.1.tar.gz
+"

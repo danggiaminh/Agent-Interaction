@@ -1,0 +1,51 @@
+maintainer="Achill Gilgenast <achill@achill.org>"
+pkgname=ibus-typing-booster
+pkgver=2.30.9
+pkgrel=0
+pkgdesc="Completion input method for faster typing"
+url="https://mike-fabian.github.io/ibus-typing-booster/"
+arch="all"
+license="Apache-2.0 AND GPL-3.0-or-later"
+depends="
+	python3
+	py3-dbus
+	glib
+	ibus
+	m17n-lib
+	gtk+3.0
+	"
+makedepends="
+	ibus-dev
+	m17n-lib-dev
+	"
+subpackages="$pkgname-lang $pkgname-pyc"
+source="https://github.com/mike-fabian/ibus-typing-booster/releases/download/$pkgver/ibus-typing-booster-$pkgver.tar.gz"
+
+build() {
+	./configure \
+		--build=$CBUILD \
+		--host=$CHOST \
+		--prefix=/usr \
+		--sysconfdir=/etc \
+		--mandir=/usr/share/man \
+		--localstatedir=/var
+	make
+}
+
+check() {
+	make check
+}
+
+package() {
+	make DESTDIR="$pkgdir" install
+}
+
+pyc() {
+	default_pyc
+	amove usr/share/ibus-typing-booster/engine/__pycache__
+	amove usr/share/ibus-typing-booster/setup/__pycache__
+}
+
+sha512sums="
+780bae2f80898d0fc13719640b6ed3de3bfd6c5986d46309b650869ebdfe28ee669f3fee3b7ca85a9988339e8dd320f0eaf58d28c6db0cc836d41300ad24621b  ibus-typing-booster-2.30.9.tar.gz
+"

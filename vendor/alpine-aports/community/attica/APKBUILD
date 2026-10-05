@@ -1,0 +1,55 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-frameworks
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=attica
+pkgver=6.26.0
+pkgrel=0
+pkgdesc="Freedesktop OCS binding for Qt"
+url="https://www.kde.org/"
+arch="all"
+license="LGPL-2.0-or-later"
+makedepends="
+	doxygen
+	extra-cmake-modules
+	kde-qdoc-common
+	qt6-qtbase-dev
+	qt6-qttools-dev
+	samurai
+	"
+subpackages="$pkgname-dev"
+_repo_url="https://invent.kde.org/frameworks/attica.git"
+source="https://download.kde.org/stable/frameworks/${pkgver%.*}/attica-$pkgver.tar.xz"
+case "$CARCH" in
+	armhf) ;;
+	*) subpackages="$subpackages $pkgname-doc" ;;
+esac
+
+build() {
+	export KDE_DOCS=/usr/share/kde/documentation
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=MinSizeRel \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+
+	cmake --build build --target prepare_docs
+	cmake --build build --target generate_docs
+	cmake --build build --target generate_qch
+
+}
+
+check() {
+	# providertest requires network access
+	ctest --test-dir build -E "providertest"
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+
+	DESTDIR="$pkgdir" cmake --build build --target install_html_docs
+	DESTDIR="$pkgdir" cmake --build build --target install_qch_docs
+}
+
+sha512sums="
+47007ae84689e8d62d33f92c30df61b8091703fac094ad9be74874d1f9a0587a3f31fc2aeed870125d01176c98c020631adb5d40f19470b194e01f42e77d5955  attica-6.26.0.tar.xz
+"

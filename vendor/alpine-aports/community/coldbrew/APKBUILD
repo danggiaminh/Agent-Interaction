@@ -1,0 +1,19 @@
+maintainer="Achill Gilgenast <achill@achill.org>"
+pkgname=coldbrew
+pkgver=1.2
+pkgrel=0
+pkgdesc="Brew-style package manager with Alpine Linux aports"
+url="https://gitlab.postmarketos.org/postmarketOS/coldbrew"
+arch="noarch"
+license="GPL-3.0-only"
+depends="bubblewrap"
+source="https://gitlab.postmarketos.org/postmarketOS/coldbrew/-/archive/$pkgver/coldbrew-$pkgver.tar.gz"
+options="!check" # no tests
+
+package() {
+	install -Dm755 coldbrew -t "$pkgdir"/usr/bin/
+}
+
+sha512sums="
+d077f3ad2ffe92c893f5ea159511b59fa3c134098404fb7dfccd015f2c8be8e41a433294926238acc9dbef1bc93505975311f307f0bf938177688cd8bf649ea4  coldbrew-1.2.tar.gz
+"

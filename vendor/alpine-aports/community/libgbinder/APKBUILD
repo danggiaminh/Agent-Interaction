@@ -1,0 +1,42 @@
+maintainer="Bart Ribbers <bribbers@disroot.org>"
+pkgname=libgbinder
+pkgver=1.1.45
+pkgrel=0
+pkgdesc="GLib-style interface to binder"
+url="https://github.com/mer-hybris/libgbinder"
+arch="all"
+license="BSD-3-Clause"
+makedepends="
+	glib-dev
+	libglibutil-dev
+	"
+subpackages="$pkgname-dev $pkgname-tools"
+source="https://github.com/mer-hybris/libgbinder/archive/$pkgver/libgbinder-$pkgver.tar.gz"
+
+build() {
+	make KEEP_SYMBOLS=1 release pkgconfig
+	make -C test/binder-bridge KEEP_SYMBOLS=1 release
+	make -C test/binder-list KEEP_SYMBOLS=1 release
+	make -C test/binder-ping KEEP_SYMBOLS=1 release
+}
+
+check() {
+	make -C unit test
+}
+
+package() {
+	make DESTDIR="$pkgdir" install-dev
+}
+
+tools() {
+	pkgdesc="$pkgdesc (tools)"
+
+	cd "$builddir"
+	make DESTDIR="$subpkgdir" -C test/binder-bridge KEEP_SYMBOLS=1 install
+	make DESTDIR="$subpkgdir" -C test/binder-list KEEP_SYMBOLS=1 install
+	make DESTDIR="$subpkgdir" -C test/binder-ping KEEP_SYMBOLS=1 install
+}
+
+sha512sums="
+955452184adeffadc261e0df333a3b41b09fe0084148ab46e7bc112175eb4213d523cbdefd0d797a6bd0487c14ad46824d78373ff2be729d59648114b5bc70a0  libgbinder-1.1.45.tar.gz
+"

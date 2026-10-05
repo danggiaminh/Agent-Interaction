@@ -1,0 +1,64 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-frameworks
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=krunner
+pkgver=6.26.0
+pkgrel=0
+pkgdesc="Framework for providing different actions given a string query"
+# armhf blocked by qt6-qtdeclarative -> ki18n
+arch="all !armhf"
+url="https://community.kde.org/Frameworks"
+license="LGPL-2.1-only AND LGPL-2.1-or-later"
+depends_dev="
+	kconfig-dev
+	kcoreaddons-dev
+	ki18n-dev
+	kio-dev
+	kitemmodels-dev
+	kservice-dev
+	qt6-qtbase-dev
+	threadweaver-dev
+	"
+makedepends="$depends_dev
+	doxygen
+	extra-cmake-modules
+	kde-qdoc-common
+	qt6-qttools-dev
+	samurai
+	"
+checkdepends="
+	dbus
+	xwayland-run
+	"
+subpackages="$pkgname-dev $pkgname-doc"
+_repo_url="https://invent.kde.org/frameworks/krunner.git"
+source="https://download.kde.org/stable/frameworks/${pkgver%.*}/krunner-$pkgver.tar.xz"
+
+build() {
+	export KDE_DOCS=/usr/share/kde/documentation
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+
+	cmake --build build --target prepare_docs
+	cmake --build build --target generate_docs
+	cmake --build build --target generate_qch
+}
+
+check() {
+	# dbusrunnertest, runnermanagertest and threadingtest are broken
+	dbus-run-session wlheadless-run -- ctest --test-dir build -E "(dbusrunner|runnermanager|threading)test"
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+
+	DESTDIR="$pkgdir" cmake --build build --target install_html_docs
+	DESTDIR="$pkgdir" cmake --build build --target install_qch_docs
+}
+
+sha512sums="
+4280ef9e1c88afa608d45c045495d026afa65349a5c10c60bbe43fff07765eea8b74b286c98bae8afd11f5b627d6eff88d8bc1518bdb5ef630d91206839cb5c7  krunner-6.26.0.tar.xz
+"

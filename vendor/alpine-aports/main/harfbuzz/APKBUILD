@@ -1,0 +1,100 @@
+# Contributor: Sören Tempel <soeren+alpinelinux@soeren-tempel.net>
+# Maintainer: Natanael Copa <ncopa@alpinelinux.org>
+pkgname=harfbuzz
+pkgver=13.2.1
+pkgrel=0
+pkgdesc="Text shaping library"
+url="https://harfbuzz.github.io/"
+arch="all"
+license="MIT"
+makedepends="
+	cairo-dev
+	freetype-dev
+	glib-dev
+	gobject-introspection-dev
+	graphite2-dev
+	gtk-doc
+	icu-dev
+	meson
+	"
+checkdepends="python3"
+subpackages="
+	$pkgname-static
+	$pkgname-dev
+	$pkgname-cairo
+	$pkgname-doc
+	$pkgname-gobject
+	$pkgname-icu
+	$pkgname-subset
+	$pkgname-utils
+	"
+source="https://github.com/harfbuzz/harfbuzz/releases/download/$pkgver/harfbuzz-$pkgver.tar.xz"
+
+# secfixes:
+#   4.4.1-r0:
+#     - CVE-2022-33068
+
+build() {
+	CFLAGS="$CFLAGS -O2 -flto=auto -ffat-lto-objects" \
+	CXXFLAGS="$CXXFLAGS -O2 -flto=auto -ffat-lto-objects" \
+	CPPFLAGS="$CPPFLAGS -O2 -flto=auto -ffat-lto-objects" \
+	abuild-meson \
+		--default-library=both \
+		-Dglib=enabled \
+		-Dgobject=enabled \
+		-Dgraphite=enabled \
+		-Dicu=enabled \
+		-Dfreetype=enabled \
+		-Dtests="$(want_check && echo enabled || echo disabled)" \
+		-Dcairo=enabled \
+		-Ddocs=enabled \
+		-Dintrospection=enabled \
+		. output
+	meson compile -C output
+}
+
+check() {
+	meson test --print-errorlogs -C output
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
+}
+
+icu() {
+	pkgdesc="Harfbuzz ICU support library"
+	replaces="harfbuzz"
+
+	amove usr/lib/lib*icu.so.*
+}
+
+gobject() {
+	pkgdesc="Harfbuzz gobject library"
+	amove usr/lib/lib*gobject.so.*
+}
+
+cairo() {
+	pkgdesc="Harfbuzz cairo library"
+	amove usr/lib/lib*cairo.so.*
+}
+
+subset() {
+	pkgdesc="Harfbuzz subset library"
+	amove usr/lib/lib*subset.so.*
+}
+
+utils() {
+	pkgdesc="$pkgdesc (utilities)"
+
+	amove usr/bin
+}
+
+dev() {
+	default_dev
+	provides="harfbuzz-bootstrap-dev"
+	provider_priority=2
+}
+
+sha512sums="
+3a13ac59813304baebc0fbdbdaf7e7a8af508bb37901d6e1eb2186b1de3d702507e24271286297195719f8d7e3982cc4dcc5c290bc52ef172ebf35b8cfb6a70f  harfbuzz-13.2.1.tar.xz
+"

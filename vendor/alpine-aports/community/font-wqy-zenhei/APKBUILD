@@ -1,0 +1,41 @@
+# Contributor: Ivan Tham <pickfire@riseup.net>
+# Maintainer: mio <miyopan@e.email>
+maintainer="mio <miyopan@e.email>"
+pkgname=font-wqy-zenhei
+pkgver=0.9.46
+pkgrel=0
+pkgdesc="Hei-Ti style (sans-serif) Chinese outline font"
+url="http://wenq.org/wqy2/index.cgi?ZenHei"
+arch="noarch"
+license="GPL-2.0-only"
+depends="fontconfig mkfontscale"
+source="$pkgname-$pkgver.tar.bz2::https://downloads.sourceforge.net/wqy/wqy-zenhei-$pkgver-May.tar.bz2
+	44-wqy-zenhei.conf
+	91-wqy-zenhei.conf
+	"
+builddir="$srcdir/wqy-zenhei"
+options="!check" # No testsuite
+
+replaces="wqy-zenhei"
+provides="wqy-zenhei=$pkgver-r$pkgrel"
+
+package() {
+	install -Dm644 "$builddir"/wqy-zenhei.ttc \
+		-t "$pkgdir"/usr/share/fonts/${pkgname#font-}
+
+	mkdir -p "$pkgdir"/etc/fonts/conf.d
+	for j in "$srcdir"/*.conf; do
+		install -Dm644 "$j" -t "$pkgdir"/etc/fonts/conf.avail
+		ln -sfv ../conf.avail/${j##*/} \
+			"$pkgdir"/etc/fonts/conf.d/${j##*/}
+	done
+
+	sed '/<!-- /d' "$builddir"/43-wqy-zenhei-sharp.conf \
+		> "$pkgdir"/etc/fonts/conf.avail/43-wqy-zenhei-sharp.conf
+}
+
+sha512sums="
+ff41473fc9bd69c04cc509d1f8915d5bcf99d175ed9dfd2f9627fd56f6a4e7720e4930d35313d1e89f090b229f2e3f461c948046257fadee192dd618471f7833  font-wqy-zenhei-0.9.46.tar.bz2
+4b3a1ab9e978bff484172951322c7d8de41d306dd86c28a3f4ed5ee3adfbd9742dbcf5ccbe6270bef272e2bef35174396b4a519148dbf3623096ebc222887cf6  44-wqy-zenhei.conf
+65005c4345ae9a78a680fb5d1c1e6837df827fd8f1ddd305f27b4d61190cad833ea5a728fbdbb73f4af0316e022ebffe9e29363b8ef9ee8730ad2a436ee8d18e  91-wqy-zenhei.conf
+"

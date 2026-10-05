@@ -1,0 +1,48 @@
+# Contributor: Rasmus Thomsen <oss@cogitri.dev>
+maintainer="team/gnome <achill@achill.org>"
+pkgname=gexiv2-0.16
+pkgver=0.16.1
+pkgrel=0
+pkgdesc="GObject-based wrapper around the Exiv2 library"
+url="https://gitlab.gnome.org/GNOME/gexiv2"
+arch="all"
+license="GPL-2.0-or-later"
+makedepends="
+	exiv2-dev
+	gi-docgen
+	glib-dev
+	gobject-introspection-dev
+	meson
+	py3-gobject3
+	vala
+	"
+subpackages="py3-$pkgname-pyc py3-$pkgname:py3 $pkgname-dev $pkgname-doc"
+source="https://download.gnome.org/sources/gexiv2/${pkgver%.*}/gexiv2-$pkgver.tar.xz"
+builddir="$srcdir/gexiv2-$pkgver"
+
+build() {
+	abuild-meson \
+		-Dgtk_doc=true \
+		-Dintrospection=true \
+		-Dvapi=true \
+		-Dtests="$(want_check && echo true || echo false)" \
+		. output
+	meson compile -C output
+}
+
+check() {
+	meson test --print-errorlogs -C output
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
+	python3 -m compileall -qf "$pkgdir"/usr/lib
+}
+
+py3() {
+	amove usr/lib/python*
+}
+
+sha512sums="
+0ae77b47ee0d30a3e1381492324c5244cdb7e319904fbbb65c49e987403a9453e9be32810b7363d6e2d50b0d87fd9eeed907ace5744e00b4b151a6aeb5e01cf5  gexiv2-0.16.1.tar.xz
+"

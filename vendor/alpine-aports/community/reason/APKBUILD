@@ -1,0 +1,143 @@
+# Contributor: Jakub Jirutka <jakub@jirutka.cz>
+# Contributor: Celeste <cielesti@protonmail.com>
+# Maintainer:
+pkgname=reason
+pkgver=3.8.2
+pkgrel=4
+pkgdesc="Simple, fast & type safe language that leverages JavaScript & OCaml"
+url="https://reasonml.github.io/"
+arch="all !riscv64 !loongarch64" # ocaml
+license="MIT"
+checkdepends="nodejs utop-full"
+makedepends="
+	bash
+	dune
+	ocaml
+	ocaml-compiler-libs
+	ocaml-cppo
+	ocaml-findlib-dev
+	ocaml-fix-dev
+	ocaml-menhir
+	ocaml-menhir-dev
+	ocaml-merlin-extend-dev
+	ocaml-ocamlbuild-dev
+	ocaml-ppx_derivers-dev
+	ocaml-result-dev
+	ocaml-seq-dev
+	ocaml-utop-dev
+	ocamlbuild
+	ocaml-bigarray-compat-dev
+	ocaml-camomile-dev
+	ocaml-charinfo_width-dev
+	ocaml-csexp-dev
+	ocaml-lambda-term-dev
+	ocaml-lwt-dev
+	ocaml-lwt_log-dev
+	ocaml-lwt_react
+	ocaml-mew-dev
+	ocaml-mew_vi-dev
+	ocaml-mmap-dev
+	ocaml-ocplib-endian-dev
+	ocaml-react-dev
+	ocaml-trie-dev
+	ocaml-zed-dev
+	"
+options="!check"  # FIXME: tests cannot find reason's modules
+provides="$pkgname-reactjs=$pkgver-r$pkgrel"
+subpackages="
+	ocaml-$pkgname-dev:_libdev
+	$pkgname-rtop
+	ocaml-$pkgname:_lib
+	"
+source="$pkgname-$pkgver-1.tar.bz2::https://github.com/reasonml/reason/releases/download/$pkgver/reason-$pkgver.tbz"
+
+# 32-bit archs
+case "$CARCH" in
+	arm*|x86) options="$options textrels" ;;
+esac
+
+build() {
+	export OCAMLPATH=/usr/lib/ocaml
+	dune build --root . @install --no-buffer --verbose
+}
+
+check() {
+	dune runtest --no-buffer --verbose
+}
+
+package() {
+	dune install \
+		--destdir="$pkgdir" \
+		--prefix=/usr \
+		--libdir=/usr/lib/ocaml \
+		--mandir="$pkgdir/usr/share/man"
+
+	cd "$pkgdir"
+
+	# There's just a readme and changelog.
+	rm -Rf usr/doc
+
+	# Just for internal tests.
+	rm -fv usr/bin/testOprint
+}
+
+_libdev() {
+	pkgdesc="$pkgdesc (development files)"
+	depends="ocaml-$pkgname=$pkgver-r$pkgrel"
+
+	default_dev
+
+	cd "$pkgdir"
+
+	local path; find usr/lib/ocaml/$pkgname \( \
+			-name '*.cmt' -o \
+			-name '*.cmti' -o \
+			-name '*.ml' -o \
+			-name '*.mli' \
+		\) | while read -r path
+	do
+		amove "$path"
+	done
+}
+
+rtop() {
+	pkgdesc="REPL for Reason based on Utop"
+	depends="$pkgname=$pkgver-r$pkgrel
+		ocaml-$pkgname=$pkgver-r$pkgrel
+		ocaml-menhir-dev
+		utop-full"
+
+	amove usr/bin/rtop
+	amove usr/lib/ocaml/rtop
+}
+
+_lib() {
+	pkgdesc="$pkgdesc (library)"
+
+	amove usr/lib/ocaml/$pkgname
+}
+
+prepare_py_provides() {
+	local datadir="${subpkgdir:-$pkgdir}"
+	local pkgbasedir=${pkgbasedir:-"$startdir/pkg"}
+	local controldir="$pkgbasedir"/.control.${subpkgname:-$pkgname}
+
+	options_has "!tracedeps" && return 0
+
+	ocaml4-abuild-find provides \
+		"$datadir"/usr/lib/ocaml \
+		"$controldir" \
+		"$pkgver-r$pkgrel"
+}
+
+scan_python3_dependency() {
+	local controldir="$2" datadir="$3"
+
+	ocaml4-abuild-find requires \
+		"$datadir"/usr/lib/ocaml \
+		"$controldir"
+}
+
+sha512sums="
+45822ecf4b19b892e1d150fd7f7a80af18df576b204647d4bbb9a18ac591a690f9b5338789ecccacb2d6b6354dbc32ff4a3574cc8b82b777e21cb8729f502f95  reason-3.8.2-1.tar.bz2
+"

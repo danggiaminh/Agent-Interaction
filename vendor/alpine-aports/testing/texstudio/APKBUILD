@@ -1,0 +1,41 @@
+# Contributor: Jonas <spameier+alpine@proton.me>
+# Maintainer: Jonas <spameier+alpine@proton.me>
+pkgname=texstudio
+pkgver=4.9.4
+pkgrel=0
+pkgdesc="A fully featured editor for LaTeX documents"
+url="https://www.texstudio.org"
+# disabled elsewhere due to huge size, request if you need it
+arch="aarch64 x86_64"
+license="GPL-3.0-or-later"
+makedepends="
+	cmake
+	poppler-qt6-dev
+	qt6-qt5compat-dev
+	qt6-qtbase-dev
+	qt6-qtdeclarative-dev
+	qt6-qtsvg-dev
+	qt6-qttools-dev
+	qtermwidget-dev
+	quazip-dev
+	samurai
+	"
+source="$pkgname-$pkgver.tar.gz::https://github.com/texstudio-org/texstudio/archive/$pkgver.tar.gz"
+options="!check" # tests fail to build
+
+build() {
+	cmake -B build -G Ninja -Wno-dev \
+		-DCMAKE_BUILD_TYPE=MinSizeRel \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib \
+		-DQT_VERSION_MAJOR=6
+	cmake --build build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+ca1b237a181697cec02459e3e093c444244de2c8933715e5599ef21ed657874b37f1faf0fbccea17da049118e5671f094d384eb7e68e633e78ce86927ced2ecc  texstudio-4.9.4.tar.gz
+"

@@ -1,0 +1,51 @@
+# Contributor: Clayton Craft <clayton@craftyguy.net>
+# Maintainer: Clayton Craft <clayton@craftyguy.net>
+pkgname=cosmic-edit
+pkgver=1.0.15
+_upstreamver="${pkgver/_beta/-beta.}"
+_upstreamver="${_upstreamver/_p/.}"
+pkgrel=0
+pkgdesc="Text editor for the COSMIC Desktop Environment"
+url="https://github.com/pop-os/cosmic-edit"
+# 32-bit: mismatched types in compio-driver-0.9.0 crate
+# riscv64: too slow to build
+arch="all !armhf !armv7 !x86 !riscv64"
+license="GPL-3.0-only"
+depends="
+	cosmic-icons
+"
+makedepends="
+	cargo-auditable
+	glib-dev
+	just
+	libxkbcommon-dev
+	oniguruma-dev
+	wayland-dev
+"
+options="net !check"  # fetch dependencies, no tests
+source="$pkgname-$pkgver.tar.gz::https://github.com/pop-os/cosmic-edit/archive/refs/tags/epoch-$_upstreamver.tar.gz"
+builddir="$srcdir/$pkgname-epoch-$_upstreamver"
+
+prepare() {
+	default_prepare
+	cargo fetch --target="$CHOST" --locked
+}
+
+build() {
+	export VERGEN_GIT_COMMIT_DATE="$(date -d @"$SOURCE_DATE_EPOCH" '+%Y-%m-%d')"
+	export VERGEN_GIT_SHA="unknown"
+
+	cargo auditable build --release --frozen
+}
+
+check() {
+	cargo test --frozen
+}
+
+package() {
+	just rootdir="$pkgdir" install
+}
+
+sha512sums="
+5582acea86cae90592fa02413f759d60c326921b15680f1f5bef967e29eac1eb5f5d41ff0e836c85c5cf25df0571fefec1ca6c89474cc9597232a20e24f23728  cosmic-edit-1.0.15.tar.gz
+"

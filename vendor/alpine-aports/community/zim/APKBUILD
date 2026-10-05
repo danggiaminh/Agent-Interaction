@@ -1,0 +1,40 @@
+# Contributor: Adam Nye <adam@spoontech.biz>
+# Maintainer:
+pkgname=zim
+pkgver=0.76.3
+pkgrel=2
+pkgdesc="Desktop wiki editor"
+url="https://zim-wiki.org/"
+arch="noarch"
+license="GPL-2.0-or-later"
+depends="python3 py3-gobject3 py3-xdg xdg-utils gtk+3.0"
+makedepends="desktop-file-utils font-cantarell py3-gpep517 py3-setuptools
+	py3-wheel"
+checkdepends="adwaita-icon-theme xvfb-run"
+subpackages="$pkgname-doc $pkgname-lang $pkgname-pyc"
+source="$pkgname-$pkgver.tar.gz::https://github.com/zim-desktop-wiki/zim-desktop-wiki/archive/refs/tags/$pkgver.tar.gz"
+builddir="$srcdir/zim-desktop-wiki-$pkgver"
+
+build() {
+	gpep517 build-wheel \
+		--wheel-dir .dist \
+		--output-fd 3 3>&1 >&2
+}
+
+check() {
+	# Tests not run in venv — "$builddir/.testenv/share" path is added to
+	# $XDG_DATA_DIRS which causes testEnvironINI test to fail (0.76.3)
+	XDG_RUNTIME_DIR=/tmp xvfb-run -a python3 test.py --fast
+}
+
+package() {
+	python3 -m installer -d "$pkgdir" \
+		.dist/*.whl
+
+	install -dm755 "$pkgdir"/usr/share/icons
+	cp -r xdg/hicolor "$pkgdir"/usr/share/icons
+}
+
+sha512sums="
+10386d9c37d32c2ec9bcfa58fd35779f251bb3f3dd0d0512b63779d66ecb4d1722d800bf9f5b5301d30781ae31bf7534e8e5131bd7ec74d92046b94dcff4289b  zim-0.76.3.tar.gz
+"

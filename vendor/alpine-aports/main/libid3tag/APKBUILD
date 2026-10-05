@@ -1,0 +1,36 @@
+# Contributor: Carlo Landmeter <clandmeter@alpinelinux.org>
+# Maintainer: Carlo Landmeter <clandmeter@alpinelinux.org>
+pkgname=libid3tag
+pkgver=0.16.3
+pkgrel=0
+pkgdesc="MAD ID3 tagger for MP3 audio files"
+url="https://codeberg.org/tenacityteam/libid3tag"
+arch="all"
+license="GPL-2.0-or-later"
+options="!check" # no tests
+makedepends="cmake samurai zlib-dev"
+subpackages="$pkgname-dev"
+source="$pkgname-$pkgver-1.tar.gz::https://codeberg.org/tenacityteam/libid3tag/archive/$pkgver.tar.gz"
+builddir="$srcdir/$pkgname"
+
+# secfixes:
+#   0.16.2-r0:
+#     - CVE-2017-11550
+#   0.16.1-r0:
+#     - CVE-2017-11551
+
+build() {
+	cmake3.5 -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=MinSizeRel \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+d49bc637899e4251ed66b5b56aa4c910dcdecd6b03ed197866d74175fc4eadff40f40f336606b23e2505b0e11834c4212a1314feeeaa2c0e9713051fdb56cb45  libid3tag-0.16.3-1.tar.gz
+"

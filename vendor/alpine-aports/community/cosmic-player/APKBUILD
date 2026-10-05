@@ -1,0 +1,49 @@
+# Contributor: Clayton Craft <clayton@craftyguy.net>
+# Maintainer: Clayton Craft <clayton@craftyguy.net>
+pkgname=cosmic-player
+pkgver=1.0.15
+_upstreamver="${pkgver/_beta/-beta.}"
+_upstreamver="${_upstreamver/_p/.}"
+pkgrel=0
+pkgdesc="Media player for the COSMIC Desktop Environment"
+url="https://github.com/pop-os/cosmic-player"
+# riscv64: too slow to build
+arch="all !riscv64"
+license="GPL-3.0-only"
+depends="
+	gst-plugins-good
+"
+makedepends="
+	cargo-auditable
+	clang-libclang
+	glib-dev
+	gst-plugins-base-dev
+	gstreamer-dev
+	just
+	libxkbcommon-dev
+	wayland-dev
+"
+options="net !check"  # fetch dependencies, no tests
+source="$pkgname-$pkgver.tar.gz::https://github.com/pop-os/cosmic-player/archive/refs/tags/epoch-$_upstreamver.tar.gz"
+builddir="$srcdir/$pkgname-epoch-$_upstreamver"
+
+prepare() {
+	default_prepare
+	cargo fetch --target="$CHOST" --locked
+}
+
+build() {
+	cargo auditable build --release --frozen
+}
+
+check() {
+	cargo test --frozen
+}
+
+package() {
+	just rootdir="$pkgdir" install
+}
+
+sha512sums="
+efc7d118222bea9915476c3658a803deaac851fe8870e06a281dc5455582ff5c056d1ff9bdf752ab8b3ea8601cda9f531559bf0bca6e007a3f4addbe191b96d9  cosmic-player-1.0.15.tar.gz
+"

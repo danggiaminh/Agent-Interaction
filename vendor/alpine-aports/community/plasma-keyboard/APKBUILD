@@ -1,0 +1,57 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-plasma
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=plasma-keyboard
+pkgver=6.6.6
+pkgrel=0
+# armhf blocked by qt6-qtdeclarative
+arch="all !armhf"
+url="https://invent.kde.org/plasma/plasma-keyboard"
+pkgdesc="Virtual keyboard for Qt-based desktops"
+license="(GPL-2.0-only OR GPL-3.0-only) AND (LGPL-2.1-only OR LGPL-3.0-only)"
+makedepends="
+	extra-cmake-modules
+	kcmutils-dev
+	kcoreaddons-dev
+	ki18n-dev
+	qt6-qtbase-dev
+	qt6-qtdeclarative-dev
+	qt6-qtdeclarative-private-dev
+	qt6-qtvirtualkeyboard-dev
+	qt6-qtwayland-dev
+	samurai
+	wayland-dev
+	wayland-protocols
+	"
+subpackages="$pkgname-lang"
+
+case "$pkgver" in
+	*.*.9*) _rel=unstable;;
+	*) _rel=stable;;
+esac
+
+# strip fourth version component for source URL
+case "$pkgver" in
+	*.*.*.*) _pkgver="${pkgver%.*}" ;;
+	*) _pkgver="$pkgver" ;;
+esac
+
+_repo_url="https://invent.kde.org/plasma/plasma-keyboard.git"
+source="https://download.kde.org/$_rel/plasma/$_pkgver/plasma-keyboard-$pkgver.tar.xz"
+options="!check" # No tests
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=MinSizeRel \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+03d90e114cf6d7d8c82390a864098fb18e2e6eea853890adc01eff29043a07df23e62acd4effc2b20ae4f8327b2daf297869e28b0df85f5ab384088093aa39b9  plasma-keyboard-6.6.6.tar.xz
+"

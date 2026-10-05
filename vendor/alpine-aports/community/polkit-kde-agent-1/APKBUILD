@@ -1,0 +1,53 @@
+# The group tag is just to easily find this APKBUILD by some scripts for automation
+# group=kde-plasma
+maintainer="team/kde <bribbers@disroot.org>"
+pkgname=polkit-kde-agent-1
+pkgver=6.6.6
+pkgrel=0
+pkgdesc="Daemon providing a polkit authentication UI for KDE"
+# armhf blocked by qt6-qtdeclarative -> ki18n
+arch="all !armhf"
+url="https://kde.org/plasma-desktop/"
+license="GPL-2.0-or-later"
+makedepends="
+	extra-cmake-modules
+	kcoreaddons-dev
+	kcrash-dev
+	kdbusaddons-dev
+	ki18n-dev
+	kiconthemes-dev
+	knotifications-dev
+	kwidgetsaddons-dev
+	kwindowsystem-dev
+	polkit-qt-dev
+	qt6-qtbase-dev
+	samurai
+	"
+case "$pkgver" in
+	*.*.9*) _rel=unstable;;
+	*) _rel=stable;;
+esac
+subpackages="
+	$pkgname-systemd
+	$pkgname-lang
+	"
+_repo_url="https://invent.kde.org/plasma/polkit-kde-agent-1.git"
+source="https://download.kde.org/$_rel/plasma/$pkgver/polkit-kde-agent-1-$pkgver.tar.xz"
+# No tests
+options="!check"
+
+build() {
+	cmake -B build -G Ninja \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+246a13badf9d72aa152ed317792e01a69dce003232b51cde0cd375d14933c3a50d6e389003dd85af7830b07994f26a0fb29963d32f70a7a0a0387805f2d43477  polkit-kde-agent-1-6.6.6.tar.xz
+"

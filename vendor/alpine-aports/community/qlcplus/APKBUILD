@@ -1,0 +1,59 @@
+maintainer="Achill Gilgenast <achill@achill.org>"
+pkgname=qlcplus
+pkgver=5.2.1
+pkgrel=0
+pkgdesc="The open DMX lighting desk software for controlling professional lighting fixtures"
+url="https://qlcplus.org/"
+# armhf blocked by qt6-qtmultimedia, x86/armv7 build fails
+arch="all !armhf !x86 !armv7"
+license="Apache-2.0"
+makedepends="
+	alsa-lib-dev
+	bash
+	cmake
+	desktop-file-utils
+	fftw
+	libftdi1-dev
+	libmad-dev
+	libsndfile-dev
+	qt6-qt3d-dev
+	qt6-qtmultimedia-dev
+	qt6-qtserialport-dev
+	qt6-qttools-dev
+	qt6-qtwebsockets-dev
+	samurai
+	shared-mime-info
+	"
+checkdepends="py3-lxml"
+subpackages="$pkgname-udev"
+source="$pkgname-$pkgver.tar.gz::https://github.com/mcallegari/qlcplus/archive/QLC+_$pkgver.tar.gz"
+builddir="$srcdir/qlcplus-QLC-_$pkgver"
+options="!check" # currently failing
+
+build() {
+	if [ "$CBUILD" != "$CHOST" ]; then
+		local crossopts="-DCMAKE_SYSTEM_NAME=Linux -DCMAKE_HOST_SYSTEM_NAME=Linux"
+	fi
+	export PATH="$PATH:/usr/lib/qt6/bin"
+	cmake -B build \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib \
+		-DBUILD_SHARED_LIBS=ON \
+		-DCMAKE_BUILD_TYPE=None \
+		-DUDEVRULESDIR=/usr/lib/udev/rules.d \
+		-Dqmlui=ON \
+		$crossopts
+	cmake --build build
+}
+
+check() {
+	cmake --build build --target check
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+sha512sums="
+703511431a31110efed8991883fbd698e721e77560d0699210ef0e282e873ce9005ceae386c1342d4c29a5028c1d543c54471c903675013fac714c0c2884f113  qlcplus-5.2.1.tar.gz
+"
