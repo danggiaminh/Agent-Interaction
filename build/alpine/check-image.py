@@ -2,15 +2,29 @@
 """Static checks of a staged Alpine image (rootfs directory). Read-only; prints PASS/FAIL lines.
 
   check-image.py --root DIR --lock base.lock --origins base.origins --aports DIR --arch x86_64 \
-                 --manifest FILE [--needles FILE] [--dev-lock dev.lock --dev-pkgs dev.pkgs]
+                 --manifest FILE [--needles FILE] [--layer "label,lock,pkgs[,exceptions]"]... [--setid PATH:MODE]...
+                 [--non-x86 PATH]... [--dangling PATH]... [--needle-ok PATH:VALUE]...
 
 Checks: package set == pinned lock; versions == vendored APKBUILDs; dependency closure (everything
 satisfied, nothing extra); every path owned by a package or an explicit image-config path; ELF
 architecture; uid/gid consistency; no dangling links; no host state (secrets, host names, paths).
 
-With --dev-lock/--dev-pkgs the image is the base system plus the development layer: the package set
-is base.lock + dev.lock, the closure is rooted at alpine-base and the packages of dev.pkgs, and the
-layer's versions are compared with the vendored APKBUILDs of their origins.
+Each --layer adds a layer on top of the base system, in order (development layer, then tools layer): the
+package set is base.lock + every layer's lock, the closure is rooted at alpine-base and the packages of
+every layer's .pkgs, and each layer's versions are compared with the vendored APKBUILDs of their origins.
+A layer's exceptions file ("origin locked-version vendored-version reason...") allows one origin aport to
+be locked at a version other than the vendored one, only while the vendored aport is still exactly at the
+listed vendored version and the lock is exactly at the listed locked version.
+--setid PATH:MODE names a file other than busybox-suid that may carry setuid/setgid bits, with that exact mode.
+
+Documented exemptions, each for a package-owned path and each checked for staleness: the set of paths that
+trip a check must equal the exemption set exactly, so an exemption that stops applying fails the check.
+--non-x86 PATH      an ELF file that is not x86-64 by design (firmware the package ships for another CPU)
+--dangling PATH     a symlink whose target the package itself does not provide (an upstream defect)
+--needle-ok PATH:VALUE   a host-path needle that matches a package file only as a documentation example
+                    (never applies to the other needle labels: wall-clock, secrets, host name)
+Entries of /etc/ssl/certs that the ca-certificates trigger creates (ca-cert-NAME.pem links and OpenSSL hash
+links) are not package-owned; they are verified against /etc/ca-certificates.conf and then accepted.
 """
 import argparse
 import mmap
@@ -19,6 +33,8 @@ import re
 import stat
 import subprocess
 import sys
+
+import apkbuild
 
 fails = 0
 
@@ -112,12 +128,42 @@ def main():
     ap.add_argument("--arch", required=True)
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--needles", help="file with one host-state string per line to search for")
-    ap.add_argument("--dev-lock", help="guest/dev.lock: adds the development layer to the expected package set")
-    ap.add_argument("--dev-pkgs", help="guest/dev.pkgs: top-level packages of the development layer (the world, with alpine-base)")
+    ap.add_argument("--layer", action="append", default=[], metavar="LABEL,LOCK,PKGS[,EXCEPTIONS]",
+                    help="a layer on top of the base system: label, its .lock, its .pkgs and optionally its .exceptions")
+    ap.add_argument("--setid", action="append", default=[], metavar="PATH:MODE",
+                    help="file allowed to carry setuid/setgid bits, with its exact mode (octal)")
+    ap.add_argument("--non-x86", action="append", default=[], metavar="PATH",
+                    help="package-owned ELF file that is not x86-64 by design")
+    ap.add_argument("--dangling", action="append", default=[], metavar="PATH",
+                    help="package-owned symlink that dangles in the upstream package")
+    ap.add_argument("--needle-ok", action="append", default=[], metavar="PATH:VALUE",
+                    help="package file in which a host-path needle is only a documentation example")
     a = ap.parse_args()
-    if bool(a.dev_lock) != bool(a.dev_pkgs):
-        ap.error("--dev-lock and --dev-pkgs go together")
     root = os.path.abspath(a.root)
+    allowed_setid = {"bin/bbsuid": 0o4111}
+    for x in a.setid:
+        path, _, mode = x.partition(":")
+        allowed_setid[path] = int(mode, 8)
+
+    layers = []  # dicts: label, lock rows, pkgs, exceptions, names of the files
+    for spec in a.layer:
+        f = spec.split(",")
+        if len(f) not in (3, 4):
+            ap.error(f"--layer needs label,lock,pkgs[,exceptions]: {spec}")
+        exc = {}
+        if len(f) == 4 and os.path.isfile(f[3]):
+            for line in open(f[3], encoding="utf-8"):
+                if line.strip() and not line.startswith("#"):
+                    x = line.split(None, 3)
+                    if len(x) != 4 or x[0] in exc:
+                        ap.error(f"{f[3]}: need 'origin locked-version vendored-version reason' once per aport: {line.strip()}")
+                    exc[x[0]] = (x[1], x[2])
+        layers.append({
+            "label": f[0], "lockname": os.path.basename(f[1]), "pkgsname": os.path.basename(f[2]),
+            "rows": [l.split() for l in open(f[1]) if l.strip() and not l.startswith("#")],
+            "pkgs": [l.strip() for l in open(f[2]) if l.strip() and not l.startswith("#")],
+            "exc": exc, "excname": os.path.basename(f[3]) if len(f) == 4 else "",
+        })
 
     pkgs = parse_db(os.path.join(root, "lib/apk/db/installed"))
     byname = {p["P"]: p for p in pkgs}
@@ -126,12 +172,14 @@ def main():
     # 1. package set == pinned lock
     installed = sorted(f"{p['P']}={p['V']}" for p in pkgs)
     locked = sorted(l.strip() for l in open(a.lock) if l.strip() and not l.startswith("#"))
-    dev = []  # (name, version, repo, origin, sha256) of the development layer
-    if a.dev_lock:
-        dev = [l.split() for l in open(a.dev_lock) if l.strip() and not l.startswith("#")]
-        check(all(len(d) == 5 for d in dev) and len({d[0] for d in dev}) == len(dev), "dev.lock has five fields per line and no duplicate package")
-        locked = sorted(set(locked) | {f"{d[0]}={d[1]}" for d in dev})
-    what = "base.lock + dev.lock" if a.dev_lock else "base.lock"
+    dev = []  # (name, version, repo, origin, sha256) of every layer's packages
+    for ly in layers:
+        dev += ly["rows"]
+        check(all(len(d) == 5 for d in ly["rows"]) and len({d[0] for d in ly["rows"]}) == len(ly["rows"]),
+              f"{ly['lockname']} has five fields per line and no duplicate package")
+        locked = sorted(set(locked) | {f"{d[0]}={d[1]}" for d in ly["rows"]})
+    check(len({d[0] for d in dev}) == len(dev), "no package is locked by two layers")
+    what = " + ".join(["base.lock"] + [ly["lockname"] for ly in layers])
     check(installed == locked, f"installed package set matches {what}",
           f"only installed: {sorted(set(installed) - set(locked))}; only locked: {sorted(set(locked) - set(installed))}")
 
@@ -140,29 +188,37 @@ def main():
     originset = {o for _, o in origins}
     devby = {d[0]: d for d in dev}
     stray = sorted(p["P"] for p in pkgs if p.get("o") not in originset and p["P"] not in devby)
-    check(not stray, "every package originates from an aport in base.origins" + (" or is locked in dev.lock" if dev else ""), str(stray))
-    if dev:
-        # The layer's packages are official binaries; each one must be exactly what the vendored aport describes.
-        wrong = []
-        for n, ver, repo, origin, _ in dev:
+    check(not stray, "every package originates from an aport in base.origins" + (" or is locked in " + " or ".join(ly["lockname"] for ly in layers) if layers else ""), str(stray))
+    for ly in layers:
+        # The layer's packages are official binaries; each one must be exactly what the vendored aport describes,
+        # or be covered by an exception that is still current.
+        wrong, excused = [], 0
+        for n, ver, repo, origin, _ in ly["rows"]:
             p = byname.get(n)
             if p is None or p.get("o") != origin:
                 wrong.append(f"{n}: origin {p.get('o') if p else None} != {origin}")
                 continue
-            t = open(os.path.join(a.aports, repo, origin, "APKBUILD"), encoding="utf-8").read()
-            v = re.search(r"^pkgver=(\S+)", t, re.M).group(1).strip("\"'")
-            r = re.search(r"^pkgrel=(\S+)", t, re.M).group(1).strip("\"'")
-            if ver != f"{v}-r{r}":
-                wrong.append(f"{n} {ver} != vendored {origin} {v}-r{r}")
-        check(not wrong, f"development layer: {len(dev)} packages, origins as locked, versions equal the vendored APKBUILD pkgver-pkgrel", "; ".join(wrong))
+            want = apkbuild.version(os.path.join(a.aports, repo, origin, "APKBUILD"))
+            if ver == want:
+                continue
+            if origin in ly["exc"] and ly["exc"][origin] == (ver, want):
+                excused += 1
+            else:
+                wrong.append(f"{n} {ver} != vendored {origin} {want}")
+        stale = sorted(o for o in ly["exc"] if not any(d[3] == o for d in ly["rows"]))
+        if stale:
+            wrong.append(f"{ly['excname']} lists {stale}, which the layer does not contain")
+        check(not wrong, f"{ly['label']}: {len(ly['rows'])} packages, origins as locked, versions equal the vendored APKBUILD pkgver-pkgrel"
+              + (f" ({excused} excused by {ly['excname']}, which still matches the vendored aports)" if excused else ""), "; ".join(wrong))
+    if layers:
+        unused = [f"{ly['excname']}: {o}" for ly in layers for o in ly["exc"] if not any(d[3] == o and d[1] == ly["exc"][o][0] for d in ly["rows"])]
+        check(not unused, "every exception still applies to a locked package", "; ".join(unused))
     mism = []
     for o_repo, o in origins:
-        t = open(os.path.join(a.aports, o_repo, o, "APKBUILD"), encoding="utf-8").read()
-        ver = re.search(r"^pkgver=(\S+)", t, re.M).group(1)
-        rel = re.search(r"^pkgrel=(\S+)", t, re.M).group(1)
+        want = apkbuild.version(os.path.join(a.aports, o_repo, o, "APKBUILD"))
         for p in pkgs:
-            if p.get("o") == o and p["V"] != f"{ver}-r{rel}":
-                mism.append(f"{p['P']} {p['V']} != {ver}-r{rel}")
+            if p.get("o") == o and p["V"] != want:
+                mism.append(f"{p['P']} {p['V']} != {want}")
     check(not mism, "installed versions equal the vendored APKBUILD pkgver-pkgrel", "; ".join(mism))
 
     # 3. manifest agrees with the installed db (name, version, origin)
@@ -170,7 +226,7 @@ def main():
     check(sorted(f"{x[0]}={x[1]}" for x in mf) == installed, "manifest lists exactly the installed packages")
     if dev:
         mism = [x[0] for x in mf if x[0] in devby and (x[3] != devby[x[0]][4] or x[2] != devby[x[0]][3])]
-        check(not mism, "manifest records the locked origin and .apk sha256 of every development package", str(mism))
+        check(not mism, "manifest records the locked origin and .apk sha256 of every package the " + " and ".join(ly["label"] for ly in layers) + " add", str(mism))
     check(all(len(x) == 5 and re.fullmatch(r"[0-9a-f]{64}", x[3]) and re.fullmatch(r"[0-9a-f]{64}", x[4]) for x in mf),
           "manifest has apk sha256 and datahash for every package")
 
@@ -194,8 +250,8 @@ def main():
                 unsat.append(f"{p['P']} -> {tok}")
     check(not unsat, "every dependency is satisfied inside the image", "; ".join(unsat[:5]))
     roots = ["alpine-base"]
-    if a.dev_pkgs:
-        roots += [l.strip() for l in open(a.dev_pkgs) if l.strip() and not l.startswith("#")]
+    for ly in layers:
+        roots += ly["pkgs"]
     seen, todo = set(), list(roots)
     while True:
         while todo:
@@ -216,10 +272,11 @@ def main():
         todo.extend(more)
     extra = sorted(set(byname) - seen)
     check(all(r in byname for r in roots) and not extra,
-          f"image is exactly the closure of {' + '.join(roots) if dev else 'alpine-base'}, dependencies plus install_if (no extra packages)", str(extra))
-    if a.dev_pkgs:
+          f"image is exactly the closure of {' + '.join(['alpine-base'] + [ly['pkgsname'] for ly in layers])}, dependencies plus install_if (no extra packages)", str(extra))
+    if layers:
         world = sorted(l.strip() for l in open(os.path.join(root, "etc/apk/world")) if l.strip())
-        check(world == sorted(roots), "/etc/apk/world records exactly the requested packages (alpine-base + dev.pkgs)", str(world))
+        check(world == sorted(roots), f"/etc/apk/world records exactly the requested packages ({' + '.join(['alpine-base'] + [ly['pkgsname'] for ly in layers])})",
+              f"only in world: {sorted(set(world) - set(roots))}; only requested: {sorted(set(roots) - set(world))}")
 
     # 6. ownership: every path is package-owned or an explicit image-configuration path
     print("== filesystem")
@@ -251,6 +308,38 @@ def main():
             applet.append(rel)
             unowned.remove(rel)
     check(len(applet) > 0, f"busybox applet links created by its trigger ({len(applet)})")
+    # ca-certificates' trigger (update-ca-certificates) links every enabled certificate of
+    # /etc/ca-certificates.conf as ca-cert-NAME.pem and adds an OpenSSL hash link (HASH.N) for each one.
+    certdir = "etc/ssl/certs/"
+    if any(r.startswith(certdir) for r in unowned):
+        enabled = []
+        conf = os.path.join(root, "etc/ca-certificates.conf")
+        if os.path.isfile(conf):
+            for line in open(conf, encoding="utf-8"):
+                line = line.strip()
+                if line and not line.startswith(("#", "!")) and line.endswith(".crt"):
+                    enabled.append(line)
+        want = {f"{certdir}ca-cert-{os.path.basename(c)[:-4]}.pem": "/usr/share/ca-certificates/" + c for c in enabled}
+        pems, hashes, trouble = set(), {}, []
+        for rel in sorted(r for r in unowned if r.startswith(certdir)):
+            full, name = os.path.join(root, rel), rel[len(certdir):]
+            tgt = os.readlink(full) if os.path.islink(full) else None
+            if rel in want:
+                if tgt == want[rel] and want[rel].lstrip("/") in owned:
+                    pems.add(rel)
+                else:
+                    trouble.append(f"{name} -> {tgt}")
+            elif re.fullmatch(r"[0-9a-f]{8}\.[0-9]+", name):
+                if tgt is not None and certdir + tgt in want:
+                    hashes[rel] = certdir + tgt
+                else:
+                    trouble.append(f"{name} -> {tgt}")
+        trouble += [f"{os.path.basename(w)} is missing" for w in sorted(set(want) - pems)]
+        trouble += [f"{os.path.basename(w)} has no hash link" for w in sorted(pems - set(hashes.values()))]
+        check(pems and hashes and not trouble,
+              f"/etc/ssl/certs: {len(pems)} certificate links and {len(hashes)} hash links from the ca-certificates trigger are exactly "
+              "what /etc/ca-certificates.conf enables, each pointing at a packaged certificate", "; ".join(trouble[:5]))
+        unowned = [r for r in unowned if r not in want and r not in hashes]
     check(not unowned, "no file outside package ownership and the documented image configuration",
           f"{len(unowned)}: {unowned[:12]}")
 
@@ -267,7 +356,14 @@ def main():
                 elfs += 1
                 if not (h[4] == 2 and h[5] == 1 and int.from_bytes(h[18:20], "little") == 0x3E):
                     wrong.append(os.path.relpath(full, root))
-    check(elfs > 0 and not wrong, f"all {elfs} ELF objects are 64-bit little-endian x86-64", str(wrong[:5]))
+    non_x86 = set(a.non_x86)
+    check(elfs > 0 and set(wrong) <= non_x86,
+          f"all {elfs} ELF objects are 64-bit little-endian x86-64" + (f" (except {sorted(non_x86)}: firmware that the package ships for another CPU)" if non_x86 else ""),
+          str(sorted(set(wrong) - non_x86)[:5]))
+    if non_x86:
+        check(non_x86 <= set(wrong) and all(x in owned for x in non_x86),
+              "every non-x86 exemption is a package-owned ELF file that is still not x86-64",
+              str(sorted(non_x86 - set(wrong)) + sorted(x for x in non_x86 if x not in owned)))
 
     # 8. ownership ids and link sanity
     pw = {int(l.split(":")[2]) for l in open(os.path.join(root, "etc/passwd")) if l.count(":") >= 6}
@@ -289,11 +385,20 @@ def main():
                 if (tgt is None or not os.path.lexists(tgt)) and not runtime:
                     dangling.append(f"{rel} -> {os.readlink(full)}")
             elif stat.S_ISREG(st.st_mode) and st.st_mode & 0o6000:
-                setuid.append(f"{rel} {oct(st.st_mode & 0o7777)}")
+                setuid.append((rel, st.st_mode & 0o7777))
     check(not bad_ids, "every uid/gid in the image exists in its own passwd/group", str(bad_ids[:5]))
-    check(not dangling, "no dangling symlinks (runtime /proc,/dev,/sys,/run targets excepted)", str(dangling[:5]))
-    check(setuid == ["bin/bbsuid 0o4111"] or all(s.startswith("bin/bbsuid") for s in setuid),
-          "only busybox-suid carries setuid/setgid bits", str(setuid))
+    dang_ok = set(a.dangling)
+    check(all(d.split(" -> ")[0] in dang_ok for d in dangling),
+          "no dangling symlinks (runtime /proc,/dev,/sys,/run targets excepted)" + (f" other than the {len(dang_ok)} that the packages themselves ship dangling ({', '.join(sorted(dang_ok))})" if dang_ok else ""),
+          str([d for d in dangling if d.split(" -> ")[0] not in dang_ok][:5]))
+    if dang_ok:
+        check(dang_ok == {d.split(" -> ")[0] for d in dangling} and all(x in owned for x in dang_ok),
+              "every dangling-link exemption is a package-owned symlink that still dangles",
+              str(sorted(dang_ok - {d.split(" -> ")[0] for d in dangling}) + sorted(x for x in dang_ok if x not in owned)))
+    unexpected = [f"{r} {oct(m)}" for r, m in setuid if allowed_setid.get(r) != m]
+    names = ", ".join(sorted(r for r, _ in setuid))
+    check(not unexpected, f"setuid/setgid bits only on the expected files with the expected modes ({names})",
+          f"unexpected: {unexpected}")
 
     # 9. no host state
     print("== host state")
@@ -313,7 +418,11 @@ def main():
             label, _, value = line.rstrip("\n").partition("\t")
             if value:
                 needles.append((label, value.encode()))
-        hits = []
+        hits, excused = [], set()
+        needle_ok = set()
+        for x in a.needle_ok:
+            path, _, value = x.partition(":")
+            needle_ok.add((path, value))
         for dp, dns, fns in os.walk(root):
             for n in fns:
                 full = os.path.join(dp, n)
@@ -324,9 +433,17 @@ def main():
                 with open(full, "rb") as fh, mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as data:
                     for label, value in needles:
                         if data.find(value) != -1:
-                            hits.append(f"{os.path.relpath(full, root)} [{label}]")  # label only, never the value
+                            rel = os.path.relpath(full, root)
+                            if label == "host-path" and (rel, value.decode()) in needle_ok and rel in owned:
+                                excused.add((rel, value.decode()))
+                            else:
+                                hits.append(f"{rel} [{label}]")  # label only, never the value
         check(not hits, f"none of {len(needles)} host-state strings (host paths, proxy, secrets, today's date) appears in any file",
               "; ".join(hits[:8]))
+        if needle_ok:
+            check(excused == needle_ok,
+                  f"the {len(needle_ok)} host-path exemptions are package files whose only match is a documentation example, and each still matches",
+                  str(sorted(p for p, _ in needle_ok - excused)))
 
     print(f"RESULT: image static checks {'OK' if not fails else 'FAILED'}")
     sys.exit(1 if fails else 0)

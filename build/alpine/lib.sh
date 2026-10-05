@@ -14,13 +14,16 @@ WORK_DIR="$BUILD_ROOT/work"
 PKG_DIR="$BUILD_ROOT/packages"
 DISTFILES_DIR="$BUILD_ROOT/distfiles"
 IMAGES_DIR="$BUILD_ROOT/images"
-UPSTREAM_DIR="$BUILD_ROOT/upstream" # checksum-pinned upstream .apk files of the development layer
+UPSTREAM_DIR="$BUILD_ROOT/upstream" # checksum-pinned upstream .apk files of the dev and tools layers
 LOGS_DIR="$BUILD_ROOT/logs"
 LOCK_FILE="$ALPINE_BUILD_DIR/guest/toolchain.lock" # visible inside the sandbox as /guest/toolchain.lock
 BASE_ORIGINS="$ALPINE_BUILD_DIR/guest/base.origins" # aports to build, in order (repo/name)
 BASE_LOCK="$ALPINE_BUILD_DIR/guest/base.lock"       # name=version of every package in the base image
 DEV_PKGS="$ALPINE_BUILD_DIR/guest/dev.pkgs"         # top-level packages of the development layer
 DEV_LOCK="$ALPINE_BUILD_DIR/guest/dev.lock"         # name version repo origin sha256 of every package the layer adds
+TOOLS_PKGS="$ALPINE_BUILD_DIR/guest/tools.pkgs"     # top-level packages of the tools layer
+TOOLS_LOCK="$ALPINE_BUILD_DIR/guest/tools.lock"     # name version repo origin sha256 of every package the tools layer adds
+TOOLS_EXCEPTIONS="$ALPINE_BUILD_DIR/guest/tools.exceptions" # packages locked at a version other than their vendored aport's
 ENTER="$ALPINE_BUILD_DIR/enter.sh"
 
 ROOTFS_DIGEST_FILE="$BUILD_ROOT/rootfs.digest" # digest of the toolchain rootfs right after bootstrap

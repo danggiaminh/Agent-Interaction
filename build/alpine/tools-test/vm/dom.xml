@@ -1,0 +1,26 @@
+<domain type='qemu'>
+  <name>toolsprobe</name>
+  <memory unit='MiB'>64</memory>
+  <vcpu>1</vcpu>
+  <os>
+    <type arch='x86_64' machine='q35'>hvm</type>
+    <boot dev='hd'/>
+  </os>
+  <clock offset='utc'/>
+  <on_poweroff>destroy</on_poweroff>
+  <on_reboot>destroy</on_reboot>
+  <on_crash>destroy</on_crash>
+  <devices>
+    <emulator>/usr/bin/qemu-system-x86_64</emulator>
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='raw'/>
+      <source file='@DISK@'/>
+      <target dev='sda' bus='sata'/>
+    </disk>
+    <serial type='file'>
+      <source path='@SERIAL@'/>
+      <target port='0'/>
+    </serial>
+@IFACE@
+  </devices>
+</domain>

@@ -1,0 +1,7 @@
+# Exceptions to "every locked version equals the pkgver-pkgrel of its origin aport in vendor/alpine-aports".
+# One line per origin aport:  origin  locked-version  vendored-version  reason
+# An exception applies only while the vendored aport is exactly at vendored-version and the live
+# index is exactly at locked-version; check-image.py fails on one that is stale or unused.
+python3 3.14.8-r0 3.14.7-r1 python3-pycache-pyc0 3.14.7-r1 was retired from the mirror (HTTP 404) while python3-pyc depends on it at exactly that version; needed by gdb and perf (libpython3.14)
+containerd 2.3.6-r0 2.3.5-r5 containerd-2.3.5-r5 was retired from the mirror (HTTP 404); docker-engine depends on containerd without a version constraint
+docker 29.8.2-r0 29.5.3-r1 docker-cli-29.5.3-r1 and docker-openrc-29.5.3-r1 were retired from the mirror (HTTP 404); the packages of one aport are locked at one version

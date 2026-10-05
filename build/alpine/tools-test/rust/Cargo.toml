@@ -1,0 +1,20 @@
+[package]
+name = "toolbox"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "burn"
+path = "src/main.rs"
+
+# No external crates: the offline image has no registry. A plain main() benchmarks, as Criterion would need a registry.
+[[bench]]
+name = "speed"
+harness = false
+
+[profile.release]
+debug = true

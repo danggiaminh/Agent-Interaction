@@ -1,0 +1,11 @@
+services:
+  server:
+    image: ctr-test:built
+    command: ["listen", "8080"]
+    networks: [probe]
+  client:
+    image: ctr-test:built
+    command: ["dial", "server", "8080"]
+    networks: [probe]
+networks:
+  probe: {}

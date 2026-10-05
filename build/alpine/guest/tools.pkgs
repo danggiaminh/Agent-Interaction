@@ -1,0 +1,125 @@
+# Top-level packages of the tools layer (debug, trace, profile, benchmark, pressure, filesystem and
+# image tools, QEMU, libvirt, Docker). Everything else in the layer is their dependency closure,
+# resolved against the development image and pinned with checksums in tools.lock.
+# Left out on purpose, because the development image already provides them: gcc, binutils, make,
+# rustc, cargo, and busybox's tar, gzip, unzip, cpio, xxd, od, hexdump, fdisk, mkfs.vfat, fallocate,
+# truncate, nsenter, unshare, ionice, setpriv, timeout, nc. Where busybox only has a reduced applet,
+# the real tool below takes over its path (apk installs it over the busybox link).
+#
+# C/C++ build, format, lint, static analysis
+#   g++ libstdc++-dev     C++ compiler and standard library (the dev layer has the C compiler only)
+#   linux-headers         kernel UAPI headers (ptrace, perf_event, bpf, netlink, loop, ... programs)
+#   pkgconf               pkg-config for C/C++ projects and cargo build scripts
+#   cmake samurai         CMake and the ninja-compatible builder
+#   file                  identify binaries (ELF type, stripped, linkage)
+#   clang22               clang/clang++ (links with the gcc toolchain of the dev layer)
+#   compiler-rt           clang's runtime libraries: ASan, UBSan, TSan, LSan, MSan, coverage and profile instrumentation
+#   clang22-extra-tools   clang-format, clang-tidy
+#   cppcheck              static analysis independent of the compiler
+# Rust format, lint, test, profile
+#   rustfmt rust-clippy   cargo fmt, cargo clippy
+#   rust-gdb              gdb wrapper with the Rust pretty printers
+#   cargo-nextest         test runner
+#   cargo-flamegraph      cargo flamegraph (perf + flamegraph)
+# Debug, trace, profile
+#   gdb strace ltrace valgrind
+#   perf                  perf record/report/stat/bench/trace (software events only in a VM)
+#   bpftool               inspect and load eBPF programs and maps
+# Benchmark
+#   hyperfine             command-line benchmarking
+#   sysbench              CPU, memory, file I/O, threads, mutex
+#   fio                   block and file I/O
+#   benchmark benchmark-dev   Google Benchmark library, for C++ micro-benchmarks
+# Resource pressure
+#   stress-ng             CPU, memory, process, thread, file descriptor, I/O, network (socket) stressors
+#   iperf3                TCP/UDP throughput
+#   iproute2              ip, ss, tc, bridge (the busybox ip is reduced)
+#   tcpdump               packet capture
+#   lsof                  open files per process (the busybox lsof ignores its arguments)
+# Filesystem and disk image creation and inspection
+#   e2fsprogs e2fsprogs-extra   mke2fs -d, e2fsck, debugfs, resize2fs, tune2fs, dumpe2fs, e2image
+#   fuse2fs               ext2/3/4 image access over FUSE without a kernel mount
+#   dosfstools mtools     FAT: mkfs.fat, fsck.fat, mcopy, mdir
+#   squashfs-tools        mksquashfs, unsquashfs
+#   erofs-utils           mkfs.erofs, dump.erofs, fsck.erofs
+#   xfsprogs              mkfs.xfs, xfs_db, xfs_repair
+#   btrfs-progs           mkfs.btrfs --rootdir, btrfs inspect-internal
+#   xorriso               ISO 9660 images
+#   qemu-img              qcow2/raw/vmdk conversion, info, check, snapshots
+#   util-linux-misc losetup partx sfdisk gptfdisk blkid lsblk findmnt mount umount wipefs
+#                         the real util-linux tools (taskset, chrt, prlimit, nsenter, ...) next to busybox's
+# Virtual machines (QEMU TCG without /dev/kvm; KVM where the cloud environment provides it)
+#   qemu-system-x86_64 seabios ovmf   emulator, BIOS, UEFI firmware
+#   libvirt-daemon libvirt-client libvirt-qemu   libvirtd, virsh, the QEMU driver
+# Containers
+#   docker-engine docker-cli docker-cli-compose docker-cli-buildx
+#   containerd runc       container runtime stack under dockerd
+#   iptables nftables     dockerd and libvirt networking
+g++
+libstdc++-dev
+linux-headers
+pkgconf
+cmake
+samurai
+file
+clang22
+compiler-rt
+clang22-extra-tools
+cppcheck
+rustfmt
+rust-clippy
+rust-gdb
+cargo-nextest
+cargo-flamegraph
+gdb
+strace
+ltrace
+valgrind
+perf
+bpftool
+hyperfine
+sysbench
+fio
+benchmark
+benchmark-dev
+stress-ng
+iperf3
+iproute2
+tcpdump
+lsof
+e2fsprogs
+e2fsprogs-extra
+fuse2fs
+dosfstools
+mtools
+squashfs-tools
+erofs-utils
+xfsprogs
+btrfs-progs
+xorriso
+qemu-img
+util-linux-misc
+losetup
+partx
+sfdisk
+gptfdisk
+blkid
+lsblk
+findmnt
+mount
+umount
+wipefs
+qemu-system-x86_64
+seabios
+ovmf
+libvirt-daemon
+libvirt-client
+libvirt-qemu
+docker-engine
+docker-cli
+docker-cli-compose
+docker-cli-buildx
+containerd
+runc
+iptables
+nftables

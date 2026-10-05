@@ -1,0 +1,485 @@
+# Inventory of the tools image: one row per fact printed by tools-test/unpriv.sh and tools-test/priv.sh,
+# judged by tools-judge.py. Tab separated columns:
+#   id  packages  fact  expectation  description
+# packages     comma separated packages of guest/tools.pkgs or guest/dev.pkgs the row exercises; `-` for a fact
+#              about the session or the host kernel that no package provides
+# expectation  ok | =VALUE | ver:PKG (contains the locked version of PKG) | ~REGEX (re.search), optionally
+#              followed by |limit:REGEX: the expectation failed but the value says the cloud host lacks a
+#              capability the tool needs, so the row is reported as LIMIT (a limitation), never as PASS
+# Every package of guest/tools.pkgs must appear in at least one row.
+
+# compilers and build tools
+gcc_version	gcc	gcc_version	ver:gcc	gcc version
+gxx_version	g++	gxx_version	ver:g++	g++ version
+clang_version	clang22	clang_version	ver:clang22	clang version
+clang_tidy_version	clang22-extra-tools	clang_tidy_version	ver:clang22-extra-tools	clang-tidy version
+clang_format_version	clang22-extra-tools	clang_format_version	ver:clang22-extra-tools	clang-format version
+cppcheck_version	cppcheck	cppcheck_version	ver:cppcheck	cppcheck version
+nft_version	nftables	nft_version	ver:nftables	nft version
+iptables_version	iptables	iptables_version	ver:iptables	iptables version
+cmake_version	cmake	cmake_version	ver:cmake	cmake version
+pkgconf_version	pkgconf	pkgconf_version	ver:pkgconf	pkgconf version
+gcc_build	gcc	gcc_build	ok	gcc compiles and links a C program
+gcc_run	gcc	gcc_run	=42	the gcc-built C program runs
+clang_build	clang22	clang_build	ok	clang compiles and links a C program (musl, compiler-rt)
+clang_run	clang22	clang_run	=42	the clang-built C program runs
+elf_file	file,clang22	elf_file	~ELF 64-bit LSB pie executable, x86-64.*/lib/ld-musl-x86_64\.so\.1	file identifies a musl x86_64 PIE executable
+gxx_build	g++,libstdc++-dev	gxx_build	ok	g++ compiles and links C++ with libstdc++
+gxx_run	g++,libstdc++-dev	gxx_run	=cpp-ok 55 caught	the g++-built C++ program runs (exceptions, STL)
+clangxx_build	clang22,libstdc++-dev	clangxx_build	ok	clang++ compiles and links C++
+clangxx_run	clang22,libstdc++-dev	clangxx_run	=cpp-ok 55 caught	the clang++-built C++ program runs
+linux_headers	linux-headers	linux_headers	ok	a program including Linux kernel headers compiles
+cmake_configure	cmake	cmake_configure	ok	cmake configures a project with the samurai generator
+cmake_build	cmake,samurai	cmake_build	ok	cmake builds with samurai
+cmake_run	cmake	cmake_run	=cpp-ok 55 caught	the cmake-built program runs
+ctest_run	cmake	ctest_run	~100% tests passed	ctest runs the project tests
+ninja_is_samurai	samurai	ninja_is_samurai	=/usr/bin/samu	ninja is provided by samurai
+samu_noop	samurai	samu_noop	~entering directory	samu runs a build graph
+pkgconf_flags	pkgconf,benchmark-dev	pkgconf_flags	~-lbenchmark	pkgconf resolves the benchmark library flags
+bench_run	benchmark,benchmark-dev	bench_run	~BM_Accumulate	a Google Benchmark program builds and runs
+boot_assemble	gcc	boot_assemble	ok	bare-metal boot sector assembles (gcc -c)
+boot_link	gcc	boot_link	ok	bare-metal boot sector links (ld script)
+boot_objcopy	gcc	boot_objcopy	ok	boot sector is flattened with objcopy
+boot_sector_size	gcc	boot_sector_size	=512	boot sector is 512 bytes
+
+# formatting and linting
+clang_format_ok	clang22-extra-tools	clang_format_ok	ok	clang-format accepts formatted C
+clang_format_detects	clang22-extra-tools	clang_format_detects	~code should be clang-formatted	clang-format flags unformatted C
+clang_tidy_detects	clang22-extra-tools	clang_tidy_detects	~clang-analyzer-core\.NullDereference	clang-tidy flags a null dereference
+clang_tidy_clean	clang22-extra-tools	clang_tidy_clean	ok	clang-tidy accepts clean C
+cppcheck_detects	cppcheck	cppcheck_detects	~arrayIndexOutOfBounds	cppcheck flags an out-of-bounds array access
+cppcheck_clean	cppcheck	cppcheck_clean	ok	cppcheck accepts clean C
+
+# rust
+cargo_version	cargo	cargo_version	ver:cargo	cargo version
+rustfmt_version	rustfmt	rustfmt_version	~^1\.[0-9]+\.[0-9]+	rustfmt version (its own version number, not rust's)
+clippy_version	rust-clippy	clippy_version	~^0\.1\.96	clippy version (0.1.NN follows rust 1.NN)
+nextest_version	cargo-nextest	nextest_version	ver:cargo-nextest	cargo-nextest version
+flamegraph_version	cargo-flamegraph	flamegraph_version	ver:cargo-flamegraph	cargo-flamegraph version
+cargo_fmt	cargo,rustfmt	cargo_fmt	ok	cargo fmt accepts formatted Rust
+rustfmt_detects	rustfmt	rustfmt_detects	~^Diff in	rustfmt flags unformatted Rust
+cargo_clippy	rust-clippy	cargo_clippy	ok	cargo clippy -D warnings accepts clean Rust
+clippy_detects	rust-clippy	clippy_detects	~unneeded `return` statement	clippy flags a lint violation
+clippy_clean	rust-clippy	clippy_clean	ok	clippy accepts clean Rust
+cargo_test	cargo	cargo_test	ok	cargo test runs offline
+nextest_run	cargo-nextest	nextest_run	~2 tests run: 2 passed	cargo nextest runs the tests
+cargo_build_release	cargo	cargo_build_release	ok	cargo build --release (offline, locked)
+burn_run	cargo	burn_run	~^burn [0-9]+	the release binary runs
+burn_file	cargo,file	burn_file	~ELF 64-bit LSB pie executable.*ld-musl-x86_64	the Rust binary targets x86_64 musl
+cargo_bench	cargo	cargo_bench	~bench fib: .*ns/iter	a cargo bench target runs
+
+# debugging and tracing
+gdb_version	gdb	gdb_version	ver:gdb	gdb version
+strace_version	strace	strace_version	ver:strace	strace version
+ltrace_version	ltrace	ltrace_version	ver:ltrace	ltrace version
+valgrind_version	valgrind	valgrind_version	ver:valgrind	valgrind version
+gdb_backtrace	gdb,gcc	gdb_backtrace	~^#0 +add \(a=40, b=2\) at c/clean\.c:5	gdb breaks, runs and prints a C backtrace with source lines
+gdb_args	gdb,gcc	gdb_args	=$1 = 40	gdb prints a variable
+rust_gdb_backtrace	rust-gdb,gdb	rust_gdb_backtrace	~burn::burn \(rounds=1000\)	rust-gdb prints a Rust backtrace with source lines
+strace_files	strace	strace_files	~execve\(	strace traces system calls
+strace_summary	strace	strace_summary	~total	strace -c summarises system calls
+ltrace_malloc	ltrace	ltrace_malloc	~malloc\(16\)	ltrace traces library calls of the main program (malloc@MAIN)
+ltrace_count	ltrace	ltrace_count	~malloc	ltrace -c counts library calls
+ltrace_libwide	ltrace	ltrace_libwide	~malloc\(16\)|limit:^none:Aborted	ltrace -e <symbol> across all libraries (aborts on musl; @MAIN works)
+valgrind_leak	valgrind	valgrind_leak	~definitely lost: 16 bytes	valgrind finds a leak
+valgrind_clean	valgrind	valgrind_clean	~All heap blocks were freed	valgrind accepts clean code
+asan_gcc	gcc	asan_gcc	~AddressSanitizer: heap-use-after-free	gcc AddressSanitizer catches a use-after-free
+asan_clang	clang22,compiler-rt	asan_clang	~AddressSanitizer: heap-use-after-free	clang AddressSanitizer catches a use-after-free
+ubsan_gcc	gcc	ubsan_gcc	~runtime error: signed integer overflow	gcc UBSan catches signed overflow
+ubsan_clang	clang22,compiler-rt	ubsan_clang	~runtime error: signed integer overflow	clang UBSan catches signed overflow
+
+# profiling and benchmarking
+perf_version	perf	perf_version	ver:perf	perf version
+bpftool_version	bpftool	bpftool_version	~^7\.	bpftool version (own version number, 7.x for kernel 7.1)
+bpftool_ver	bpftool	bpftool_ver	~^bpftool v7\.	bpftool runs
+hyperfine_version	hyperfine	hyperfine_version	ver:hyperfine	hyperfine version
+sysbench_version	sysbench	sysbench_version	ver:sysbench	sysbench version
+fio_version	fio	fio_version	ver:fio	fio version
+benchmark_version	benchmark	benchmark_version	ver:benchmark	Google Benchmark version
+perf_stat_sw	perf	perf_stat_sw	~task-clock	perf stat counts software events
+perf_record	perf	perf_record	~Captured and wrote	perf record samples a program (software clock)
+perf_report	perf	perf_report	~fib	perf report resolves a Rust symbol
+perf_bench	perf	perf_bench	~Total time	perf bench runs a scheduler micro-benchmark
+perf_hw_cycles	perf	perf_hw_cycles	~[0-9]+ +cycles|limit:not supported	perf hardware counters (the cloud VM exposes no PMU)
+flamegraph	cargo-flamegraph,perf	flamegraph	ok	cargo flamegraph writes an SVG
+flamegraph_svg	cargo-flamegraph	flamegraph_svg	~fib	the flamegraph names the hot function
+hyperfine_json	hyperfine	hyperfine_json	~"mean"	hyperfine benchmarks a command
+sysbench_cpu	sysbench	sysbench_cpu	~events per second	sysbench cpu benchmark
+sysbench_memory	sysbench	sysbench_memory	~MiB transferred	sysbench memory benchmark
+sysbench_fileio_prepare	sysbench	sysbench_fileio_prepare	ok	sysbench fileio prepare
+sysbench_fileio	sysbench	sysbench_fileio	~reads/s	sysbench fileio run
+fio_psync	fio	fio_psync	~"iops"	fio psync engine
+fio_libaio	fio	fio_libaio	~"iops"	fio libaio engine
+fio_io_uring	fio	fio_io_uring	~"iops"	fio io_uring engine
+
+# pressure
+stress_ng_version	stress-ng	stress_ng_version	ver:stress-ng	stress-ng version
+stress_cpu	stress-ng	stress_cpu	~successful run completed	stress-ng CPU pressure
+stress_vm	stress-ng	stress_vm	~successful run completed	stress-ng memory pressure
+stress_fork	stress-ng	stress_fork	~successful run completed	stress-ng process pressure
+stress_pthread	stress-ng	stress_pthread	~successful run completed	stress-ng thread pressure
+stress_open	stress-ng	stress_open	~successful run completed	stress-ng file-descriptor pressure
+stress_sock	stress-ng	stress_sock	~successful run completed	stress-ng network socket pressure
+stress_hdd	stress-ng	stress_hdd	~successful run completed	stress-ng disk I/O pressure
+fd_exhaustion	gcc	fd_exhaustion	~^EMFILE opened=[0-9]+	file-descriptor exhaustion under ulimit -n
+mem_exhaustion	gcc	mem_exhaustion	~^ENOMEM	memory exhaustion under ulimit -v
+iperf3_version	iperf3	iperf3_version	ver:iperf3	iperf3 version
+iproute2_version	iproute2	iproute2_version	ver:iproute2	iproute2 version
+tcpdump_version	tcpdump	tcpdump_version	ver:tcpdump	tcpdump version
+lsof_version	lsof	lsof_version	ver:lsof	lsof version
+ss_listener	iproute2,iperf3	ss_listener	~:5201	ss lists a listening socket
+lsof_listener	lsof,iperf3	lsof_listener	~TCP \*:5201 \(LISTEN\)	lsof names the listening process
+iperf3_loopback	iperf3	iperf3_loopback	~bits_per_second	iperf3 measures loopback throughput
+tcpdump_capture	tcpdump,iperf3	tcpdump_capture	~127\.0\.0\.1\.[0-9]+ > 127\.0\.0\.1\.5201	tcpdump captures loopback traffic
+ip_loopback	iproute2	ip_loopback	~lo: <LOOPBACK,UP,LOWER_UP>	ip shows the loopback device
+ip_json	iproute2	ip_json	~^\[\{"ifindex":1	ip -j prints JSON
+lsof_self	lsof	lsof_self	~lsof_self\.log	lsof lists the open files of a process
+
+# filesystems and disk images
+e2fsprogs_version	e2fsprogs	e2fsprogs_version	ver:e2fsprogs	e2fsprogs version
+xfsprogs_version	xfsprogs	xfsprogs_version	ver:xfsprogs	xfsprogs version
+btrfs_version	btrfs-progs	btrfs_version	ver:btrfs-progs	btrfs-progs version
+dosfstools_version	dosfstools	dosfstools_version	ver:dosfstools	dosfstools version
+mtools_version	mtools	mtools_version	ver:mtools	mtools version
+squashfs_version	squashfs-tools	squashfs_version	ver:squashfs-tools	squashfs-tools version
+erofs_version	erofs-utils	erofs_version	~^1\.9	erofs-utils version (reports 1.9 for 1.9.1)
+xorriso_version	xorriso	xorriso_version	ver:xorriso	xorriso version
+qemu_img_version	qemu-img	qemu_img_version	ver:qemu-img	qemu-img version
+util_linux_version	util-linux-misc	util_linux_version	ver:util-linux-misc	util-linux version
+gptfdisk_version	gptfdisk	gptfdisk_version	ver:gptfdisk	gptfdisk version
+sfdisk_version	sfdisk	sfdisk_version	ver:sfdisk	sfdisk version
+partx_version	partx	partx_version	ver:partx	partx version
+ext4_deterministic	e2fsprogs	ext4_deterministic	=yes	mke2fs -d builds byte-identical ext4 images
+e2fsck	e2fsprogs	e2fsck	ok	e2fsck accepts the image
+debugfs_ls	e2fsprogs	debugfs_ls	~numbers	debugfs lists the image
+debugfs_cat	e2fsprogs	debugfs_cat	=hello image	debugfs reads a file out of the image
+tune2fs_label	e2fsprogs	tune2fs_label	~toolsfs	tune2fs sets the label
+dumpe2fs_uuid	e2fsprogs	dumpe2fs_uuid	~11111111-2222-3333-4444-555555555555	dumpe2fs reports the fixed UUID
+e2label_read	e2fsprogs	e2label_read	=toolsfs	e2label reads the label
+e2freefrag_run	e2fsprogs-extra	e2freefrag_run	~Total blocks	e2freefrag reports fragmentation
+resize2fs_grow	e2fsprogs	resize2fs_grow	ok	resize2fs grows an image
+resize2fs_blocks	e2fsprogs	resize2fs_blocks	~12288	the grown image has the new block count
+resize2fs_fsck	e2fsprogs	resize2fs_fsck	ok	the grown image is clean
+mke2fs_ext2	e2fsprogs	mke2fs_ext2	ok	mke2fs builds an ext2 image
+e2image_run	e2fsprogs-extra,e2fsprogs	e2image_run	ver:e2fsprogs	e2image runs
+e2image_fsck	e2fsprogs-extra	e2image_fsck	ok	e2image output is a valid image
+squashfs_deterministic	squashfs-tools	squashfs_deterministic	=yes	mksquashfs builds byte-identical images
+unsquashfs_list	squashfs-tools	unsquashfs_list	~data/link -> \.\./etc/motd	unsquashfs lists the image, symlink included
+unsquashfs_extract	squashfs-tools	unsquashfs_extract	ok	unsquashfs extracts the image
+squashfs_content	squashfs-tools	squashfs_content	ok	the extracted tree matches the source
+erofs_deterministic	erofs-utils	erofs_deterministic	=yes	mkfs.erofs builds byte-identical images
+fsck_erofs	erofs-utils	fsck_erofs	ok	fsck.erofs accepts the image
+dump_erofs	erofs-utils	dump_erofs	~Filesystem UUID	dump.erofs reads the superblock
+erofs_extract	erofs-utils	erofs_extract	ok	fsck.erofs extracts the image
+erofs_content	erofs-utils	erofs_content	ok	the extracted tree matches the source
+mkfs_fat	dosfstools	mkfs_fat	ok	mkfs.fat builds a FAT image
+fsck_fat	dosfstools	fsck_fat	ok	fsck.fat accepts the image
+mtools_mmd	mtools	mtools_mmd	ok	mmd makes a directory in the image
+mtools_mcopy	mtools	mtools_mcopy	ok	mcopy copies a file into the image
+mtools_mdir	mtools	mtools_mdir	~MOTD	mdir lists the image
+mtools_mtype	mtools	mtools_mtype	=hello image	mtype reads a file from the image
+fsck_fat_after	dosfstools	fsck_fat_after	ok	the FAT image is clean after mtools
+xorriso_deterministic	xorriso	xorriso_deterministic	=yes	xorriso builds byte-identical ISO images
+xorriso_find	xorriso	xorriso_find	~/etc/motd	xorriso lists the ISO
+osirrox_extract	xorriso	osirrox_extract	ok	osirrox extracts a file from the ISO
+osirrox_content	xorriso	osirrox_content	=hello image	the extracted file matches
+qcow2_convert	qemu-img	qcow2_convert	ok	qemu-img converts raw to qcow2
+qcow2_info	qemu-img	qcow2_info	~"format": "qcow2"	qemu-img info reports the format
+qcow2_check	qemu-img	qcow2_check	~No errors were found	qemu-img check accepts the image
+qcow2_back	qemu-img	qcow2_back	ok	qemu-img converts qcow2 back to raw
+qcow2_roundtrip	qemu-img	qcow2_roundtrip	=yes	raw -> qcow2 -> raw is lossless
+vmdk_convert	qemu-img	vmdk_convert	ok	qemu-img converts raw to vmdk
+vmdk_back	qemu-img	vmdk_back	ok	qemu-img converts vmdk back to raw
+vmdk_roundtrip	qemu-img	vmdk_roundtrip	=yes	raw -> vmdk -> raw is lossless
+vpc_convert	qemu-img	vpc_convert	ok	qemu-img converts raw to vpc (VHD)
+qemu_compare	qemu-img	qemu_compare	~Images are identical	qemu-img compare
+qcow2_overlay	qemu-img	qcow2_overlay	ok	qemu-img creates a backing-file overlay
+qcow2_backing	qemu-img	qcow2_backing	~backing file:	the overlay names its backing file
+qcow2_snapshot	qemu-img	qcow2_snapshot	ok	qemu-img creates a snapshot
+qcow2_snapshot_list	qemu-img	qcow2_snapshot_list	~snap1	qemu-img lists snapshots
+qemu_io	qemu-img	qemu_io	~wrote 4096/4096 bytes	qemu-io writes to an image
+qemu_nbd_help	qemu-img	qemu_nbd_help	~Usage: qemu-nbd	qemu-nbd runs
+qemu_storage_daemon	qemu-img	qemu_storage_daemon	~Usage: qemu-storage-daemon	qemu-storage-daemon runs
+sfdisk_gpt	sfdisk	sfdisk_gpt	ok	sfdisk writes a GPT
+sfdisk_dump	sfdisk	sfdisk_dump	~type=0FC63DAF	sfdisk dumps the table
+sfdisk_verify	sfdisk	sfdisk_verify	~No errors detected	sfdisk verifies the table
+partx_show_image	partx	partx_show_image	~2048 +18431	partx lists the partitions of an image file
+gdisk_list	gptfdisk	gdisk_list	~Found valid GPT	gdisk reads the GPT
+gdisk_partitions	gptfdisk	gdisk_partitions	~EF00	gdisk lists the partitions
+gdisk_create	gptfdisk	gdisk_create	ok	sgdisk creates a partition
+gdisk_created	gptfdisk	gdisk_created	~8200 +Linux swap	the new partition is listed
+sfdisk_dos	sfdisk	sfdisk_dos	ok	sfdisk writes an MBR table
+fdisk_list	sfdisk	fdisk_list	~Disklabel type: dos	fdisk lists the MBR table
+blkid_gpt	blkid	blkid_gpt	~PTTYPE="gpt"	blkid identifies a GPT
+blkid_dos	blkid	blkid_dos	~PTTYPE="dos"	blkid identifies an MBR table
+blkid_ext4	blkid	blkid_ext4	~TYPE="ext4"	blkid identifies ext4
+blkid_label	blkid	blkid_label	~LABEL="toolsfs"	blkid finds a filesystem by label
+blkid_vfat	blkid	blkid_vfat	~TYPE="vfat"	blkid identifies FAT
+blkid_squashfs	blkid	blkid_squashfs	~TYPE="squashfs"	blkid identifies squashfs
+blkid_erofs	blkid	blkid_erofs	~TYPE="erofs"	blkid identifies erofs
+wipefs_list	wipefs	wipefs_list	~ext4	wipefs lists signatures
+wipefs_erase	wipefs	wipefs_erase	ok	wipefs erases the signature
+blkid_after_wipe	blkid,wipefs	blkid_after_wipe	=rc2	blkid finds nothing after wipefs
+mkfs_xfs	xfsprogs	mkfs_xfs	ok	mkfs.xfs builds an XFS image
+blkid_xfs	xfsprogs,blkid	blkid_xfs	~TYPE="xfs"	blkid identifies XFS
+xfs_repair_check	xfsprogs	xfs_repair_check	ok	xfs_repair -n accepts the image
+mkfs_btrfs	btrfs-progs	mkfs_btrfs	ok	mkfs.btrfs builds a btrfs image
+btrfs_super	btrfs-progs	btrfs_super	~toolsbtrfs	btrfs inspect-internal dump-super reads the label
+btrfs_check	btrfs-progs	btrfs_check	ok	btrfs check accepts the image
+fsck_btrfs_wrapper	btrfs-progs	fsck_btrfs_wrapper	~BTRFS	fsck.btrfs is the stock no-op wrapper that points to btrfs check
+findmnt_proc	findmnt	findmnt_proc	~"target": "/proc"	findmnt reads the mount table
+mount_tmpfs_userns	mount,umount	mount_tmpfs_userns	ok	mount and umount work in the unprivileged session (tmpfs)
+losetup_version	losetup	losetup_version	~losetup from util-linux	losetup runs
+lsblk_version	lsblk	lsblk_version	~lsblk from util-linux	lsblk runs
+mountpoint_run	util-linux-misc	mountpoint_run	~is a mountpoint	mountpoint runs
+fallocate_run	util-linux-misc	fallocate_run	ok	fallocate creates a sparse image
+
+# virtual machines (QEMU emulation, no KVM)
+qemu_version	qemu-system-x86_64	qemu_version	ver:qemu-system-x86_64	qemu-system-x86_64 version
+qemu_tcg_boot_rc	qemu-system-x86_64	qemu_tcg_boot_rc	=67	QEMU TCG boots the test image and it powers off through isa-debug-exit
+qemu_tcg_serial	qemu-system-x86_64	qemu_tcg_serial	=BOOT-OK	the guest wrote its serial banner
+qemu_machines	qemu-system-x86_64	qemu_machines	~pc-q35	QEMU lists the q35 machine
+qemu_accels	qemu-system-x86_64	qemu_accels	~kvm|limit:^tcg$	QEMU accelerators (KVM absent, TCG emulation only)
+seabios_file	seabios	seabios_file	~bios-256k\.bin	SeaBIOS image is installed
+ovmf_files	ovmf	ovmf_files	~OVMF_CODE\.fd	OVMF firmware is installed
+ovmf_serial	ovmf,qemu-system-x86_64	ovmf_serial	~BdsDxe	OVMF runs under TCG up to the boot manager
+
+# the unprivileged session itself
+dev_kvm	-	dev_kvm	=absent	the unprivileged session has no /dev/kvm (private /dev; see priv_dev_kvm for the host)
+dev_fuse	-	dev_fuse	=absent	the unprivileged session has no /dev/fuse (private /dev)
+ulimit_nofile	-	ulimit_nofile	=20000/20000	file-descriptor limit of the unprivileged session
+perf_event_paranoid	-	perf_event_paranoid	=2	perf_event_paranoid of the host
+
+# privileged session: the session itself
+real_root	-	real_root	=yes	the session runs as the real root of the host
+hostname	-	hostname	=alpine-tools	private UTS namespace
+pid_namespace	-	pid_namespace	=private	private PID namespace
+net_namespace_ifaces	-	net_namespace_ifaces	~^lo\s*$	private network namespace with loopback only
+cgroup_layout	-	cgroup_layout	~cgroup	cgroup hierarchies are mounted
+tracefs	-	tracefs	=tracefs	tracefs is mounted
+lo_state	iproute2	lo_state	~LOOPBACK,UP	loopback is up
+
+# privileged: loop devices and kernel mounts
+losetup_attach	losetup	losetup_attach	~/dev/loop[0-9]+	losetup attaches an image
+losetup_list	losetup	losetup_list	~ext4\.img	losetup lists the attachment
+loop_blkid	blkid,losetup	loop_blkid	~TYPE="ext4"	blkid reads the loop device
+loop_lsblk	lsblk	loop_lsblk	~"name": "loop0"	lsblk lists the loop device
+loop_mount_ext4	mount	loop_mount_ext4	ok	mount mounts ext4 from a loop device
+loop_read	mount	loop_read	=hello image	the mounted image is readable
+loop_write	mount	loop_write	ok	the mounted image is writable
+loop_findmnt	findmnt	loop_findmnt	~ext4	findmnt shows the mount
+loop_df	mount	loop_df	~/dev/loop0	df shows the mount
+loop_umount	umount	loop_umount	ok	umount unmounts
+loop_fsck_after	e2fsprogs	loop_fsck_after	ok	e2fsck accepts the image after writes
+loop_written	e2fsprogs	loop_written	~numbers	debugfs sees the files written through the mount
+losetup_detach	losetup	losetup_detach	ok	losetup detaches
+mount_o_loop	mount	mount_o_loop	ok	mount -o loop sets up the loop device itself
+mount_ro_refuses_write	mount	mount_ro_refuses_write	ok	a read-only mount refuses writes
+mount_bind	mount	mount_bind	ok	bind mount
+mount_bind_read	mount	mount_bind_read	=hello image	the bind mount is readable
+mount_squashfs	squashfs-tools,mount	mount_squashfs	ok	kernel mount of a squashfs image
+squashfs_read	squashfs-tools	squashfs_read	=hello image	the squashfs mount is readable
+mount_erofs	erofs-utils,mount	mount_erofs	ok	kernel mount of an erofs image
+erofs_read	erofs-utils	erofs_read	=hello image	the erofs mount is readable
+mount_overlay	mount	mount_overlay	ok	overlayfs mount
+overlay_copy_up	mount	overlay_copy_up	ok	overlayfs copy-up on write
+mount_tmpfs_kernel	mount,umount	mount_tmpfs_kernel	ok	tmpfs mount
+loop_partscan_nodes	losetup	loop_partscan_nodes	~p1|limit:^$	losetup -P creates partition nodes (the guest kernel has no GPT/MSDOS parser; partx is used instead)
+partx_add	partx	partx_add	ok	partx -a creates partition nodes
+loop_partitions	partx	loop_partitions	~p1 p2	both partition nodes exist
+partx_show_device	partx	partx_show_device	~18432 +129023	partx lists the partitions of a device
+mkfs_on_partition	e2fsprogs	mkfs_on_partition	ok	mke2fs on a partition node
+partition_blkid	blkid	partition_blkid	~PARTUUID	blkid reads the partition
+partition_mount	mount	partition_mount	ok	the partition mounts
+partition_umount	umount	partition_umount	ok	the partition unmounts
+partx_delete	partx	partx_delete	ok	partx -d removes the nodes
+partition_detach	losetup	partition_detach	ok	losetup detaches the partitioned image
+mount_xfs	xfsprogs,mount	mount_xfs	ok|limit:unknown filesystem type 'xfs'	kernel mount of XFS (the guest kernel has no xfs; mkfs and xfs_repair work on images)
+mount_btrfs	btrfs-progs,mount	mount_btrfs	ok|limit:unknown filesystem type 'btrfs'	kernel mount of btrfs (the guest kernel has no btrfs; mkfs and check work on images)
+mount_vfat	dosfstools,mount	mount_vfat	ok|limit:unknown filesystem type 'vfat'	kernel mount of FAT (the guest kernel has no vfat; mkfs, fsck and mtools work on images)
+filesystems_in_kernel	mount	filesystems_in_kernel	~ext4	the kernel supports ext4
+kernel_filesystems	mount	kernel_filesystems	~erofs ext2 ext3 ext4	the kernel supports ext2/3/4, erofs
+loop_leftover	losetup	loop_leftover	=0	no loop device is left attached
+
+# privileged: FUSE
+priv_dev_fuse	fuse2fs	priv_dev_fuse	=present	/dev/fuse exists
+fuse2fs_mount	fuse2fs	fuse2fs_mount	ok	fuse2fs mounts an ext4 image
+fuse2fs_findmnt	fuse2fs,findmnt	fuse2fs_findmnt	~fuse\.ext4	the mount is FUSE
+fuse2fs_read	fuse2fs	fuse2fs_read	=hello image	the FUSE mount is readable
+fuse2fs_write	fuse2fs	fuse2fs_write	ok	the FUSE mount is writable
+fuse2fs_umount	fuse2fs	fuse2fs_umount	ok	the FUSE mount unmounts
+fuse2fs_persisted	fuse2fs,e2fsprogs	fuse2fs_persisted	~fused	debugfs sees the file written through FUSE
+fuse2fs_fsck	fuse2fs,e2fsprogs	fuse2fs_fsck	ok	e2fsck accepts the image after FUSE writes
+
+# privileged: ftrace, perf tracepoints, eBPF
+tracefs_files	-	tracefs_files	=present	tracefs is usable
+ftrace_tracers	-	ftrace_tracers	~function	the kernel lists the function tracer
+ftrace_instance	-	ftrace_instance	ok	an ftrace instance can be created
+ftrace_events	-	ftrace_events	~sched_switch	ftrace event tracing records sched_switch
+ftrace_function	-	ftrace_function	~vfs_read|limit:^tracer:nop$	the ftrace function tracer (the cloud host refuses to enable it: EPERM)
+ftrace_instance_remove	-	ftrace_instance_remove	ok	the ftrace instance is removed
+perf_tracepoint_stat	perf	perf_tracepoint_stat	~sched:sched_switch	perf stat counts a tracepoint
+perf_tracepoint_record	perf	perf_tracepoint_record	~Captured and wrote	perf record samples a tracepoint
+perf_tracepoint_script	perf	perf_tracepoint_script	~sched:sched_switch	perf script prints the tracepoint samples
+perf_trace_syscalls	perf	perf_trace_syscalls	ok	perf trace traces system calls
+perf_trace_output	perf	perf_trace_output	~open\(	perf trace shows open()
+perf_cpu_clock	perf	perf_cpu_clock	~Captured and wrote	perf record with cpu-clock
+perf_hw_cycles_priv	perf	perf_hw_cycles_priv	~[0-9]+ +cycles|limit:not supported	perf hardware counters in the privileged session (no PMU)
+perf_list_tracepoints	perf	perf_list_tracepoints	~Tracepoint event	perf list shows tracepoints
+strace_attach	strace	strace_attach	~nanosleep	strace attaches to a running process
+bpf_compile	clang22	bpf_compile	ok	clang compiles a BPF program
+bpf_object_file	clang22,file	bpf_object_file	~eBPF	the object is eBPF
+bpf_feature_prog	bpftool	bpf_feature_prog	~socket_filter is available	bpftool probes the kernel
+bpffs_mount	bpftool	bpffs_mount	ok	bpffs mounts
+bpf_prog_load	bpftool	bpf_prog_load	ok	bpftool loads a program
+bpf_prog_show	bpftool	bpf_prog_show	~accept_all	bpftool shows the program
+bpf_prog_list	bpftool	bpf_prog_list	~accept_all	bpftool lists the program
+bpf_map_create	bpftool	bpf_map_create	ok	bpftool creates a map
+bpf_map_update	bpftool	bpf_map_update	ok	bpftool updates the map
+bpf_map_dump	bpftool	bpf_map_dump	~value: 2a	bpftool dumps the map
+bpf_cleanup	bpftool	bpf_cleanup	ok	pinned programs and maps are removed
+
+# privileged: networking
+veth_create	iproute2	veth_create	ok	ip creates a veth pair
+netns_create	iproute2	netns_create	ok	ip creates a network namespace
+veth_move	iproute2	veth_move	ok	ip moves the veth into the namespace
+veth_configure	iproute2	veth_configure	ok	ip configures addresses
+netns_list	iproute2	netns_list	~toolsa	ip netns lists the namespace
+netns_exec_iface	iproute2	netns_exec_iface	~veth1@	ip netns exec runs in the namespace
+ping_veth	iproute2	ping_veth	~1 packets received	ping across the veth pair
+netns_listener	iproute2,iperf3	netns_listener	~:5202	ss lists the listener in the namespace
+netns_lsof	lsof,iperf3	netns_lsof	~TCP \*:5202 \(LISTEN\)	lsof names the listener
+iperf3_veth	iperf3	iperf3_veth	~bits_per_second	iperf3 TCP across the veth pair
+iperf3_udp	iperf3	iperf3_udp	~bits_per_second	iperf3 UDP across the veth pair
+tcpdump_veth	tcpdump	tcpdump_veth	~10\.77\.0\.1\.[0-9]+ > 10\.77\.0\.2\.5202	tcpdump captures on the veth
+nft_table	nftables	nft_table	ok	nft adds a table
+nft_chain	nftables	nft_chain	ok	nft adds a chain
+nft_rule	nftables	nft_rule	ok	nft adds a drop rule
+nft_list	nftables	nft_list	~dport 5202	nft lists the rule
+nft_blocks	nftables,iperf3	nft_blocks	~Operation timed out|unable to connect	the nft drop rule blocks the connection
+nft_counted	nftables	nft_counted	~counter packets [1-9]	the rule counted the dropped packets
+nft_delete	nftables	nft_delete	ok	nft deletes the table
+nft_unblocked	nftables,iperf3	nft_unblocked	~bits_per_second	traffic flows again afterwards
+iptables_drop	iptables	iptables_drop	ok	iptables adds a drop rule
+iptables_list	iptables	iptables_list	~-A INPUT -p icmp -j DROP	iptables lists the rule
+iptables_blocks	iptables	iptables_blocks	~100% packet loss	the iptables rule blocks ping
+iptables_flush	iptables	iptables_flush	ok	iptables flushes
+iptables_allows	iptables	iptables_allows	~1 packets received	ping works after the flush
+iptables_backend	iptables	iptables_backend	~nf_tables	iptables uses the nf_tables backend
+bridge_create	iproute2	bridge_create	ok	ip creates a bridge
+veth_pair_two	iproute2	veth_pair_two	ok	ip creates a second veth pair
+bridge_enslave	iproute2	bridge_enslave	ok	ip enslaves a veth to the bridge
+bridge_slave	iproute2	bridge_slave	~master br0	ip shows the bridge port
+bridge_tool	iproute2	bridge_tool	~master br0	bridge link shows the port
+tuntap_create	iproute2	tuntap_create	ok	ip creates a tap device
+tuntap_show	iproute2	tuntap_show	~tun9	ip shows the tap device
+tc_show	iproute2	tc_show	~qdisc noqueue	tc shows qdiscs
+tc_tbf	iproute2	tc_tbf	ok	tc adds a token-bucket filter
+tc_netem	iproute2	tc_netem	ok|limit:Specified qdisc kind is unknown	tc netem (the guest kernel has no sch_netem module)
+dummy_link	iproute2	dummy_link	ok|limit:Unknown device type	ip link type dummy (the guest kernel has no dummy module)
+ip_route	iproute2	ip_route	~10\.77\.0\.0/24 dev veth0	ip shows the route
+
+# privileged: cgroup limits
+cgroup_memory	-	cgroup_memory	=mounted	the memory controller is mounted (cgroup v1)
+cgroup_pids	-	cgroup_pids	=mounted	the pids controller is mounted (cgroup v1)
+cgroup_cpu	-	cgroup_cpu	=mounted	the cpu controller is mounted (cgroup v1)
+cgroup_memory_oom_rc	-	cgroup_memory_oom_rc	=137	a memory-limited process is OOM-killed
+cgroup_memory_oom_kill	-	cgroup_memory_oom_kill	~oom_kill [1-9]	the kernel counted the OOM kill
+cgroup_pids_limit	-	cgroup_pids_limit	~refused	the pids limit refuses forks
+cgroup_cpu_quota	-	cgroup_cpu_quota	~cpu-ratio=0\.[3-6]	the cpu quota throttles a busy loop to about half a CPU
+cgroup_stress_ng	stress-ng	cgroup_stress_ng	~successful run completed	stress-ng runs under a memory limit
+cgroup_stress_ng_oom_kills	stress-ng	cgroup_stress_ng_oom_kills	~^[1-9]	stress-ng workers were OOM-killed by the limit
+
+# privileged: libvirt and QEMU
+libvirt_version	libvirt-client	libvirt_version	ver:libvirt-client	virsh version
+libvirtd_version	libvirt-daemon	libvirtd_version	ver:libvirt-daemon	libvirtd version
+virsh_version	libvirt-client	virsh_version	ver:libvirt-client	virsh talks to libvirtd (library version)
+virsh_hypervisor	libvirt-qemu,qemu-system-x86_64	virsh_hypervisor	ver:qemu-system-x86_64	libvirtd drives the locked QEMU
+virsh_capabilities	libvirt-qemu	virsh_capabilities	~<arch>x86_64</arch>	virsh capabilities
+virsh_domcaps_tcg	libvirt-qemu	virsh_domcaps_tcg	~<domainCapabilities>	virsh domcapabilities for QEMU TCG
+virsh_domcaps_kvm	libvirt-qemu	virsh_domcaps_kvm	~<domainCapabilities>|limit:failed to get emulator capabilities	virsh domcapabilities for KVM (no /dev/kvm)
+virt_host_validate	libvirt-client	virt_host_validate	~: PASS|limit:: FAIL	virt-host-validate hardware virtualization (no KVM)
+pool_define	libvirt-client	pool_define	ok	virsh defines a storage pool
+pool_start	libvirt-client	pool_start	ok	virsh starts the pool
+vol_create	libvirt-client,qemu-img	vol_create	ok	virsh creates a qcow2 volume
+vol_list	libvirt-client	vol_list	~toolsvol\.qcow2	virsh lists the volume
+vol_qcow2	qemu-img	vol_qcow2	~"format": "qcow2"	the volume is qcow2
+domain_define	libvirt-qemu	domain_define	ok	virsh defines a QEMU TCG domain
+domain_list_defined	libvirt-qemu	domain_list_defined	~toolsprobe	virsh lists the domain
+domain_start	libvirt-qemu,libvirt-daemon,qemu-system-x86_64	domain_start	ok	libvirt starts the domain
+domain_serial	libvirt-qemu	domain_serial	=BOOT-OK	the domain wrote its serial banner
+domain_state	libvirt-qemu	domain_state	=running	the domain is running
+domain_info	libvirt-qemu	domain_info	~CPU\(s\)	virsh dominfo
+domain_qemu_process	qemu-system-x86_64,libvirt-qemu	domain_qemu_process	~qemu-system-x86_64.*guest=toolsprobe	libvirt runs the locked QEMU binary
+domain_blk	libvirt-qemu	domain_blk	~boot\.img	virsh domblklist
+domain_destroy	libvirt-qemu	domain_destroy	ok	virsh destroys the domain
+domain_state_after	libvirt-qemu	domain_state_after	=shut off	the domain is shut off
+domain_undefine	libvirt-qemu	domain_undefine	ok	virsh undefines the domain
+net_define	libvirt-daemon	net_define	ok	virsh defines a virtual network
+net_start	libvirt-daemon	net_start	~Network toolsnet started|limit:action csum	libvirt virtual networks (the guest kernel has no act_csum module)
+net_undefine	libvirt-daemon	net_undefine	ok	virsh undefines the network
+vbridge_create	iproute2	vbridge_create	ok	ip creates a host bridge for the VM
+vbridge_up	iproute2	vbridge_up	ok	the bridge is up
+domain_br_define	libvirt-qemu	domain_br_define	ok	virsh defines a domain on the host bridge
+domain_br_start	libvirt-qemu	domain_br_start	ok	libvirt starts the domain with a tap
+domain_br_serial	libvirt-qemu	domain_br_serial	=BOOT-OK	the bridged domain boots
+domain_br_iflist	libvirt-qemu	domain_br_iflist	~vbr0	virsh domiflist shows the bridge
+domain_br_tap	libvirt-qemu,iproute2	domain_br_tap	~master vbr0	the tap device is a bridge port
+
+# privileged: containers
+runc_run	runc	runc_run	=runc-ok	runc runs an OCI bundle
+docker_info_server	docker-engine	docker_info_server	ver:docker-engine	docker info reaches the daemon
+docker_storage_driver	docker-engine,containerd	docker_storage_driver	~overlay	docker uses overlayfs
+docker_runtime	docker-engine,runc	docker_runtime	~runc	docker uses runc
+docker_cgroup	docker-engine	docker_cgroup	~cgroupfs	docker uses the cgroupfs driver
+docker_version	docker-cli	docker_version	ver:docker-cli	docker client version
+dockerd_version	docker-engine	dockerd_version	ver:docker-engine	dockerd version
+compose_version	docker-cli-compose	compose_version	ver:docker-cli-compose	docker compose version
+buildx_version	docker-cli-buildx	buildx_version	ver:docker-cli-buildx	docker buildx version
+containerd_version	containerd	containerd_version	ver:containerd	containerd version
+runc_version	runc	runc_version	ver:runc	runc version
+docker_version_server	docker-engine	docker_version_server	ver:docker-engine	docker server version
+containerd_socket	containerd	containerd_socket	~containerd	containerd is running under dockerd
+docker_build	docker-cli,docker-engine	docker_build	ok	docker build
+docker_images	docker-cli	docker_images	~ctr-test:built	docker images lists the image
+docker_run_echo	docker-cli,runc	docker_run_echo	=hello container	docker run
+docker_default_cmd	docker-cli	docker_default_cmd	=default-cmd	the image's default command runs
+docker_entrypoint_override	docker-cli	docker_entrypoint_override	=override-ok	a command overrides the default
+docker_buildx	docker-cli-buildx	docker_buildx	ok	docker buildx build
+docker_buildx_image	docker-cli-buildx	docker_buildx_image	~ctr-test:bx	the buildx image is loaded
+docker_save	docker-cli	docker_save	ok	docker save
+docker_rmi	docker-cli	docker_rmi	ok	docker rmi
+docker_load	docker-cli	docker_load	~Loaded image: ctr-test:bx	docker load
+docker_import	docker-cli	docker_import	ok	docker import of a rootfs tarball
+docker_import_run	docker-cli,runc	docker_import_run	=imported-ok	the imported image runs
+docker_memory_limit_rc	docker-cli,runc	docker_memory_limit_rc	=137	a memory-limited container is OOM-killed
+docker_pids_limit	docker-cli,runc	docker_pids_limit	~refused	the container pids limit refuses forks
+docker_cpu_limit	docker-cli,runc	docker_cpu_limit	~cpu-ratio=0\.[3-6]	the container cpu limit throttles to about half a CPU
+docker_read_only	docker-cli,runc	docker_read_only	~Read-only file system	a read-only container refuses writes
+docker_cap_drop	docker-cli,runc	docker_cap_drop	~0000000000000000	--cap-drop ALL leaves no capabilities
+docker_cap_default	docker-cli,runc	docker_cap_default	~a80425fb	default container capabilities
+docker_network_none	docker-cli,runc	docker_network_none	~^lo\s*$	--network none gives loopback only
+docker_user	docker-cli,runc	docker_user	~0000000000000000	a non-root container user has no capabilities
+docker_no_new_privileges	docker-cli,runc	docker_no_new_privileges	~NoNewPrivs:\s*1	no-new-privileges is applied
+docker_network_create	docker-cli	docker_network_create	ok	docker network create
+docker_server_start	docker-cli	docker_server_start	ok	a container starts on the network
+docker_logs	docker-cli	docker_logs	=listening	docker logs
+docker_exec	docker-cli,runc	docker_exec	~eth0	docker exec joins the running container
+docker_inspect_ip	docker-cli	docker_inspect_ip	~"IPAddress"	docker inspect shows the address
+docker_ps	docker-cli	docker_ps	~srv	docker ps lists the container
+docker_client_dial	docker-cli,iptables	docker_client_dial	=dial got pong	a container reaches another over a user-defined network (iptables NAT/forward rules)
+compose_up	docker-cli-compose	compose_up	~dial got pong	docker compose runs a two-service project
+compose_down	docker-cli-compose	compose_down	ok	docker compose down
+docker_prune	docker-cli	docker_prune	~Total reclaimed space	docker system prune
+
+# privileged: what the cloud host does not provide
+priv_dev_kvm	qemu-system-x86_64	priv_dev_kvm	=present|limit:^absent$	/dev/kvm (no hardware virtualization: QEMU runs TCG only)
+priv_dev_vhost_net	qemu-system-x86_64	priv_dev_vhost_net	=present|limit:^absent$	/dev/vhost-net (no vhost acceleration for virtio-net)
+priv_dev_net_tun	qemu-system-x86_64,libvirt-qemu	priv_dev_net_tun	=present	/dev/net/tun (tap networking for VMs)
+priv_lib_modules	-	priv_lib_modules	~^[0-9]|limit:^absent$	/lib/modules (no loadable kernel modules: dummy, netem, act_csum)
+priv_qemu_kvm	qemu-system-x86_64	priv_qemu_kvm	=ok|limit:failed to initialize kvm|Could not access KVM	qemu -accel kvm
+priv_fd_hard_raise	-	priv_fd_hard_raise	=ok|limit:Operation not permitted	raising the hard file-descriptor limit (needs CAP_SYS_RESOURCE)
+priv_hard_nofile	-	priv_hard_nofile	~^[0-9]+$	hard file-descriptor limit of the host (informational)
+priv_nr_open	-	priv_nr_open	~^[0-9]+$	fs.nr_open of the host (informational)
+priv_schedstat	-	priv_schedstat	=present|limit:^absent$	/proc/schedstat (scheduler statistics: perf sched, latency tools)
+priv_perf_event_paranoid	-	priv_perf_event_paranoid	~^-?[0-9]+$	perf_event_paranoid in the privileged session (informational)

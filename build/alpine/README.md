@@ -2,7 +2,8 @@
 
 Reproducible, isolated environment for building Alpine packages from the vendored
 `vendor/alpine-aports` tree (see `vendor/alpine-aports.PROVENANCE.md`), and the minimal Alpine base
-system image built with it, extended by a Rust and C development layer. Linux, root, `x86_64`.
+system image built with it, extended by a Rust and C development layer and a tools layer (debugging, tracing, profiling,
+benchmarking, pressure, filesystem and disk-image, QEMU, libvirt and Docker tools). Linux, root, `x86_64`.
 
 ## Usage (from the repo root, as root)
 ```sh
@@ -19,7 +20,14 @@ build/alpine/check-base.sh             # validate package set, filesystem, deter
 build/alpine/make-dev.sh               # add the Rust + C toolchain: .build/images/alpine-dev-3.24.2-x86_64.rootfs.tar.gz
 build/alpine/check-dev.sh              # validate the dev image, rebuild it from clean, compile and run C and Rust projects
 build/alpine/dev-run.sh [--copy SRC:DST] [--out DIR:HOSTDIR] -- cmd   # run a command in a throwaway copy of the dev image
+
+build/alpine/make-tools.sh             # add the tools layer: .build/images/alpine-tools-3.24.2-x86_64.rootfs.tar.gz
+build/alpine/check-tools.sh            # validate the tools image, rebuild it from clean, then run every tool (tools-test.sh)
+build/alpine/tools-test.sh             # only the functional run: PASS / LIMIT / FAIL per tool, exit 1 on FAIL
+build/alpine/tools-run.sh [--privileged] [--copy SRC:DST] [--out DIR:HOSTDIR] -- cmd   # run a command in a throwaway copy of the tools image
 ```
+`make-dev.sh` and `make-tools.sh` (and the two `check-*.sh`) are one mechanism, `make-layer.sh` and `check-layer.sh`, with the layer
+name as first argument (`dev` or `tools`).
 
 ## What is pinned (`config.env`, `guest/toolchain.lock`, `guest/base.lock`)
 - Base: official `alpine-minirootfs-3.24.2-x86_64`, verified by sha256 **and** GPG signature (pinned fingerprint, key in `ncopa.asc`).
@@ -40,11 +48,11 @@ build/alpine/dev-run.sh [--copy SRC:DST] [--out DIR:HOSTDIR] -- cmd   # run a co
   (e.g. OpenSSL headers) adds it to `dev.pkgs` and refreshes the lock deliberately.
 - **Provenance:** official signed binary packages of the Alpine v3.24 repositories, not rebuilt from the vendored aports (building
   `rust` and `gcc` from source takes hours; see Limits). Every locked version equals `pkgver-pkgrel` of its vendored APKBUILD
-  (`lock-dev.py` refuses anything else, `check-dev.sh` re-checks), so the layer is exactly what `vendor/alpine-aports` describes. The
+  (`lock-layer.py` refuses anything else, `check-layer.sh` re-checks), so the layer is exactly what `vendor/alpine-aports` describes. The
   files are cached in `.build/upstream/`, downloaded on first use with the configured proxy and CA bundle, and only kept if the sha256
   of `dev.lock` matches. The install is offline and runs from those files alone (`apk add --force-non-repository`, no repository
   configured); apk verifies every package signature against the Alpine release keys that the base image ships.
-- **Image:** the base archive with the layer on top, assembled by `guest/mkdev.sh` in the sandbox. `/etc/apk/world` is
+- **Image:** the base archive with the layer on top, assembled by `guest/mklayer.sh` in the sandbox. `/etc/apk/world` is
   `alpine-base` + `dev.pkgs`. Output next to the base image in `.build/images/`: `dev-rootfs/`, `<image>.rootfs.tar.gz` (deterministic,
   as above), its `.sha256` and `<image>.manifest` (the base image's sha256, then name, version, origin, apk sha256, datahash of all 58
   packages). `--refresh-lock` re-resolves `dev.pkgs` against the live repositories and rewrites `dev.lock`; review the diff.
@@ -63,6 +71,88 @@ build/alpine/dev-run.sh [--copy SRC:DST] [--out DIR:HOSTDIR] -- cmd   # run a co
   identical binaries, and that the environment and the network are as specified above.
   C binaries need only `libc.musl`; Rust binaries also need `libgcc_s.so.1` (unwinding), which `libgcc` in the layer provides. The layer
   replaces one base file: busybox's unowned applet link `usr/bin/strings` becomes binutils' own `strings`.
+
+## Tools layer (debug, trace, profile, benchmark, pressure, filesystems, VMs, containers)
+`make-tools.sh` extends the development image (not the base: the dev layer is its parent, unchanged and still byte-identical) with the
+rest of the toolchain, using the same mechanism as the dev layer (`make-layer.sh`).
+- **Definition:** `guest/tools.pkgs` names 68 packages; `guest/tools.lock` pins the 220 packages they add to the 58 of the dev image
+  (278 in all), each with exact version, origin aport and the sha256 of its `.apk`. Packages the dev or base layer already provides
+  (`gcc`, `rust`, `cargo`, `make`, `musl`, `zlib`, ...) are not listed again. Nothing is duplicated: `ninja` comes from `samurai`,
+  `losetup`, `mount`, `sfdisk`, ... from the util-linux split packages, not from busybox (`/usr/bin` wins in `PATH`).
+- **Contents** (versions are those locked):
+  - *compile, link, format, lint, test:* g++ and libstdc++-dev (gcc 15.2), clang/clang++ 22.1.3 with `compiler-rt` (sanitizers),
+    `clang-tidy` and `clang-format` (`clang22-extra-tools`), cppcheck 2.21, cmake 4.2.3 with samurai, pkgconf, linux-headers,
+    `rustfmt` and `clippy` 1.96.1, `cargo-nextest` 0.9.110, Google Benchmark 1.9.5.
+  - *debug and trace:* gdb 16.3 (with `rust-gdb`), valgrind 3.25.1, strace 6.19, ltrace 0.7.3, `perf` and `bpftool` 7.1.5, tcpdump 4.99.6, lsof;
+    ftrace and eBPF come with the kernel (tracefs, `bpf()`), driven from the tools above.
+  - *profile and benchmark:* `perf stat/record/report/trace/bench`, `cargo-flamegraph`, valgrind, hyperfine 1.20, sysbench 1.0.20,
+    fio 3.41, Google Benchmark.
+  - *pressure:* stress-ng 0.21 (CPU, memory, process, thread, file descriptor, I/O), fio and sysbench (I/O, memory), iperf3 3.20 (network),
+    iproute2 and nftables/iptables (network namespaces, shaping, firewalling), cgroup limits through the kernel interface.
+  - *filesystems and images:* e2fsprogs (+ `fuse2fs`), dosfstools, mtools, squashfs-tools, erofs-utils, xfsprogs, btrfs-progs, xorriso,
+    qemu-img, util-linux (`losetup`, `partx`, `sfdisk`, `lsblk`, `findmnt`, `wipefs`, `blkid`, `mount`), gptfdisk.
+  - *VMs:* QEMU 11.0.3 (`qemu-system-x86_64`, TCG), SeaBIOS, OVMF, libvirt 12.3 (`libvirtd`, `virsh`, QEMU driver).
+  - *containers:* Docker engine and CLI 29.8.2 with compose and buildx, containerd 2.3.6, runc 1.4.3.
+- **Provenance:** as for the dev layer. Official signed binary packages of v3.24 main and community, each locked version equal to the
+  vendored APKBUILD `pkgver-rN` of its origin aport, checked by `lock-layer.py` and `check-image.py`. Where the live index is ahead
+  of the vendored aport (libexpat, pcre2, libpng, xen-libs) the vendored version is locked. The mirror has retired three
+  vendored versions (HTTP 404: `python3-pycache-pyc0` 3.14.7-r1, `containerd` 2.3.5-r5, `docker-cli`/`docker-openrc` 29.5.3-r1), so
+  `guest/tools.exceptions` records, per origin aport, the next version that is locked instead (python3 3.14.8-r0, containerd 2.3.6-r0,
+  docker 29.8.2-r0). An exception applies only while the aport and the live index are exactly at the recorded versions; `check-image.py`
+  fails on a stale or unused one, and the lock header repeats each exception.
+- **Image:** `alpine-tools-3.24.2-x86_64.rootfs.tar.gz` (+ `.sha256`, `.manifest`), deterministic like the others. `/etc/apk/world`
+  is the dev world plus `tools.pkgs`. `--refresh-lock` re-resolves `tools.pkgs`; review the diff.
+- **Using it:** `tools-run.sh -- cmd` is `dev-run.sh` on the tools image: unprivileged user namespace, no network, private `/dev`
+  (null, zero, full, random, urandom, tty) and `/tmp`. That is enough for everything that does not need host privileges: compile, lint,
+  debug (ptrace works), profile (software events), benchmark, pressure, image building (mkfs on files, `mtools`, `mksquashfs`,
+  `mkfs.erofs`), QEMU emulation. `tools-run.sh --privileged -- cmd` runs as the real root of the host
+  in private mount, PID, IPC, UTS (`alpine-tools`), network (loopback only), and cgroup namespaces. The image is the `pivot_root`ed root of
+  the command's mount namespace (so `runc exec` and `nsenter` land in the image), `/dev`, sysfs, tracefs and the cgroup hierarchies are
+  the host's, `/tmp` and `/run` are tmpfs. This is what loop devices and kernel mounts, FUSE, ftrace and perf tracepoints, eBPF,
+  network namespaces, firewalls, cgroup limits, libvirt and Docker need. On exit the runner kills every process, detaches loop devices
+  and removes cgroup directories created during the run, and deletes the extracted root. Run libvirt and Docker only this way:
+  they must never see the host's network namespace.
+- **Validation** (`check-tools.sh`): everything `check-dev.sh` checks, for the tools image (the installed set equals `base.lock` +
+  `dev.lock` + `tools.lock`, `/etc/apk/world` equals the roots, versions equal the vendored APKBUILDs or a documented exception, `.apk`
+  sha256 and signatures, `apk audit`, all ELF objects x86-64, setuid files equal an allowlist, no host names, paths or secret values
+  anywhere, the parent image preserved); a rebuild from a clean state gives the identical archive; then `tools-test.sh`.
+  - The tools layer's packages add system users (`adduser` stamps today's day number into `/etc/shadow`); `guest/mklayer.sh` pins
+    that field to the day of `SOURCE_DATE_EPOCH`, as `mkroot.sh` does, so the image does not depend on the day it was assembled
+    (the check searches every file for today's day number and date). The parent check accepts what packages legitimately do to the
+    base: busybox applet links replaced by the real tool (`mount`, `ip`, `linux32` -> `setarch`, ...), users and groups appended to
+    `/etc/passwd`, `/etc/group`, `/etc/shadow` and their `-` copies, and `/bin/bash` appended to `/etc/shells` (every parent line
+    still present and in order; the only edit to an existing line is a group gaining members, as `qemu` joins `kvm`).
+  - Exemptions are few, named in `check-layer.sh`, only for package-owned paths, and fail when they stop applying (stale entry):
+    `usr/share/seabios/bios-coreboot.bin` is 32-bit x86 firmware that QEMU loads as a BIOS, not an image executable;
+    `usr/bin/c-index-test` and `usr/bin/clang-offload-packager` are links shipped by the clang packages into `../lib/llvm22/bin/`, which
+    no package provides (`c-index-test`) or only the uninstalled `llvm22` does (`clang-offload-packager`); five upstream files
+    (`FindDoxygen.cmake` and two CMake help pages, `docker-buildx`, `gdb`) contain the literal example path `/home/user`, which is
+    otherwise a needle for host state (only that host-path needle, never a secret, host name or date). The `etc/ssl/certs`
+    links made by the ca-certificates trigger (`ca-cert-NAME.pem` and OpenSSL hash links) are checked against the enabled lines of
+    `/etc/ca-certificates.conf` (every link present, every target packaged, every certificate hashed) rather than excused.
+- **Functional test** (`tools-test.sh`): `tools-test/unpriv.sh` (unprivileged session) and `tools-test/priv.sh` (`--privileged`
+  session) run every tool of `tools.pkgs` on fixtures in `tools-test/` (C, C++, Rust, a bare-metal boot sector, a container context),
+  and print `fact=value` lines. `tools-judge.py` judges each fact against `tools-test/inventory.tsv` (one row per fact: packages
+  exercised, expectation, description) and prints PASS, LIMIT or FAIL. It also fails when a fact has no row, a row no fact, or a
+  package of `tools.pkgs` no row. After both sessions the host is compared with its state before (sandboxes, mounts, loop devices,
+  cgroup directories, nftables tables, daemons). Exit status 1 only for FAIL.
+  - Compile, link and run C, C++ (exceptions, STL) and Rust with gcc and clang, cmake + samurai, ctest, cargo build/test/nextest/clippy/fmt,
+    clang-tidy, clang-format, cppcheck, sanitizers, Google Benchmark, a boot sector assembled and linked.
+  - Debug with gdb (breakpoints and backtraces, Rust through `rust-gdb`), valgrind (leak detection), strace, ltrace, the gcc and clang address and
+    undefined-behaviour sanitizers; profile with `perf` (software events, tracepoints), `cargo flamegraph`, hyperfine, fio, sysbench.
+  - Pressure: stress-ng (cpu, vm, fork, pthread, open files, hdd, sockets), also under a cgroup memory limit; cgroup CPU quota, memory limit
+    with OOM kill and pids limit; file-descriptor and memory exhaustion under `ulimit`; fio (psync, libaio, io_uring) and sysbench I/O; iperf3
+    TCP and UDP across a veth pair into a network namespace; nftables and iptables rules that block and unblock traffic; `tc` shaping.
+  - Images: ext2/ext4, FAT, XFS, btrfs, squashfs, erofs and ISO images built (byte-identical when rebuilt), checked, read back and, where the
+    kernel allows, mounted (loop, FUSE, resize); qcow2, vmdk and vpc conversion, overlays and snapshots; GPT and MBR partition tables
+    built and inspected; `wipefs`, `blkid`, `partx`.
+  - VMs: QEMU TCG boots a hand-made boot sector (serial banner, power-off through `isa-debug-exit`) and runs OVMF up to the boot manager;
+    libvirt defines a storage pool, a volume and a TCG domain, starts it, reads its serial output, destroys and undefines it, also
+    on a host bridge with a tap device; `virt-host-validate`.
+  - Containers: `docker build` and `buildx build` of a static C program on `FROM scratch` (`tools-test/ctr/`), save, load, import, run,
+    with memory, pids and CPU limits, a non-root user, `no-new-privileges`, a read-only root, capabilities dropped, `--network none`, a
+    user-defined bridge network with two containers talking to each other, `docker exec`, `docker compose up`; `runc run` of an OCI bundle.
+  All tests are offline: images are built `FROM scratch`, nothing is pulled.
 
 ## Isolation
 - Own mount/PID/IPC/UTS namespaces, chroot into `.build/rootfs`, environment rebuilt with `env -i` (no host variables or tokens;
@@ -121,3 +211,27 @@ Remove these files on a host with IPv6.
   follows the vendored versions. The development image is byte-reproducible from one base image; a different base build differs only
   in the `S:` lines described above.
 - The image boot test exercises everything above the kernel (init, OpenRC, services, shutdown); no real kernel or bootloader is run.
+- **What the cloud host does not provide** (tested by `tools-test.sh` and reported as LIMIT, never as PASS; the tools themselves are
+  installed and work as far as the host lets them):
+  - no `/dev/kvm`: QEMU runs with TCG only (`-accel kvm` fails: "failed to initialize kvm: No such file or directory"), libvirt domains must use
+    `<domain type='qemu'>`, `virsh domcapabilities --virttype kvm` fails and `virt-host-validate` reports FAIL for hardware
+    virtualization; no `/dev/vhost-net`;
+  - no loadable kernel modules (`/lib/modules` is absent): no `dummy` link type, no `netem` qdisc, no `act_csum` tc action, so libvirt
+    virtual networks (NAT, isolated) cannot start; VM networking is tested through a host bridge and tap device instead;
+  - the guest kernel has no XFS, btrfs or vfat, so those images are created, checked and read with their userspace tools (`mkfs.*`,
+    `xfs_repair`, `btrfs check`, `mtools`), not mounted; ext2/3/4, squashfs, erofs, overlay and FUSE mount;
+  - no GPT or MSDOS partition parser: `losetup -P` creates no `loopNpM` nodes; `partx -a` does;
+  - no hardware PMU (`perf stat -e cycles` is "not supported"; software events, tracepoints and `perf trace` work), no `/proc/schedstat`;
+  - ftrace's function tracer cannot be enabled (EPERM; event tracing and eBPF work);
+  - the hard `RLIMIT_NOFILE` cannot be raised (no `CAP_SYS_RESOURCE`);
+  - cgroups are hybrid (v1 controllers plus a cgroup2 mount): Docker runs on cgroup v1 and warns about its deprecation.
+- `ltrace -e <symbol>` across all libraries aborts on musl; use `-e <symbol>@MAIN`. The official `musl-dbg` does not match the locally built
+  `musl` of the base, so it is not installed (no symbols for libc frames in gdb, valgrind and perf).
+- Two links of the official clang packages are dangling upstream, so `c-index-test` and `clang-offload-packager` do not run (the
+  rest of clang, clang-tidy and clang-format work); they are the only dangling links in the image and are named in `check-layer.sh`.
+- Docker, libvirt, loop mounts, FUSE, ftrace, eBPF and network namespaces need `tools-run.sh --privileged`; in the unprivileged session
+  `/dev/fuse`, `/dev/kvm` and `/dev/net/tun` are absent, `lo` is down and there is no network. Everything runs offline: registries are
+  not reached and no image is pulled.
+- The tools layer is installed from Alpine's binary packages, locked by version and sha256. The mirror retires superseded versions: on a
+  fresh checkout the locked `.apk` files must still be served by the mirror or be present in `.build/upstream/` (three vendored versions
+  are already gone and recorded in `guest/tools.exceptions`). `make-tools.sh --refresh-lock` re-resolves them; review the diff.
