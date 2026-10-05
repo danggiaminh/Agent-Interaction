@@ -59,6 +59,8 @@ if [ "${1:-}" = "--inner" ]; then
 fi
 
 require_root
+require_traversable "$ALPINE_BUILD_DIR"
+require_traversable "$BUILD_ROOT"
 image="$IMAGES_DIR/$DEV_IMAGE_NAME.rootfs.tar.gz"
 pass=()
 while [ $# -gt 0 ]; do

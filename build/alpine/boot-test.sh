@@ -34,6 +34,8 @@ if [ "${1:-}" = "--inner" ]; then
 fi
 
 require_root
+require_traversable "$ALPINE_BUILD_DIR"
+require_traversable "$IMAGES_DIR"
 fail=0
 ok() { printf 'PASS  %s\n' "$1"; }
 bad() { printf 'FAIL  %s\n' "$1"; fail=1; }

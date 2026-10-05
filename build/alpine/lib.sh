@@ -36,6 +36,15 @@ rootfs_digest() {
 log() { printf '[alpine-env] %s\n' "$*"; }
 die() { printf '[alpine-env] ERROR: %s\n' "$*" >&2; exit 1; }
 require_root() { [ "$(id -u)" -eq 0 ] || die "root is required (mount namespaces + chroot); re-run with sudo"; }
+# boot-test.sh and dev-run.sh run as an unprivileged host id (100000, root of a user namespace); it must be
+# able to walk down to the scripts and the scratch directory, so every directory on the way needs "x" for others.
+require_traversable() {
+	local d="$1"
+	while [ "$d" != / ]; do
+		[ "$(( 0$(stat -c %a "$d") & 1 ))" -eq 1 ] || die "$d is not searchable by other users (mode $(stat -c %a "$d")); the unprivileged namespace id cannot reach $1. Keep the repository under a world-searchable path or run: chmod o+x $d"
+		d="$(dirname "$d")"
+	done
+}
 
 # Succeeds only if the vendored aports tree is exactly the pinned git tree and nothing was added
 # or changed. Ignored files count: upstream's .gitignore hides src/, pkg/, *.apk and similar.
