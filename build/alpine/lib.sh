@@ -24,7 +24,14 @@ DEV_LOCK="$ALPINE_BUILD_DIR/guest/dev.lock"         # name version repo origin s
 TOOLS_PKGS="$ALPINE_BUILD_DIR/guest/tools.pkgs"     # top-level packages of the tools layer
 TOOLS_LOCK="$ALPINE_BUILD_DIR/guest/tools.lock"     # name version repo origin sha256 of every package the tools layer adds
 TOOLS_EXCEPTIONS="$ALPINE_BUILD_DIR/guest/tools.exceptions" # packages locked at a version other than their vendored aport's
+TOOLS_LOCAL="$ALPINE_BUILD_DIR/guest/tools.local"           # packages the tools layer takes from the locally built repository, not from the mirror
 ENTER="$ALPINE_BUILD_DIR/enter.sh"
+GUEST_DIR="$BUILD_ROOT/guest"                                # the cgroup v2 test bed: guest kernel, initramfs, manifest (make-guest.sh)
+KERNEL_LOCK="$ALPINE_BUILD_DIR/guest/kernel.lock"           # name version repo origin sha256 of the test bed's guest kernel package
+KERNEL_EXCEPTIONS="$ALPINE_BUILD_DIR/guest/kernel.exceptions" # the guest kernel locked at a version other than its vendored aport's
+KERNEL_MODULES="$ALPINE_BUILD_DIR/guest/kernel.modules"     # kernel modules the test bed's initramfs loads, in order
+KERNEL_CONFIG="$ALPINE_BUILD_DIR/guest/kernel.config"       # kernel options the test bed needs, checked against the kernel's own config
+TESTBED_DIR="$ALPINE_BUILD_DIR/testbed"                     # test bed sources: stage-1 init, initramfs builder, stage-2 init, launcher
 
 ROOTFS_DIGEST_FILE="$BUILD_ROOT/rootfs.digest" # digest of the toolchain rootfs right after bootstrap
 

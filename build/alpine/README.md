@@ -22,8 +22,10 @@ build/alpine/check-dev.sh              # validate the dev image, rebuild it from
 build/alpine/dev-run.sh [--copy SRC:DST] [--out DIR:HOSTDIR] -- cmd   # run a command in a throwaway copy of the dev image
 
 build/alpine/make-tools.sh             # add the tools layer: .build/images/alpine-tools-3.24.2-x86_64.rootfs.tar.gz
-build/alpine/check-tools.sh            # validate the tools image, rebuild it from clean, then run every tool (tools-test.sh)
-build/alpine/tools-test.sh             # only the functional run: PASS / LIMIT / FAIL per tool, exit 1 on FAIL
+build/alpine/check-tools.sh            # validate the tools image, rebuild it from clean, rebuild the cgroup v2 test bed, then run every tool
+build/alpine/tools-test.sh             # only the functional run (3 sessions): PASS / DENIED / LIMIT / UPSTREAM / FAIL per fact, exit 1 on FAIL
+build/alpine/tools-judge-selftest.py UNPRIV.facts PRIV.facts GUEST.facts   # prove the judge fails on damaged facts (tools-test.sh runs it)
+build/alpine/make-guest.sh [--check|--clean]   # build / verify / remove the cgroup v2 test bed (guest kernel + initramfs) in .build/guest
 build/alpine/tools-run.sh [--privileged] [--copy SRC:DST] [--out DIR:HOSTDIR] -- cmd   # run a command in a throwaway copy of the tools image
 ```
 `make-dev.sh` and `make-tools.sh` (and the two `check-*.sh`) are one mechanism, `make-layer.sh` and `check-layer.sh`, with the layer
@@ -75,16 +77,18 @@ name as first argument (`dev` or `tools`).
 ## Tools layer (debug, trace, profile, benchmark, pressure, filesystems, VMs, containers)
 `make-tools.sh` extends the development image (not the base: the dev layer is its parent, unchanged and still byte-identical) with the
 rest of the toolchain, using the same mechanism as the dev layer (`make-layer.sh`).
-- **Definition:** `guest/tools.pkgs` names 68 packages; `guest/tools.lock` pins the 220 packages they add to the 58 of the dev image
-  (278 in all), each with exact version, origin aport and the sha256 of its `.apk`. Packages the dev or base layer already provides
+- **Definition:** `guest/tools.pkgs` names 69 packages; `guest/tools.lock` pins the 221 packages they add to the 58 of the dev image
+  (279 in all), each with exact version, origin aport and the sha256 of its `.apk` (one, `musl-dbg`, is built locally: see
+  Provenance). Packages the dev or base layer already provides
   (`gcc`, `rust`, `cargo`, `make`, `musl`, `zlib`, ...) are not listed again. Nothing is duplicated: `ninja` comes from `samurai`,
   `losetup`, `mount`, `sfdisk`, ... from the util-linux split packages, not from busybox (`/usr/bin` wins in `PATH`).
 - **Contents** (versions are those locked):
-  - *compile, link, format, lint, test:* g++ and libstdc++-dev (gcc 15.2), clang/clang++ 22.1.3 with `compiler-rt` (sanitizers),
-    `clang-tidy` and `clang-format` (`clang22-extra-tools`), cppcheck 2.21, cmake 4.2.3 with samurai, pkgconf, linux-headers,
+  - *compile, link, format, lint, test:* g++ and libstdc++-dev (gcc 15.2), clang/clang++ 22.1.3 with `compiler-rt` (sanitizers) and
+    `llvm22` (the LLVM tools that clang's own links point to), `clang-tidy` and `clang-format` (`clang22-extra-tools`), cppcheck 2.21, cmake 4.2.3 with samurai, pkgconf, linux-headers,
     `rustfmt` and `clippy` 1.96.1, `cargo-nextest` 0.9.110, Google Benchmark 1.9.5.
-  - *debug and trace:* gdb 16.3 (with `rust-gdb`), valgrind 3.25.1, strace 6.19, ltrace 0.7.3, `perf` and `bpftool` 7.1.5, tcpdump 4.99.6, lsof;
-    ftrace and eBPF come with the kernel (tracefs, `bpf()`), driven from the tools above.
+  - *debug and trace:* gdb 16.3 (with `rust-gdb`), valgrind 3.25.1, strace 6.19, ltrace 0.7.3, `perf` and `bpftool` 7.1.5, tcpdump 4.99.6, lsof,
+    `musl-dbg` (debug symbols of the image's own libc; `check-image.py` verifies the build-id and debuglink CRC of every debug file
+    against the installed object it describes); ftrace and eBPF come with the kernel (tracefs, `bpf()`), driven from the tools above.
   - *profile and benchmark:* `perf stat/record/report/trace/bench`, `cargo-flamegraph`, valgrind, hyperfine 1.20, sysbench 1.0.20,
     fio 3.41, Google Benchmark.
   - *pressure:* stress-ng 0.21 (CPU, memory, process, thread, file descriptor, I/O), fio and sysbench (I/O, memory), iperf3 3.20 (network),
@@ -100,6 +104,11 @@ rest of the toolchain, using the same mechanism as the dev layer (`make-layer.sh
   `guest/tools.exceptions` records, per origin aport, the next version that is locked instead (python3 3.14.8-r0, containerd 2.3.6-r0,
   docker 29.8.2-r0). An exception applies only while the aport and the live index are exactly at the recorded versions; `check-image.py`
   fails on a stale or unused one, and the lock header repeats each exception.
+  One package is not downloaded but built: `musl-dbg`. The official one carries the symbols of the official `musl`, whose build-id is not
+  that of the `musl` this environment builds from the vendored aport for the base image, so gdb, valgrind and perf could not use it
+  (and `check-image.py` would fail it). `guest/tools.local` lists such packages (with the reason); the `local` repository type of
+  `tools.lock` takes the `.apk` from `.build/packages/` (built by `build-base.sh`) and pins it by the `datahash` of its payload, which
+  is the same in every environment, instead of by the `.apk` sha256, which carries this environment's signature.
 - **Image:** `alpine-tools-3.24.2-x86_64.rootfs.tar.gz` (+ `.sha256`, `.manifest`), deterministic like the others. `/etc/apk/world`
   is the dev world plus `tools.pkgs`. `--refresh-lock` re-resolves `tools.pkgs`; review the diff.
 - **Using it:** `tools-run.sh -- cmd` is `dev-run.sh` on the tools image: unprivileged user namespace, no network, private `/dev`
@@ -115,7 +124,8 @@ rest of the toolchain, using the same mechanism as the dev layer (`make-layer.sh
 - **Validation** (`check-tools.sh`): everything `check-dev.sh` checks, for the tools image (the installed set equals `base.lock` +
   `dev.lock` + `tools.lock`, `/etc/apk/world` equals the roots, versions equal the vendored APKBUILDs or a documented exception, `.apk`
   sha256 and signatures, `apk audit`, all ELF objects x86-64, setuid files equal an allowlist, no host names, paths or secret values
-  anywhere, the parent image preserved); a rebuild from a clean state gives the identical archive; then `tools-test.sh`.
+  anywhere, the parent image preserved, every debug file matches the object it describes); a rebuild from a clean state gives the
+  identical archive; the cgroup v2 test bed is removed, rebuilt from its pins and checked (`make-guest.sh`); then `tools-test.sh`.
   - The tools layer's packages add system users (`adduser` stamps today's day number into `/etc/shadow`); `guest/mklayer.sh` pins
     that field to the day of `SOURCE_DATE_EPOCH`, as `mkroot.sh` does, so the image does not depend on the day it was assembled
     (the check searches every file for today's day number and date). The parent check accepts what packages legitimately do to the
@@ -124,18 +134,47 @@ rest of the toolchain, using the same mechanism as the dev layer (`make-layer.sh
     still present and in order; the only edit to an existing line is a group gaining members, as `qemu` joins `kvm`).
   - Exemptions are few, named in `check-layer.sh`, only for package-owned paths, and fail when they stop applying (stale entry):
     `usr/share/seabios/bios-coreboot.bin` is 32-bit x86 firmware that QEMU loads as a BIOS, not an image executable;
-    `usr/bin/c-index-test` and `usr/bin/clang-offload-packager` are links shipped by the clang packages into `../lib/llvm22/bin/`, which
-    no package provides (`c-index-test`) or only the uninstalled `llvm22` does (`clang-offload-packager`); five upstream files
+    `usr/bin/c-index-test` is a link shipped by the clang packages into `../lib/llvm22/bin/`, where no Alpine package provides it
+    (`clang-offload-packager`, the other such link, resolves because `llvm22` is installed); five upstream files
     (`FindDoxygen.cmake` and two CMake help pages, `docker-buildx`, `gdb`) contain the literal example path `/home/user`, which is
     otherwise a needle for host state (only that host-path needle, never a secret, host name or date). The `etc/ssl/certs`
     links made by the ca-certificates trigger (`ca-cert-NAME.pem` and OpenSSL hash links) are checked against the enabled lines of
     `/etc/ca-certificates.conf` (every link present, every target packaged, every certificate hashed) rather than excused.
-- **Functional test** (`tools-test.sh`): `tools-test/unpriv.sh` (unprivileged session) and `tools-test/priv.sh` (`--privileged`
-  session) run every tool of `tools.pkgs` on fixtures in `tools-test/` (C, C++, Rust, a bare-metal boot sector, a container context),
-  and print `fact=value` lines. `tools-judge.py` judges each fact against `tools-test/inventory.tsv` (one row per fact: packages
-  exercised, expectation, description) and prints PASS, LIMIT or FAIL. It also fails when a fact has no row, a row no fact, or a
-  package of `tools.pkgs` no row. After both sessions the host is compared with its state before (sandboxes, mounts, loop devices,
-  cgroup directories, nftables tables, daemons). Exit status 1 only for FAIL.
+- **Functional test** (`tools-test.sh`): three sessions run every tool of `tools.pkgs` on fixtures in `tools-test/` (C, C++, Rust, a
+  bare-metal boot sector, a container context) and print `fact=value` lines: `tools-test/unpriv.sh` (unprivileged session: user
+  namespace, uid 0 is not host root), `tools-test/priv.sh` (`--privileged`: real root of the host) and `tools-test/guest.sh` (inside the
+  cgroup v2 test bed guest, see below). `tools-judge.py` judges every fact against `tools-test/inventory.tsv` (568 rows: one row per fact
+  with the packages it exercises, an expectation and a description). Expectations are `ok`, `=VALUE`, `ver:PKG`, `~REGEX` or
+  `deny:REGEX`. Every row ends in exactly one class:
+  - **PASS**: the tool did what the row expects;
+  - **DENIED**: a `deny:` row of the unprivileged session: the operation that needs real privileges (loop devices, block-file-system
+    and cgroup2/tracefs mounts, `bpf()` maps, block device nodes, setting the clock, raising the hard file limit, FUSE) was refused with
+    the expected error. It is the evidence that a privileged-only capability is *not* available to an unprivileged workload; if it
+    ever works there, the row FAILs ("leaked"). A refusal is never reported as the capability working;
+  - **LIMIT**: the row failed because the host cannot do it. Only `tools-test/limits.tsv` (35 entries) can make a failed row a LIMIT, and
+    only if all three hold: the failure *message* matches the entry's `accepts` pattern (the specific error of that limitation, never
+    "anything"), the entry's `cause` holds on the facts measured in that run (`host_config`, `host_cpu_virt_flags`, `host_pmu`,
+    `cgroup_v2_controllers`, `host_cap_sys_resource`, ...: e.g. no KVM only while the CPU shows no vmx/svm *and* the kernel has neither
+    `KVM_INTEL` nor `KVM_AMD`), and the rows named in `proof` PASS (the tool works wherever the cause does not apply, e.g. the same
+    controller in the guest). A limit has a class (`host-hw`, `host-kernel`, `host-config`) and says what the host would have to provide;
+  - **UPSTREAM**: a known defect of the packaged tool itself (`ltrace -e <symbol>` on musl), accepted only with its exact message;
+  - **FAIL**: everything else: a failed tool, a missing fact, a fact without a row, a row without a fact, a package of `tools.pkgs`
+    without a row, a failure whose message or cause does not match, a `deny:` row that worked. Exit status 1 only for FAIL.
+
+  Host-kernel limits therefore stay apart from toolchain defects: the former can only be LIMIT with a measured cause and a passing proof
+  row, the latter are FAIL or UPSTREAM. Nothing about a limit is assumed: a limit entry whose cause disappears (a host with KVM, a pure
+  cgroup v2 host) turns the same failure into FAIL.
+  - `tools-test/capabilities.tsv` (55 capabilities in eight areas) says what each capability needs (`none`: any workload, `root`: only
+    real root, `host`: the host kernel or hardware) and which row proves it in each privilege tier (`unpriv`, `priv`, `guest`). The judge
+    prints the matrix and fails if a `none` capability is not PASS or LIMIT unprivileged, a `root` capability is not DENIED unprivileged,
+    a `host` capability is neither PASS nor LIMIT for root, or a `deny:` row is not referenced by any capability. Its **verdict** section counts, per area, what is testable natively
+    on this host, what only in the guest, and what not at all.
+  - `tools-judge-selftest.py` runs after the judge: 18 cases damage a copy of the facts the way a broken toolchain or a dishonest report
+    would (a leaked privilege, a limit reported for a host that has the feature, a broken proof row, a wrong message, a missing fact, a
+    pure-v2 host) and require the judge to FAIL naming the row (or, for the two pure-v2 cases, to accept). A judge that cannot fail fails
+    the run.
+  - After the sessions the host is compared with its state before (sandboxes, mounts, loop devices, cgroup directories, nftables tables,
+    daemons).
   - Compile, link and run C, C++ (exceptions, STL) and Rust with gcc and clang, cmake + samurai, ctest, cargo build/test/nextest/clippy/fmt,
     clang-tidy, clang-format, cppcheck, sanitizers, Google Benchmark, a boot sector assembled and linked.
   - Debug with gdb (breakpoints and backtraces, Rust through `rust-gdb`), valgrind (leak detection), strace, ltrace, the gcc and clang address and
@@ -153,6 +192,63 @@ rest of the toolchain, using the same mechanism as the dev layer (`make-layer.sh
     with memory, pids and CPU limits, a non-root user, `no-new-privileges`, a read-only root, capabilities dropped, `--network none`, a
     user-defined bridge network with two containers talking to each other, `docker exec`, `docker compose up`; `runc run` of an OCI bundle.
   All tests are offline: images are built `FROM scratch`, nothing is pulled.
+
+## Cgroup v2
+Agent-Interaction's resource management targets cgroup v2. The cloud host (Firecracker VM, kernel 6.18, 4 CPUs) cannot test it
+natively, and the tests say so instead of passing around it.
+- **Measured layout: hybrid.** The v1 hierarchies of blkio, cpu, cpuacct, cpuset, devices, freezer, memory, pids and `name=systemd`
+  are mounted, and the unified hierarchy (`/sys/fs/cgroup/unified`) offers only `hugetlb`. A controller bound to a v1 hierarchy cannot be
+  used by v2 (enabling `memory`, `pids`, `cpu`, `cpuset` or `io` in `cgroup.subtree_control` fails with ENOENT), and the harness of
+  the session itself accounts memory and CPU through v1, so v1 must not be unmounted or re-mounted. `tools-run.sh --privileged` adapts: it
+  mounts each hierarchy it finds (v1 controllers, the unified one) and `cgroup_mode` (`v2`, `hybrid`, `v1`) is a measured fact.
+- **What works natively** (`priv.sh`, as real root, verified by effect, not by exit status): on cgroup v2 `cgroup.freeze`, `cgroup.kill` and
+  PSI; on cgroup v1 the memory limit with an OOM kill (exit 137, `oom_kill` counted), `pids.max` (fork refused at the limit), CPU quota
+  (50 % ratio measured 0.51) and CPU shares (3.96 for a 4:1 weight), cpuset pinning and blkio throttling (4.0 s against 0.01 s unthrottled);
+  Docker (cgroup v1, cgroupfs driver) with `--memory` (kill, 137), `--pids-limit` (refused at the limit) and `--cpus` (0.50); the
+  user, PID, mount, UTS, IPC and network namespaces (also unprivileged), veth pairs and nftables.
+- **What does not** (`LIMIT`, `host-config`): the cgroup v2 memory, pids, cpu quota, cpu weight, cpuset and io controllers. Their
+  `cgv2_*` rows fail with "is bound to cgroup v1 hierarchy"; the judge accepts that only while `cgroup_v2_controllers` really lacks the
+  controller *and* the same row passes in the guest. A host with a unified hierarchy turns the failure back into FAIL, and its `cgv1_*`
+  rows into LIMIT (no v1 hierarchy), as `tools-judge-selftest.py` proves on a synthetic pure-v2 host.
+- **Unprivileged**: uid 0 in a user namespace cannot mount cgroup2, tracefs, block file systems, create loop devices, `mknod` a
+  block device, create BPF maps, set the clock, raise the hard file limit or mount FUSE; every one is a `deny:` row (DENIED) tied to a
+  capability, and the namespaces, veth, nftables and `RLIMIT_CPU` work there. CPU, memory, process, I/O and network isolation are
+  therefore all testable *with* privileges (cgroup v1 natively, cgroup v2 in the guest) and namespace-based process and network
+  isolation also *without*.
+- **Is the cloud environment sufficient for cgroup v2 isolation development? No, not by itself.** It is sufficient for cgroup v1
+  work, namespaces, v2 freeze/kill/PSI and, through the guest, for *functional* validation of every cgroup v2 controller (the guest runs
+  on a pure v2 hierarchy: memory OOM kill, pids, cpu quota and weight, cpuset, io throttling, freeze, kill and PSI all pass). It is
+  not sufficient for native cgroup v2 validation or for timing-accurate behaviour. The host environment would have to provide:
+  1. a unified cgroup v2 hierarchy with `memory pids cpu cpuset io` delegated (boot with `cgroup_no_v1=all`, or a cgroup2-only
+     init such as systemd with `systemd.unified_cgroup_hierarchy=1` and no v1 controllers);
+  2. `CAP_SYS_RESOURCE` in the session where the hard open-file limit matters;
+  3. `/dev/kvm` (nested virtualization: `vmx` or `svm` exposed to the VM and `KVM_INTEL` or `KVM_AMD` in its kernel) so the guest runs
+     hardware-accelerated and with a virtual PMU, which gives timing-accurate and hardware-counter results.
+  Until then cgroup v2 results from this environment are labelled guest-only, and the verdict section of the judge says so.
+
+## Cgroup v2 test bed
+`make-guest.sh` builds a small guest in `.build/guest/bed/` (`vmlinuz`, `initramfs.cpio.gz`, `manifest`) that `tools-test.sh` boots under
+QEMU from the tools image (`testbed/launch.sh`, unprivileged, offline) with `cgroup_no_v1=all psi=1`, so the guest sees a pure cgroup v2
+hierarchy with `cpu cpuset dmem hugetlb io memory pids` on a real kernel. `tools-test/guest.sh` runs there: every cgroup v2 controller,
+namespaces, veth, nftables, netem, dummy links, loop devices with ext4, xfs, btrfs and vfat, partition scanning, ftrace (function tracer
+included), perf software events and tracepoints, schedstat, BPF programs and maps, kernel modules, the system clock and file-descriptor
+limits; the facts come back as `g_*` and are judged like every other row.
+- **Kernel:** the official, signed Alpine `linux-lts` package, pinned by sha256 in `guest/kernel.lock` and checked for the options it must
+  have (`guest/kernel.config`); `guest/kernel.modules` lists the modules the initramfs loads. `linux-lts` and not `linux-virt`, because the
+  virt flavour has no function tracer. Its version (6.18.55-r0) differs from the vendored aport (6.18.52-r0, retired from the mirror):
+  `guest/kernel.exceptions` records that, and `make-guest.sh` fails on a stale or unused exception. The kernel is the guest of the tests
+  only; it is never installed into the base, dev or tools image, which stay kernel-less.
+- **Initramfs:** busybox and musl of the tools image plus `testbed/init`, assembled deterministically by `testbed/mkinitramfs.py`; the
+  bed manifest records the sha256 of the tools image, so `make-guest.sh --check` fails when the bed is stale. `check-tools.sh` removes
+  the bed, rebuilds it and checks it before running the tests.
+- **Acceleration is measured, not assumed.** QEMU uses KVM only if `/dev/kvm` can be opened read-write in the session, and TCG
+  (software emulation) otherwise; which one ran is read from QEMU's own answer over QMP (`guest_accel`). Under TCG the results are
+  functional and deterministic, never timing-accurate, and no PMU exists (`g_perf_hw_cycles` is a `host-hw` LIMIT whose cause is
+  `guest_accel=tcg`). On the cloud host the guest runs under TCG: a boot and the guest tests take about two minutes.
+- **QEMU and libvirt, software against hardware:** `qemu-system-x86_64 -accel tcg` boots (`qemu_tcg_serial`), `-accel kvm` fails with
+  "failed to initialize kvm: No such file or directory" (LIMIT `host-hw`, also as real root); libvirt starts a `<domain type='qemu'>`
+  and reads its serial output (PASS), `virsh domcapabilities --virttype kvm`, a `<domain type='kvm'>` and `virt-host-validate`'s hardware
+  check fail (LIMIT), while `virt-host-validate`'s cgroup checks pass. None of the KVM rows is ever reported as working here.
 
 ## Isolation
 - Own mount/PID/IPC/UTS namespaces, chroot into `.build/rootfs`, environment rebuilt with `env -i` (no host variables or tokens;
@@ -210,25 +306,35 @@ Remove these files on a host with IPv6.
   refresh with `make-dev.sh --refresh-lock`. The live repository is ahead of the vendored aports (e.g. `nghttp2-libs`), and the layer
   follows the vendored versions. The development image is byte-reproducible from one base image; a different base build differs only
   in the `S:` lines described above.
-- The image boot test exercises everything above the kernel (init, OpenRC, services, shutdown); no real kernel or bootloader is run.
-- **What the cloud host does not provide** (tested by `tools-test.sh` and reported as LIMIT, never as PASS; the tools themselves are
-  installed and work as far as the host lets them):
-  - no `/dev/kvm`: QEMU runs with TCG only (`-accel kvm` fails: "failed to initialize kvm: No such file or directory"), libvirt domains must use
-    `<domain type='qemu'>`, `virsh domcapabilities --virttype kvm` fails and `virt-host-validate` reports FAIL for hardware
-    virtualization; no `/dev/vhost-net`;
-  - no loadable kernel modules (`/lib/modules` is absent): no `dummy` link type, no `netem` qdisc, no `act_csum` tc action, so libvirt
-    virtual networks (NAT, isolated) cannot start; VM networking is tested through a host bridge and tap device instead;
-  - the guest kernel has no XFS, btrfs or vfat, so those images are created, checked and read with their userspace tools (`mkfs.*`,
-    `xfs_repair`, `btrfs check`, `mtools`), not mounted; ext2/3/4, squashfs, erofs, overlay and FUSE mount;
-  - no GPT or MSDOS partition parser: `losetup -P` creates no `loopNpM` nodes; `partx -a` does;
-  - no hardware PMU (`perf stat -e cycles` is "not supported"; software events, tracepoints and `perf trace` work), no `/proc/schedstat`;
-  - ftrace's function tracer cannot be enabled (EPERM; event tracing and eBPF work);
-  - the hard `RLIMIT_NOFILE` cannot be raised (no `CAP_SYS_RESOURCE`);
-  - cgroups are hybrid (v1 controllers plus a cgroup2 mount): Docker runs on cgroup v1 and warns about its deprecation.
-- `ltrace -e <symbol>` across all libraries aborts on musl; use `-e <symbol>@MAIN`. The official `musl-dbg` does not match the locally built
-  `musl` of the base, so it is not installed (no symbols for libc frames in gdb, valgrind and perf).
-- Two links of the official clang packages are dangling upstream, so `c-index-test` and `clang-offload-packager` do not run (the
-  rest of clang, clang-tidy and clang-format work); they are the only dangling links in the image and are named in `check-layer.sh`.
+- The image boot test exercises everything above the kernel (init, OpenRC, services, shutdown); no real kernel or bootloader is run
+  for the images. The cgroup v2 test bed boots a real kernel, but only as the guest of the tools tests.
+- **Hard limits of the cloud host** (not toolchain defects). Each is recorded in `tools-test/limits.tsv` with the failure message it
+  produces, the measured cause that must hold, the row that proves the tool works elsewhere, and what the host would have to provide.
+  `tools-test.sh` reports them as LIMIT, never as PASS, and a limit whose cause is gone (a host that has the feature) is a FAIL. The tools
+  themselves are installed and work as far as the host lets them; the guest of the test bed proves most of them (software emulation
+  only: functional, not timing-accurate).
+  - *hardware / hypervisor* (`host-hw`): the host is itself a VM (`hypervisor` flag, no `vmx`/`svm`) and its kernel has neither
+    `KVM_INTEL` nor `KVM_AMD`, so there is no `/dev/kvm`. `-accel kvm` fails ("failed to initialize kvm: No such file or directory", also
+    for real root), libvirt reports no KVM domain capabilities and cannot start a `<domain type='kvm'>` (domains use
+    `<domain type='qemu'>`), and `virt-host-validate` fails its hardware check while its cgroup checks pass. The guest runs under TCG, which
+    has no PMU. There is no hardware PMU on the host either: `perf stat -e cycles` is "not supported" (software events, tracepoints and
+    `perf trace` work). Needed: nested virtualization (`vmx`/`svm` exposed, KVM in the host kernel, `/dev/kvm`) and a virtual PMU.
+  - *kernel build or policy* (`host-kernel`): no loadable modules (`CONFIG_MODULES` unset, no `/lib/modules`), no `dummy` link type, no `netem`
+    qdisc, no `act_csum` tc action (libvirt's NAT and isolated networks cannot start; VM networking is tested through a host bridge and a
+    tap device), no `vhost-net`, no `/proc/schedstat`, no XFS, btrfs or vfat file system (those images are created, checked and read with
+    their userspace tools, not mounted; ext2/3/4, squashfs, erofs, overlay and FUSE mount), no GPT or MSDOS partition parser (`losetup -P`
+    creates no `loopNpM` nodes, `partx -a` does). The function tracer and the ftrace filter files answer EPERM to real root although
+    tracefs mounts and lists the tracer; the kernel runs with `lockdown=integrity`, which is how other kernels withhold this, but the
+    measurement does not prove that it is the cause (event tracing and eBPF work). Needed: a kernel with those options, or the guest.
+  - *host configuration* (`host-config`): the cgroup layout is hybrid (see "Cgroup v2"): no cgroup v2 memory, pids, cpu, cpuset or io
+    controller; Docker runs on cgroup v1 and warns about its deprecation. The session has no `CAP_SYS_RESOURCE`, so the hard
+    `RLIMIT_NOFILE` cannot be raised. Needed: a unified cgroup v2 hierarchy with delegated controllers, `CAP_SYS_RESOURCE`.
+  - *upstream*: `ltrace -e <symbol>` across all libraries aborts on musl (use `-e <symbol>@MAIN`). Everything else of ltrace works.
+- The official `musl-dbg` does not match the locally built `musl` of the base, so the layer carries the `musl-dbg` built next to that
+  `musl` (see Provenance); the symbols of libc frames match the installed libc, checked by build-id.
+- One link of the official clang packages is dangling upstream: `usr/bin/c-index-test` points into `../lib/llvm22/bin/`, where no Alpine
+  package provides it. It does not run (the rest of clang, clang-tidy and clang-format work); it is the only dangling link in the image and is
+  named in `check-layer.sh`, which fails if it stops being dangling or another link dangles.
 - Docker, libvirt, loop mounts, FUSE, ftrace, eBPF and network namespaces need `tools-run.sh --privileged`; in the unprivileged session
   `/dev/fuse`, `/dev/kvm` and `/dev/net/tun` are absent, `lo` is down and there is no network. Everything runs offline: registries are
   not reached and no image is pulled.

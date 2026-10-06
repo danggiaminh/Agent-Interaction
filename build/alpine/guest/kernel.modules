@@ -1,0 +1,24 @@
+# Kernel modules the test bed's initramfs loads, in this order, each after its own dependencies (resolved from
+# modules.dep of the locked kernel by make-guest.sh). Everything else the tests need is built into the kernel.
+virtio_pci
+9pnet_virtio
+9p
+virtio_blk
+veth
+dummy
+sch_netem
+nf_tables
+nft_ct
+nft_reject_inet
+loop
+bridge
+ext4
+xfs
+btrfs
+vfat
+nls_cp437
+crc32c_cryptoapi
+nls_utf8
+sch_ingress
+cls_u32
+act_csum

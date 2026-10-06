@@ -1,11 +1,15 @@
-# Inventory of the tools image: one row per fact printed by tools-test/unpriv.sh and tools-test/priv.sh,
-# judged by tools-judge.py. Tab separated columns:
+# Inventory of the tools image: one row per fact printed by tools-test/unpriv.sh, priv.sh and guest.sh, judged by
+# tools-judge.py. Tab separated columns:
 #   id  packages  fact  expectation  description
 # packages     comma separated packages of guest/tools.pkgs or guest/dev.pkgs the row exercises; `-` for a fact
-#              about the session or the host kernel that no package provides
-# expectation  ok | =VALUE | ver:PKG (contains the locked version of PKG) | ~REGEX (re.search), optionally
-#              followed by |limit:REGEX: the expectation failed but the value says the cloud host lacks a
-#              capability the tool needs, so the row is reported as LIMIT (a limitation), never as PASS
+#              about a session, the host or the guest kernel that no package provides
+# expectation  ok (the value is `ok` or starts with `ok `) | =VALUE | ver:PKG (contains the locked version of PKG,
+#              from guest/{dev,tools,kernel}.lock) | ~REGEX (re.search) | deny:REGEX (a privileged-only operation the
+#              unprivileged session must be refused: the value is `denied:` plus a message that matches REGEX)
+# The expectation is the whole truth: a row whose value does not meet it is a FAIL unless tools-test/limits.tsv
+# names why (a limit of the host hardware, kernel or configuration, or a known upstream defect), with the facts that
+# prove the cause, a row that shows the tool working where the limit does not apply, and what the host must provide.
+# What each capability needs (nothing, the real root, or something of the host) is in tools-test/capabilities.tsv.
 # Every package of guest/tools.pkgs must appear in at least one row.
 
 # compilers and build tools
@@ -23,6 +27,10 @@ gcc_build	gcc	gcc_build	ok	gcc compiles and links a C program
 gcc_run	gcc	gcc_run	=42	the gcc-built C program runs
 clang_build	clang22	clang_build	ok	clang compiles and links a C program (musl, compiler-rt)
 clang_run	clang22	clang_run	=42	the clang-built C program runs
+llvm_version	llvm22	llvm_version	ver:llvm22	llvm22 version (llvm22-objdump)
+llvm_objdump	llvm22	llvm_objdump	~<add>:	llvm22-objdump disassembles the gcc-built binary
+llvm_nm	llvm22	llvm_nm	~ T add$	llvm22-nm lists the symbols of the gcc-built binary
+llvm_ar	llvm22	llvm_ar	ok	llvm22-ar creates and lists an archive
 elf_file	file,clang22	elf_file	~ELF 64-bit LSB pie executable, x86-64.*/lib/ld-musl-x86_64\.so\.1	file identifies a musl x86_64 PIE executable
 gxx_build	g++,libstdc++-dev	gxx_build	ok	g++ compiles and links C++ with libstdc++
 gxx_run	g++,libstdc++-dev	gxx_run	=cpp-ok 55 caught	the g++-built C++ program runs (exceptions, STL)
@@ -80,7 +88,7 @@ strace_files	strace	strace_files	~execve\(	strace traces system calls
 strace_summary	strace	strace_summary	~total	strace -c summarises system calls
 ltrace_malloc	ltrace	ltrace_malloc	~malloc\(16\)	ltrace traces library calls of the main program (malloc@MAIN)
 ltrace_count	ltrace	ltrace_count	~malloc	ltrace -c counts library calls
-ltrace_libwide	ltrace	ltrace_libwide	~malloc\(16\)|limit:^none:Aborted	ltrace -e <symbol> across all libraries (aborts on musl; @MAIN works)
+ltrace_libwide	ltrace	ltrace_libwide	~malloc\(16\)	ltrace -e <symbol> across all libraries (upstream defect: ltrace aborts on musl; @MAIN works)
 valgrind_leak	valgrind	valgrind_leak	~definitely lost: 16 bytes	valgrind finds a leak
 valgrind_clean	valgrind	valgrind_clean	~All heap blocks were freed	valgrind accepts clean code
 asan_gcc	gcc	asan_gcc	~AddressSanitizer: heap-use-after-free	gcc AddressSanitizer catches a use-after-free
@@ -100,7 +108,7 @@ perf_stat_sw	perf	perf_stat_sw	~task-clock	perf stat counts software events
 perf_record	perf	perf_record	~Captured and wrote	perf record samples a program (software clock)
 perf_report	perf	perf_report	~fib	perf report resolves a Rust symbol
 perf_bench	perf	perf_bench	~Total time	perf bench runs a scheduler micro-benchmark
-perf_hw_cycles	perf	perf_hw_cycles	~[0-9]+ +cycles|limit:not supported	perf hardware counters (the cloud VM exposes no PMU)
+perf_hw_cycles	perf	perf_hw_cycles	~[0-9]+ +cycles	perf hardware counters (need a PMU that the host exposes to the VM)
 flamegraph	cargo-flamegraph,perf	flamegraph	ok	cargo flamegraph writes an SVG
 flamegraph_svg	cargo-flamegraph	flamegraph_svg	~fib	the flamegraph names the hot function
 hyperfine_json	hyperfine	hyperfine_json	~"mean"	hyperfine benchmarks a command
@@ -234,28 +242,46 @@ lsblk_version	lsblk	lsblk_version	~lsblk from util-linux	lsblk runs
 mountpoint_run	util-linux-misc	mountpoint_run	~is a mountpoint	mountpoint runs
 fallocate_run	util-linux-misc	fallocate_run	ok	fallocate creates a sparse image
 
-# virtual machines (QEMU emulation, no KVM)
+# virtual machines (QEMU: software emulation is always there, hardware KVM only where the host has /dev/kvm)
 qemu_version	qemu-system-x86_64	qemu_version	ver:qemu-system-x86_64	qemu-system-x86_64 version
 qemu_tcg_boot_rc	qemu-system-x86_64	qemu_tcg_boot_rc	=67	QEMU TCG boots the test image and it powers off through isa-debug-exit
 qemu_tcg_serial	qemu-system-x86_64	qemu_tcg_serial	=BOOT-OK	the guest wrote its serial banner
 qemu_machines	qemu-system-x86_64	qemu_machines	~pc-q35	QEMU lists the q35 machine
-qemu_accels	qemu-system-x86_64	qemu_accels	~kvm|limit:^tcg$	QEMU accelerators (KVM absent, TCG emulation only)
+qemu_accels	qemu-system-x86_64	qemu_accels	~(^| )tcg( |$)	QEMU was built with the TCG accelerator (software emulation, always available); kvm is tested by qemu_accel_kvm
+qemu_accel_kvm	qemu-system-x86_64	qemu_accel_kvm	ok	qemu -accel kvm starts a machine in the unprivileged-style probe (needs /dev/kvm)
 seabios_file	seabios	seabios_file	~bios-256k\.bin	SeaBIOS image is installed
 ovmf_files	ovmf	ovmf_files	~OVMF_CODE\.fd	OVMF firmware is installed
 ovmf_serial	ovmf,qemu-system-x86_64	ovmf_serial	~BdsDxe	OVMF runs under TCG up to the boot manager
 
-# the unprivileged session itself
-dev_kvm	-	dev_kvm	=absent	the unprivileged session has no /dev/kvm (private /dev; see priv_dev_kvm for the host)
-dev_fuse	-	dev_fuse	=absent	the unprivileged session has no /dev/fuse (private /dev)
-ulimit_nofile	-	ulimit_nofile	=20000/20000	file-descriptor limit of the unprivileged session
-perf_event_paranoid	-	perf_event_paranoid	=2	perf_event_paranoid of the host
+# the unprivileged session: a user namespace with a full capability set, not the host's root
+userns_real_root	-	userns_real_root	=no	uid 0 of the unprivileged session is a user-namespace root, not the host's root
+userns_pid_ns	util-linux-misc	userns_pid_ns	ok	unshare: a private PID namespace makes the command PID 1
+userns_mount_ns	util-linux-misc,mount	userns_mount_ns	ok	unshare: a tmpfs mounted in a private mount namespace is invisible outside it
+userns_uts_ns	util-linux-misc	userns_uts_ns	ok	unshare: a private UTS namespace changes the hostname only inside
+userns_ipc_ns	util-linux-misc	userns_ipc_ns	ok	unshare: a private IPC namespace is a different namespace
+userns_net_ns	util-linux-misc,iproute2	userns_net_ns	=lo	unshare: a private network namespace has only the loopback
+userns_veth_ping	iproute2,util-linux-misc	userns_veth_ping	ok	a veth pair carries a ping inside a private network namespace
+userns_nft	nftables,util-linux-misc	userns_nft	ok	nft loads a ruleset inside a private network namespace
+rlimit_cpu	-	rlimit_cpu	ok	RLIMIT_CPU kills a busy loop after one second of CPU time
+ulimit_nofile	-	ulimit_nofile	~^[0-9]+/[0-9]+$	soft/hard file-descriptor limits of the unprivileged session (informational: the host chooses)
+perf_event_paranoid	-	perf_event_paranoid	~^-?[0-9]+$	perf_event_paranoid of the host (informational)
+
+# privileged-only operations, which the unprivileged session must be refused (never reported as working there)
+deny_loop_device	losetup	deny_loop_device	deny:failed to set up loop device	losetup is refused a loop device
+deny_mount_block_fs	mount	deny_mount_block_fs	deny:failed to set up loop device	mounting an ext4 image (a loop device) is refused
+deny_mount_tracefs	mount	deny_mount_tracefs	deny:permission denied	mounting tracefs is refused
+deny_mount_cgroup2	mount	deny_mount_cgroup2	deny:permission denied	mounting cgroup2 is refused
+deny_bpf_map	bpftool	deny_bpf_map	deny:Operation not permitted	bpftool is refused a BPF map (unprivileged_bpf_disabled)
+deny_mknod_block	-	deny_mknod_block	deny:Operation not permitted	mknod of a block device is refused
+deny_set_clock	-	deny_set_clock	deny:Operation not permitted	clock_settime(CLOCK_REALTIME) is refused
+deny_nofile_raise	-	deny_nofile_raise	deny:error setting limit: Operation not permitted	raising the hard file-descriptor limit is refused
+deny_fuse_mount	fuse2fs	deny_fuse_mount	deny:Mount failed while opening filesystem	mounting a FUSE filesystem is refused (no /dev/fuse in the private /dev)
 
 # privileged session: the session itself
 real_root	-	real_root	=yes	the session runs as the real root of the host
 hostname	-	hostname	=alpine-tools	private UTS namespace
 pid_namespace	-	pid_namespace	=private	private PID namespace
 net_namespace_ifaces	-	net_namespace_ifaces	~^lo\s*$	private network namespace with loopback only
-cgroup_layout	-	cgroup_layout	~cgroup	cgroup hierarchies are mounted
 tracefs	-	tracefs	=tracefs	tracefs is mounted
 lo_state	iproute2	lo_state	~LOOPBACK,UP	loopback is up
 
@@ -284,7 +310,7 @@ erofs_read	erofs-utils	erofs_read	=hello image	the erofs mount is readable
 mount_overlay	mount	mount_overlay	ok	overlayfs mount
 overlay_copy_up	mount	overlay_copy_up	ok	overlayfs copy-up on write
 mount_tmpfs_kernel	mount,umount	mount_tmpfs_kernel	ok	tmpfs mount
-loop_partscan_nodes	losetup	loop_partscan_nodes	~p1|limit:^$	losetup -P creates partition nodes (the guest kernel has no GPT/MSDOS parser; partx is used instead)
+loop_partscan_nodes	losetup	loop_partscan_nodes	~p1	losetup -P creates partition nodes (needs the kernel's GPT or MSDOS partition parser; partx works on the image)
 partx_add	partx	partx_add	ok	partx -a creates partition nodes
 loop_partitions	partx	loop_partitions	~p1 p2	both partition nodes exist
 partx_show_device	partx	partx_show_device	~18432 +129023	partx lists the partitions of a device
@@ -294,15 +320,15 @@ partition_mount	mount	partition_mount	ok	the partition mounts
 partition_umount	umount	partition_umount	ok	the partition unmounts
 partx_delete	partx	partx_delete	ok	partx -d removes the nodes
 partition_detach	losetup	partition_detach	ok	losetup detaches the partitioned image
-mount_xfs	xfsprogs,mount	mount_xfs	ok|limit:unknown filesystem type 'xfs'	kernel mount of XFS (the guest kernel has no xfs; mkfs and xfs_repair work on images)
-mount_btrfs	btrfs-progs,mount	mount_btrfs	ok|limit:unknown filesystem type 'btrfs'	kernel mount of btrfs (the guest kernel has no btrfs; mkfs and check work on images)
-mount_vfat	dosfstools,mount	mount_vfat	ok|limit:unknown filesystem type 'vfat'	kernel mount of FAT (the guest kernel has no vfat; mkfs, fsck and mtools work on images)
+mount_xfs	xfsprogs,mount	mount_xfs	ok	kernel mount of XFS (needs xfs in the kernel; mkfs.xfs and xfs_repair work on images)
+mount_btrfs	btrfs-progs,mount	mount_btrfs	ok	kernel mount of btrfs (needs btrfs in the kernel; mkfs and check work on images)
+mount_vfat	dosfstools,mount	mount_vfat	ok	kernel mount of FAT (needs vfat in the kernel; mkfs, fsck and mtools work on images)
 filesystems_in_kernel	mount	filesystems_in_kernel	~ext4	the kernel supports ext4
 kernel_filesystems	mount	kernel_filesystems	~erofs ext2 ext3 ext4	the kernel supports ext2/3/4, erofs
 loop_leftover	losetup	loop_leftover	=0	no loop device is left attached
 
 # privileged: FUSE
-priv_dev_fuse	fuse2fs	priv_dev_fuse	=present	/dev/fuse exists
+priv_dev_fuse	fuse2fs	priv_dev_fuse	ok	/dev/fuse opens
 fuse2fs_mount	fuse2fs	fuse2fs_mount	ok	fuse2fs mounts an ext4 image
 fuse2fs_findmnt	fuse2fs,findmnt	fuse2fs_findmnt	~fuse\.ext4	the mount is FUSE
 fuse2fs_read	fuse2fs	fuse2fs_read	=hello image	the FUSE mount is readable
@@ -316,7 +342,7 @@ tracefs_files	-	tracefs_files	=present	tracefs is usable
 ftrace_tracers	-	ftrace_tracers	~function	the kernel lists the function tracer
 ftrace_instance	-	ftrace_instance	ok	an ftrace instance can be created
 ftrace_events	-	ftrace_events	~sched_switch	ftrace event tracing records sched_switch
-ftrace_function	-	ftrace_function	~vfs_read|limit:^tracer:nop$	the ftrace function tracer (the cloud host refuses to enable it: EPERM)
+ftrace_function	-	ftrace_function	~vfs_read	the ftrace function tracer (the host kernel has to let root enable it)
 ftrace_instance_remove	-	ftrace_instance_remove	ok	the ftrace instance is removed
 perf_tracepoint_stat	perf	perf_tracepoint_stat	~sched:sched_switch	perf stat counts a tracepoint
 perf_tracepoint_record	perf	perf_tracepoint_record	~Captured and wrote	perf record samples a tracepoint
@@ -324,7 +350,7 @@ perf_tracepoint_script	perf	perf_tracepoint_script	~sched:sched_switch	perf scri
 perf_trace_syscalls	perf	perf_trace_syscalls	ok	perf trace traces system calls
 perf_trace_output	perf	perf_trace_output	~open\(	perf trace shows open()
 perf_cpu_clock	perf	perf_cpu_clock	~Captured and wrote	perf record with cpu-clock
-perf_hw_cycles_priv	perf	perf_hw_cycles_priv	~[0-9]+ +cycles|limit:not supported	perf hardware counters in the privileged session (no PMU)
+perf_hw_cycles_priv	perf	perf_hw_cycles_priv	~[0-9]+ +cycles	perf hardware counters in the privileged session (need a PMU)
 perf_list_tracepoints	perf	perf_list_tracepoints	~Tracepoint event	perf list shows tracepoints
 strace_attach	strace	strace_attach	~nanosleep	strace attaches to a running process
 bpf_compile	clang22	bpf_compile	ok	clang compiles a BPF program
@@ -375,20 +401,31 @@ tuntap_create	iproute2	tuntap_create	ok	ip creates a tap device
 tuntap_show	iproute2	tuntap_show	~tun9	ip shows the tap device
 tc_show	iproute2	tc_show	~qdisc noqueue	tc shows qdiscs
 tc_tbf	iproute2	tc_tbf	ok	tc adds a token-bucket filter
-tc_netem	iproute2	tc_netem	ok|limit:Specified qdisc kind is unknown	tc netem (the guest kernel has no sch_netem module)
-dummy_link	iproute2	dummy_link	ok|limit:Unknown device type	ip link type dummy (the guest kernel has no dummy module)
+tc_netem	iproute2	tc_netem	ok	tc netem (needs NET_SCH_NETEM in the kernel)
+dummy_link	iproute2	dummy_link	ok	ip link type dummy (needs CONFIG_DUMMY in the kernel)
 ip_route	iproute2	ip_route	~10\.77\.0\.0/24 dev veth0	ip shows the route
 
-# privileged: cgroup limits
-cgroup_memory	-	cgroup_memory	=mounted	the memory controller is mounted (cgroup v1)
-cgroup_pids	-	cgroup_pids	=mounted	the pids controller is mounted (cgroup v1)
-cgroup_cpu	-	cgroup_cpu	=mounted	the cpu controller is mounted (cgroup v1)
-cgroup_memory_oom_rc	-	cgroup_memory_oom_rc	=137	a memory-limited process is OOM-killed
-cgroup_memory_oom_kill	-	cgroup_memory_oom_kill	~oom_kill [1-9]	the kernel counted the OOM kill
-cgroup_pids_limit	-	cgroup_pids_limit	~refused	the pids limit refuses forks
-cgroup_cpu_quota	-	cgroup_cpu_quota	~cpu-ratio=0\.[3-6]	the cpu quota throttles a busy loop to about half a CPU
-cgroup_stress_ng	stress-ng	cgroup_stress_ng	~successful run completed	stress-ng runs under a memory limit
-cgroup_stress_ng_oom_kills	stress-ng	cgroup_stress_ng_oom_kills	~^[1-9]	stress-ng workers were OOM-killed by the limit
+# resource isolation through cgroups: the layout of the host, then each controller through the API the layout offers
+cgroup_mode	-	cgroup_mode	~^(v2|hybrid|v1)$	cgroup layout of the host: v2 (pure unified hierarchy), hybrid (v1 controllers plus a v2 mount) or v1
+cgroup_v1_controllers	-	cgroup_v1_controllers	~^none$|(^| )(cpu|memory|pids|blkio|cpuset|devices|freezer)( |$)	controllers bound to cgroup v1 hierarchies (none on a pure v2 host)
+cgroup_v2_controllers	-	cgroup_v2_controllers	~^none$|(^| )(cpu|memory|pids|io|cpuset|hugetlb)( |$)	controllers available on the unified hierarchy (a controller bound to v1 is not here)
+cgv1_memory	-	cgv1_memory	ok	cgroup v1: a memory limit OOM-kills the process (exit 137, oom_kill counted)
+cgv1_pids	-	cgv1_pids	ok	cgroup v1: the pids limit refuses forks
+cgv1_cpu_quota	-	cgv1_cpu_quota	ok	cgroup v1: the cpu quota throttles a busy loop to about half a CPU
+cgv1_cpu_weight	-	cgv1_cpu_weight	ok	cgroup v1: cpu shares split the CPU between two busy loops in proportion
+cgv1_cpuset	-	cgv1_cpuset	ok	cgroup v1: cpuset confines a process to one CPU
+cgv1_io	losetup	cgv1_io	ok	cgroup v1: blkio throttling slows a writer to a loop device
+cgv2_memory	-	cgv2_memory	ok	cgroup v2: a memory limit OOM-kills the process (exit 137, oom_kill counted)
+cgv2_pids	-	cgv2_pids	ok	cgroup v2: the pids limit refuses forks
+cgv2_cpu_quota	-	cgv2_cpu_quota	ok	cgroup v2: cpu.max throttles a busy loop to about half a CPU
+cgv2_cpu_weight	-	cgv2_cpu_weight	ok	cgroup v2: cpu.weight splits the CPU between two busy loops in proportion
+cgv2_cpuset	-	cgv2_cpuset	ok	cgroup v2: cpuset confines a process to one CPU
+cgv2_io	losetup	cgv2_io	ok	cgroup v2: io.max throttles a writer to a loop device
+cgv2_freeze	-	cgv2_freeze	ok	cgroup v2: cgroup.freeze freezes and thaws a cgroup
+cgv2_kill	-	cgv2_kill	ok	cgroup v2: cgroup.kill empties a cgroup
+cgv2_psi	-	cgv2_psi	ok	cgroup v2: cpu.pressure accounts stalled time under contention
+stress_ng	stress-ng	stress_ng	ok	stress-ng runs a vm worker under a memory limit
+stress_ng_oom_kills	stress-ng	stress_ng_oom_kills	ok	stress-ng workers were OOM-killed by the limit
 
 # privileged: libvirt and QEMU
 libvirt_version	libvirt-client	libvirt_version	ver:libvirt-client	virsh version
@@ -397,8 +434,12 @@ virsh_version	libvirt-client	virsh_version	ver:libvirt-client	virsh talks to lib
 virsh_hypervisor	libvirt-qemu,qemu-system-x86_64	virsh_hypervisor	ver:qemu-system-x86_64	libvirtd drives the locked QEMU
 virsh_capabilities	libvirt-qemu	virsh_capabilities	~<arch>x86_64</arch>	virsh capabilities
 virsh_domcaps_tcg	libvirt-qemu	virsh_domcaps_tcg	~<domainCapabilities>	virsh domcapabilities for QEMU TCG
-virsh_domcaps_kvm	libvirt-qemu	virsh_domcaps_kvm	~<domainCapabilities>|limit:failed to get emulator capabilities	virsh domcapabilities for KVM (no /dev/kvm)
-virt_host_validate	libvirt-client	virt_host_validate	~: PASS|limit:: FAIL	virt-host-validate hardware virtualization (no KVM)
+virsh_domcaps_kvm	libvirt-qemu	virsh_domcaps_kvm	~<domainCapabilities>	virsh domcapabilities for KVM (needs /dev/kvm: hardware-accelerated virtualization)
+virt_host_validate_hw	libvirt-client	virt_host_validate_hw	ok	virt-host-validate: hardware virtualization is available to QEMU
+virt_host_validate_cgroups	libvirt-client	virt_host_validate_cgroups	ok	virt-host-validate: the cgroup controllers libvirt needs are mounted
+domain_cpu_shares	libvirt-client	domain_cpu_shares	ok	libvirt sets the cpu shares of a domain (virsh schedinfo)
+domain_mem_limit	libvirt-client	domain_mem_limit	ok	libvirt sets the memory hard limit of a domain (virsh memtune)
+domain_kvm_start	libvirt-qemu,libvirt-daemon,qemu-system-x86_64	domain_kvm_start	ok	libvirt starts a KVM-accelerated domain (needs /dev/kvm)
 pool_define	libvirt-client	pool_define	ok	virsh defines a storage pool
 pool_start	libvirt-client	pool_start	ok	virsh starts the pool
 vol_create	libvirt-client,qemu-img	vol_create	ok	virsh creates a qcow2 volume
@@ -416,7 +457,7 @@ domain_destroy	libvirt-qemu	domain_destroy	ok	virsh destroys the domain
 domain_state_after	libvirt-qemu	domain_state_after	=shut off	the domain is shut off
 domain_undefine	libvirt-qemu	domain_undefine	ok	virsh undefines the domain
 net_define	libvirt-daemon	net_define	ok	virsh defines a virtual network
-net_start	libvirt-daemon	net_start	~Network toolsnet started|limit:action csum	libvirt virtual networks (the guest kernel has no act_csum module)
+net_start	libvirt-daemon	net_start	~Network toolsnet started	libvirt virtual networks (libvirt programs the tc csum action: NET_ACT_CSUM in the kernel)
 net_undefine	libvirt-daemon	net_undefine	ok	virsh undefines the network
 vbridge_create	iproute2	vbridge_create	ok	ip creates a host bridge for the VM
 vbridge_up	iproute2	vbridge_up	ok	the bridge is up
@@ -431,7 +472,7 @@ runc_run	runc	runc_run	=runc-ok	runc runs an OCI bundle
 docker_info_server	docker-engine	docker_info_server	ver:docker-engine	docker info reaches the daemon
 docker_storage_driver	docker-engine,containerd	docker_storage_driver	~overlay	docker uses overlayfs
 docker_runtime	docker-engine,runc	docker_runtime	~runc	docker uses runc
-docker_cgroup	docker-engine	docker_cgroup	~cgroupfs	docker uses the cgroupfs driver
+docker_cgroup	docker-engine	docker_cgroup	ok	docker uses the cgroup API the host layout offers (v1 and cgroupfs on a hybrid or v1 host, v2 on a pure v2 host)
 docker_version	docker-cli	docker_version	ver:docker-cli	docker client version
 dockerd_version	docker-engine	dockerd_version	ver:docker-engine	dockerd version
 compose_version	docker-cli-compose	compose_version	ver:docker-cli-compose	docker compose version
@@ -472,14 +513,89 @@ compose_up	docker-cli-compose	compose_up	~dial got pong	docker compose runs a tw
 compose_down	docker-cli-compose	compose_down	ok	docker compose down
 docker_prune	docker-cli	docker_prune	~Total reclaimed space	docker system prune
 
-# privileged: what the cloud host does not provide
-priv_dev_kvm	qemu-system-x86_64	priv_dev_kvm	=present|limit:^absent$	/dev/kvm (no hardware virtualization: QEMU runs TCG only)
-priv_dev_vhost_net	qemu-system-x86_64	priv_dev_vhost_net	=present|limit:^absent$	/dev/vhost-net (no vhost acceleration for virtio-net)
-priv_dev_net_tun	qemu-system-x86_64,libvirt-qemu	priv_dev_net_tun	=present	/dev/net/tun (tap networking for VMs)
-priv_lib_modules	-	priv_lib_modules	~^[0-9]|limit:^absent$	/lib/modules (no loadable kernel modules: dummy, netem, act_csum)
-priv_qemu_kvm	qemu-system-x86_64	priv_qemu_kvm	=ok|limit:failed to initialize kvm|Could not access KVM	qemu -accel kvm
-priv_fd_hard_raise	-	priv_fd_hard_raise	=ok|limit:Operation not permitted	raising the hard file-descriptor limit (needs CAP_SYS_RESOURCE)
+# privileged: the host, measured (the facts that cause the limits in limits.tsv)
+priv_dev_kvm	qemu-system-x86_64	priv_dev_kvm	ok	/dev/kvm opens read-write: hardware-accelerated virtualization is usable
+priv_dev_vhost_net	qemu-system-x86_64	priv_dev_vhost_net	ok	/dev/vhost-net opens: vhost acceleration for virtio-net
+priv_dev_net_tun	qemu-system-x86_64,libvirt-qemu	priv_dev_net_tun	ok	/dev/net/tun opens: tap networking for VMs
+priv_lib_modules	-	priv_lib_modules	ok	/lib/modules has modules: the kernel can load dummy, netem, act_csum
+priv_qemu_kvm	qemu-system-x86_64	priv_qemu_kvm	ok	qemu -accel kvm starts a machine
+priv_mknod_block	-	priv_mknod_block	ok	a block device node can be created (the unprivileged session is refused: deny_mknod_block)
+priv_fd_hard_raise	-	priv_fd_hard_raise	ok	raising the hard file-descriptor limit (needs CAP_SYS_RESOURCE)
 priv_hard_nofile	-	priv_hard_nofile	~^[0-9]+$	hard file-descriptor limit of the host (informational)
 priv_nr_open	-	priv_nr_open	~^[0-9]+$	fs.nr_open of the host (informational)
-priv_schedstat	-	priv_schedstat	=present|limit:^absent$	/proc/schedstat (scheduler statistics: perf sched, latency tools)
+priv_schedstat	-	priv_schedstat	ok	/proc/schedstat counts scheduler statistics (CONFIG_SCHEDSTATS: perf sched, latency tools)
 priv_perf_event_paranoid	-	priv_perf_event_paranoid	~^-?[0-9]+$	perf_event_paranoid in the privileged session (informational)
+host_kernel	-	host_kernel	~^[0-9]+\.[0-9]+	release of the host kernel (informational)
+host_cap_sys_resource	-	host_cap_sys_resource	~^(yes|no)$	the privileged session holds CAP_SYS_RESOURCE (needed to raise hard rlimits)
+host_cpu_virt_flags	-	host_cpu_virt_flags	~^(none|(svm|vmx)( (svm|vmx))?)$	hardware virtualization flags (vmx, svm) the host CPU exposes to this VM: none means no nested virtualization
+host_cpu_hypervisor	-	host_cpu_hypervisor	~^(yes|no)$	the CPU reports the hypervisor flag: the host is itself a virtual machine
+host_pmu	-	host_pmu	~^(present|absent)$	a hardware performance-monitoring unit is exposed to the host kernel
+host_lockdown	-	host_lockdown	~^(none|integrity|confidentiality)$	kernel lockdown mode of the host
+host_config	-	host_config	~(^| )KVM_INTEL=[a-z]+	kernel options of the host that decide the limits (y, m, or unset)
+host_filesystems	-	host_filesystems	~(^| )ext4( |$)	filesystems the host kernel provides
+host_modules	-	host_modules	~^(present|absent)$	the host kernel has loadable modules under /lib/modules
+host_ftrace_filter_open	-	host_ftrace_filter_open	~^(allowed|denied:.*(Operation not permitted|Permission denied))$	root may open tracefs available_filter_functions
+
+# guest: the cgroup v2 test bed (an Alpine linux-lts guest under QEMU: hardware KVM when the host offers it, software emulation otherwise)
+guest_qemu_rc	qemu-system-x86_64	guest_qemu_rc	=0	the guest's QEMU exited cleanly
+qmp	qemu-system-x86_64	qmp	ok	QEMU answered on its QMP socket
+qmp_kvm_present	qemu-system-x86_64	qmp_kvm_present	=yes	QEMU reports a kvm accelerator in the build (query-kvm)
+qmp_kvm_enabled	qemu-system-x86_64	qmp_kvm_enabled	~^(yes|no)$	whether the guest runs with KVM (informational: guest_accel is judged)
+qmp_qemu_version	qemu-system-x86_64	qmp_qemu_version	ver:qemu-system-x86_64	QEMU version seen over QMP
+qmp_status	qemu-system-x86_64	qmp_status	=running	the guest was running when QMP was queried
+guest_accel	qemu-system-x86_64	guest_accel	=kvm	the guest runs hardware-accelerated (KVM)
+guest_boot	qemu-system-x86_64	guest_boot	ok	the guest kernel booted and ran the test script
+guest_script_rc	-	guest_script_rc	=0	the guest test script exited 0
+g_kernel	-	g_kernel	ver:linux-lts	release of the guest kernel (the pinned Alpine linux-lts)
+g_privileges	-	g_privileges	ok	the guest test script is root with every capability
+g_cpus	-	g_cpus	~^([2-9]|[0-9]{2,})$	the guest has at least two CPUs (cpu weight and cpuset need two)
+g_fd_hard_raise	-	g_fd_hard_raise	ok	the guest root raises the hard file-descriptor limit
+g_set_clock	-	g_set_clock	ok	the guest root sets the clock
+g_modules	-	g_modules	ok	the guest loads kernel modules
+g_cgroup_mode	-	g_cgroup_mode	=v2	the guest mounts a pure cgroup v2 hierarchy
+g_cgroup_v1_controllers	-	g_cgroup_v1_controllers	=none	no controller of the guest is bound to a cgroup v1 hierarchy
+g_cgroup_v2_controllers	-	g_cgroup_v2_controllers	~^(?=.*(^| )cpu( |$))(?=.*(^| )cpuset( |$))(?=.*(^| )io( |$))(?=.*(^| )memory( |$))(?=.*(^| )pids( |$))	the guest's unified hierarchy has cpu, cpuset, io, memory and pids
+g_cgv2_memory	-	g_cgv2_memory	ok	guest cgroup v2: a memory limit OOM-kills the process (exit 137, oom_kill counted)
+g_cgv2_pids	-	g_cgv2_pids	ok	guest cgroup v2: the pids limit refuses forks
+g_cgv2_cpu_quota	-	g_cgv2_cpu_quota	ok	guest cgroup v2: cpu.max throttles a busy loop to about half a CPU
+g_cgv2_cpu_weight	-	g_cgv2_cpu_weight	ok	guest cgroup v2: cpu.weight splits the CPU in proportion
+g_cgv2_cpuset	-	g_cgv2_cpuset	ok	guest cgroup v2: cpuset confines a process to one CPU
+g_cgv2_io	losetup	g_cgv2_io	ok	guest cgroup v2: io.max throttles a writer to a block device
+g_cgv2_freeze	-	g_cgv2_freeze	ok	guest cgroup v2: cgroup.freeze freezes and thaws a cgroup
+g_cgv2_kill	-	g_cgv2_kill	ok	guest cgroup v2: cgroup.kill empties a cgroup
+g_cgv2_psi	-	g_cgv2_psi	ok	guest cgroup v2: cpu.pressure accounts stalled time under contention
+g_psi_system	-	g_psi_system	ok	guest: /proc/pressure accounts stalled time
+g_ns_pid	util-linux-misc	g_ns_pid	ok	guest: a private PID namespace makes the command PID 1
+g_ns_mnt	util-linux-misc,mount	g_ns_mnt	ok	guest: a mount in a private mount namespace is invisible outside it
+g_ns_uts	util-linux-misc	g_ns_uts	ok	guest: a private UTS namespace changes the hostname only inside
+g_ns_ipc	util-linux-misc	g_ns_ipc	ok	guest: a private IPC namespace is a different namespace
+g_ns_net	util-linux-misc,iproute2	g_ns_net	ok	guest: a private network namespace has only the loopback
+g_ns_user	util-linux-misc	g_ns_user	ok	guest: root inside a user namespace maps to an unprivileged uid
+g_ns_cgroup	util-linux-misc	g_ns_cgroup	ok	guest: a cgroup namespace hides the cgroup path
+g_veth_ping	iproute2	g_veth_ping	ok	guest: a veth pair carries pings into a network namespace
+g_netns_isolated	iproute2	g_netns_isolated	ok	guest: a network namespace with no link cannot reach the host side
+g_nft_drop	nftables	g_nft_drop	ok	guest: an nft rule drops ICMP in a namespace
+g_nft_allow	nftables	g_nft_allow	ok	guest: deleting the nft rule lets the traffic through
+g_netem_delay	iproute2	g_netem_delay	ok	guest: tc netem adds delay
+g_netem_rate	iproute2,iperf3	g_netem_rate	ok	guest: tc netem limits the rate (iperf3 measures it)
+g_dummy_link	iproute2	g_dummy_link	ok	guest: ip link type dummy
+g_bridge	iproute2	g_bridge	ok	guest: a veth enslaved to a bridge
+g_tc_csum	iproute2	g_tc_csum	ok	guest: a tc u32 filter with action csum (what libvirt's network programs)
+g_virtio_blk	-	g_virtio_blk	ok	guest: the virtio disk the test script was given
+g_ext4	e2fsprogs	g_ext4	ok	guest: mkfs.ext4, mount, e2fsck, remount read-only
+g_loop_ext4	losetup,mount	g_loop_ext4	ok	guest: a loop device mounted and read
+g_mount_xfs	xfsprogs,mount	g_mount_xfs	ok	guest: XFS mkfs, loop mount, write and read back
+g_mount_btrfs	btrfs-progs,mount	g_mount_btrfs	ok	guest: btrfs mkfs, loop mount, write and read back
+g_mount_vfat	dosfstools,mount	g_mount_vfat	ok	guest: FAT mkfs, loop mount, write and read back
+g_loop_partscan	losetup	g_loop_partscan	ok	guest: losetup -P creates partition nodes from a GPT image
+g_ftrace_events	-	g_ftrace_events	ok	guest: ftrace records sched_switch events in a private trace instance
+g_ftrace_function	-	g_ftrace_function	ok	guest: the ftrace function tracer records calls of vfs_read
+g_perf_tracepoint	perf	g_perf_tracepoint	ok	guest: perf counts a tracepoint system-wide
+g_perf_software	perf	g_perf_software	ok	guest: perf counts a software event
+g_perf_hw_cycles	perf	g_perf_hw_cycles	~[0-9]+ +cycles	guest: perf counts hardware cycles (needs a PMU in the guest: the emulated CPU has none)
+g_schedstat	-	g_schedstat	ok	guest: /proc/schedstat counts scheduler statistics
+g_bpf_feature	bpftool	g_bpf_feature	ok	guest: bpftool reports the cgroup_device program type
+g_bpf_prog_load	bpftool	g_bpf_prog_load	ok	guest: bpftool loads a cgroup_device BPF program
+g_bpf_cgroup_attach	bpftool	g_bpf_cgroup_attach	ok	guest: bpftool attaches the program to a cgroup
+g_bpf_device_filter	bpftool	g_bpf_device_filter	ok	guest: the attached program refuses /dev/null inside the cgroup and only there
+g_bpf_map	bpftool	g_bpf_map	ok	guest: bpftool creates, updates and dumps an array map

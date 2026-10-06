@@ -1,0 +1,4 @@
+# Exceptions to "the locked kernel version equals the pkgver-pkgrel of its origin aport in vendor/alpine-aports".
+# One line per origin aport:  origin  locked-version  vendored-version  reason
+# make-guest.sh fails on an exception that is stale (the vendored aport or the lock moved) or unused.
+linux-lts 6.18.55-r0 6.18.52-r0 linux-lts-6.18.52-r0 was retired from the mirror (HTTP 404) after the v3.24.2 tag; the test bed's guest kernel is the signed 6.18.55-r0 build, which is never part of an image

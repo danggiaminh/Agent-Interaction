@@ -7,7 +7,8 @@
 
 Checks: package set == pinned lock; versions == vendored APKBUILDs; dependency closure (everything
 satisfied, nothing extra); every path owned by a package or an explicit image-config path; ELF
-architecture; uid/gid consistency; no dangling links; no host state (secrets, host names, paths).
+architecture; every separate debug file (-dbg package) carries the GNU build-id and the .gnu_debuglink CRC of the installed
+object it describes; uid/gid consistency; no dangling links; no host state (secrets, host names, paths).
 
 Each --layer adds a layer on top of the base system, in order (development layer, then tools layer): the
 package set is base.lock + every layer's lock, the closure is rooted at alpine-base and the packages of
@@ -20,7 +21,7 @@ listed vendored version and the lock is exactly at the listed locked version.
 Documented exemptions, each for a package-owned path and each checked for staleness: the set of paths that
 trip a check must equal the exemption set exactly, so an exemption that stops applying fails the check.
 --non-x86 PATH      an ELF file that is not x86-64 by design (firmware the package ships for another CPU)
---dangling PATH     a symlink whose target the package itself does not provide (an upstream defect)
+--dangling PATH     a symlink whose target no installed package provides (an upstream defect, not a damaged image)
 --needle-ok PATH:VALUE   a host-path needle that matches a package file only as a documentation example
                     (never applies to the other needle labels: wall-clock, secrets, host name)
 Entries of /etc/ssl/certs that the ca-certificates trigger creates (ca-cert-NAME.pem links and OpenSSL hash
@@ -33,6 +34,7 @@ import re
 import stat
 import subprocess
 import sys
+import zlib
 
 import apkbuild
 
@@ -119,6 +121,51 @@ def resolve_in_root(root, rel, depth=0):
     return cur
 
 
+def elf_sections(path):
+    """Sections of an ELF64 little-endian file as {name: bytes}, without those that occupy no file space;
+    an empty dict for anything that is not such a file."""
+    with open(path, "rb") as fh:
+        data = fh.read()
+    if data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:
+        return {}
+    shoff = int.from_bytes(data[40:48], "little")
+    shentsize, shnum, shstrndx = (int.from_bytes(data[o:o + 2], "little") for o in (58, 60, 62))
+    if not shoff or not shnum:
+        return {}
+    heads = []
+    for i in range(shnum):
+        h = data[shoff + i * shentsize: shoff + (i + 1) * shentsize]
+        heads.append((int.from_bytes(h[0:4], "little"), int.from_bytes(h[4:8], "little"),
+                      int.from_bytes(h[24:32], "little"), int.from_bytes(h[32:40], "little")))
+    strtab = heads[shstrndx]
+    names = data[strtab[2]: strtab[2] + strtab[3]]
+    out = {}
+    for name_off, typ, off, size in heads:
+        if typ == 8:  # SHT_NOBITS
+            continue
+        out[names[name_off:names.index(b"\0", name_off)].decode("ascii", "replace")] = data[off: off + size]
+    return out
+
+
+def build_id(sections):
+    """The GNU build-id (hex) from the contents of a .note.gnu.build-id section, or None."""
+    note = sections.get(".note.gnu.build-id")
+    if not note or len(note) < 16:
+        return None
+    namesz, descsz = int.from_bytes(note[0:4], "little"), int.from_bytes(note[4:8], "little")
+    start = 12 + (namesz + 3) // 4 * 4
+    return note[start: start + descsz].hex() or None
+
+
+def debuglink(sections):
+    """(file name, crc32) from the contents of a .gnu_debuglink section, or None."""
+    sec = sections.get(".gnu_debuglink")
+    if not sec or b"\0" not in sec:
+        return None
+    end = sec.index(b"\0")
+    return sec[:end].decode("utf-8", "replace"), int.from_bytes(sec[-4:], "little")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", required=True)
@@ -198,7 +245,7 @@ def main():
             if p is None or p.get("o") != origin:
                 wrong.append(f"{n}: origin {p.get('o') if p else None} != {origin}")
                 continue
-            want = apkbuild.version(os.path.join(a.aports, repo, origin, "APKBUILD"))
+            want = apkbuild.version(os.path.join(a.aports, "main" if repo == "local" else repo, origin, "APKBUILD"))
             if ver == want:
                 continue
             if origin in ly["exc"] and ly["exc"][origin] == (ver, want):
@@ -225,8 +272,12 @@ def main():
     mf = [l.split() for l in open(a.manifest) if l.strip() and not re.match(r"^[a-z0-9_]+=|^#", l)]
     check(sorted(f"{x[0]}={x[1]}" for x in mf) == installed, "manifest lists exactly the installed packages")
     if dev:
-        mism = [x[0] for x in mf if x[0] in devby and (x[3] != devby[x[0]][4] or x[2] != devby[x[0]][3])]
-        check(not mism, "manifest records the locked origin and .apk sha256 of every package the " + " and ".join(ly["label"] for ly in layers) + " add", str(mism))
+        # A package of repo "local" is pinned by its datahash (the same in every environment); its .apk carries the
+        # environment's own signature, so the manifest's apk_sha256 for it is only the sha256 of that file.
+        mism = [x[0] for x in mf if x[0] in devby
+                and (x[4 if devby[x[0]][2] == "local" else 3] != devby[x[0]][4] or x[2] != devby[x[0]][3])]
+        check(not mism, "manifest records the locked origin and the .apk sha256 (datahash for locally built packages) of every package the "
+              + " and ".join(ly["label"] for ly in layers) + " add", str(mism))
     check(all(len(x) == 5 and re.fullmatch(r"[0-9a-f]{64}", x[3]) and re.fullmatch(r"[0-9a-f]{64}", x[4]) for x in mf),
           "manifest has apk sha256 and datahash for every package")
 
@@ -365,6 +416,44 @@ def main():
               "every non-x86 exemption is a package-owned ELF file that is still not x86-64",
               str(sorted(non_x86 - set(wrong)) + sorted(x for x in non_x86 if x not in owned)))
 
+    # 7b. separate debug files: each one is the debug file of the very ELF object it sits next to in the file tree
+    # (same GNU build-id, and the CRC of the .gnu_debuglink the object carries), and that object belongs to the
+    # debug package's own origin. A debug package built from another build of the library (an official -dbg beside a
+    # locally built library) is installed but useless: gdb, valgrind and perf silently ignore its symbols.
+    print("== debug packages")
+    owner = {f: p for p in pkgs for f in p["files"]}
+    dbgpkgs = sorted(p["P"] for p in pkgs if p["P"].endswith("-dbg"))
+    dbgfiles = sorted(f for p in pkgs if p["P"] in dbgpkgs for f in p["files"])
+    trouble = []
+    for f in dbgfiles:
+        pfx = "usr/lib/debug/"
+        if not (f.startswith(pfx) and f.endswith(".debug")):
+            trouble.append(f"{f}: not a usr/lib/debug/PATH.debug file, so it cannot be matched to its object")
+            continue
+        target = f[len(pfx):-len(".debug")]
+        tpath = os.path.join(root, target)
+        if not os.path.isfile(tpath):
+            trouble.append(f"{f}: its object {target} is not installed")
+            continue
+        dsec, tsec = elf_sections(os.path.join(root, f)), elf_sections(tpath)
+        did, tid = build_id(dsec), build_id(tsec)
+        link = debuglink(tsec)
+        with open(os.path.join(root, f), "rb") as fh:
+            crc = zlib.crc32(fh.read())
+        who = owner.get(target)
+        if not did or did != tid:
+            trouble.append(f"{f}: build-id {(did or 'none')[:12]} is not that of {target} ({(tid or 'none')[:12]})")
+        elif link != (os.path.basename(f), crc):
+            trouble.append(f"{f}: not the file named by the .gnu_debuglink of {target} (name/CRC)")
+        elif who is None or who.get("o") != owner[f].get("o"):
+            trouble.append(f"{f}: {target} is owned by {who['P'] if who else 'no package'}, not by a package of origin {owner[f].get('o')}")
+    if dbgpkgs:
+        check(dbgfiles and not trouble,
+              f"{len(dbgfiles)} debug file(s) of {', '.join(dbgpkgs)} carry the build-id and debuglink CRC of the installed object they describe",
+              "; ".join(trouble[:5]) or "the debug packages own no file")
+    else:
+        ok("no separate debug package is installed")
+
     # 8. ownership ids and link sanity
     pw = {int(l.split(":")[2]) for l in open(os.path.join(root, "etc/passwd")) if l.count(":") >= 6}
     gr = {int(l.split(":")[2]) for l in open(os.path.join(root, "etc/group")) if l.count(":") >= 3}
@@ -395,6 +484,13 @@ def main():
         check(dang_ok == {d.split(" -> ")[0] for d in dangling} and all(x in owned for x in dang_ok),
               "every dangling-link exemption is a package-owned symlink that still dangles",
               str(sorted(dang_ok - {d.split(" -> ")[0] for d in dangling}) + sorted(x for x in dang_ok if x not in owned)))
+        # Evidence that the defect is upstream's and not the image's: the missing target is a path that no installed
+        # package owns (a target that a package owns but the image lacks would be a damaged image, not a package defect).
+        def link_target(rel):
+            lt = os.readlink(os.path.join(root, rel))
+            return os.path.normpath(lt if lt.startswith("/") else os.path.join("/", os.path.dirname(rel), lt)).lstrip("/")
+        claimed = sorted(f"{x} -> {link_target(x)}" for x in dang_ok if os.path.islink(os.path.join(root, x)) and link_target(x) in owned)
+        check(not claimed, "no dangling-link exemption points at a path that an installed package owns (the target is provided by no package)", str(claimed))
     unexpected = [f"{r} {oct(m)}" for r, m in setuid if allowed_setid.get(r) != m]
     names = ", ".join(sorted(r for r, _ in setuid))
     check(not unexpected, f"setuid/setgid bits only on the expected files with the expected modes ({names})",

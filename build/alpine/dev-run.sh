@@ -8,7 +8,8 @@
 # ids 0-65535 of the image onto an unprivileged host range, so nothing in it holds privileges on the
 # host. The command runs chrooted with a rebuilt environment (env -i), in its own mount, PID, IPC,
 # UTS and network namespaces: no network, so cargo cannot download crates (vendor them: `cargo vendor`)
-# and nothing from the host leaks in. The scratch root is deleted afterwards.
+# and nothing from the host leaks in. The scratch root is deleted afterwards. /dev holds null, zero, full,
+# random, urandom and tty, plus kvm only if the sandbox can open the host's /dev/kvm (otherwise QEMU is TCG).
 #
 # Environment contract inside the image:
 #   PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin  HOME=/root  LANG=C.UTF-8  TZ=UTC
@@ -40,6 +41,12 @@ if [ "${1:-}" = "--inner" ]; then
 		: >"$R/dev/$n"
 		mount --bind "/dev/$n" "$R/dev/$n"
 	done
+	# /dev/kvm only where this sandbox can really open it (a device the mapped ids may not use would only make
+	# QEMU fail late); -c first, because opening a missing path with <> would create a regular file there.
+	if [ -c /dev/kvm ] && { : <>/dev/kvm; } 2>/dev/null; then
+		: >"$R/dev/kvm"
+		mount --bind /dev/kvm "$R/dev/kvm"
+	fi
 	mount -t tmpfs -o mode=1777 tmpfs "$R/tmp"
 	for c in ${copies[@]+"${copies[@]}"}; do
 		mkdir -p "$R${c#*:}"

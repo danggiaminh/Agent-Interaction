@@ -1,0 +1,26 @@
+#!/bin/busybox sh
+# Stage 1 of the cgroup v2 test bed: load the modules, mount the tools image (a read-only 9p export of the
+# sandbox root) and hand over to stage 2 (testbed/guest-init.sh). Runs as PID 1 of the initramfs.
+export PATH=/bin
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+fail() {
+	echo "testbed-init: $*" >/dev/console
+	echo o >/proc/sysrq-trigger 2>/dev/null
+	poweroff -f
+}
+stage2=""
+for a in $(cat /proc/cmdline); do
+	case "$a" in ai.init=*) stage2="${a#ai.init=}" ;; esac
+done
+[ -n "$stage2" ] || fail "no ai.init= on the kernel command line"
+while read -r m; do
+	insmod "/mods/$m" || fail "insmod $m failed"
+done </modules.load
+mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144,cache=loose,ro root /newroot || fail "cannot mount the root share"
+[ -x "/newroot$stage2" ] || [ -f "/newroot$stage2" ] || fail "$stage2 is not in the root share"
+mount --move /proc /newroot/proc || fail "mount --move proc"
+mount --move /sys /newroot/sys || fail "mount --move sys"
+mount --move /dev /newroot/dev || fail "mount --move dev"
+exec switch_root /newroot /bin/sh "$stage2"

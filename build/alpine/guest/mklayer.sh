@@ -17,10 +17,22 @@ mkdir -p "$R"
 tar --extract --gzip --file "$parent" --directory "$R" --numeric-owner --xattrs --xattrs-include='*'
 cp "$R/etc/apk/world" /tmp/world.parent
 
-files=""
+# Locked packages of repo "local" come from the locally built repository and are signed with this
+# environment's package key; that one key is trusted for this run only (it is not copied into the image).
+files="" keys="$R/etc/apk/keys"
 while read -r name ver repo origin sha; do
 	case "$name" in '#'* | '') continue ;; esac
-	f="/build/upstream/$repo/$ALPINE_ARCH/$name-$ver.apk"
+	if [ "$repo" = local ]; then
+		f="/build/packages/main/$ALPINE_ARCH/$name-$ver.apk"
+		if [ "$keys" = "$R/etc/apk/keys" ]; then
+			keys=/tmp/keys
+			rm -rf "$keys" && mkdir "$keys"
+			cp "$R"/etc/apk/keys/* "$keys"/
+			cp "/home/${BUILDER_USER:-builder}"/.abuild/*.rsa.pub "$keys"/
+		fi
+	else
+		f="/build/upstream/$repo/$ALPINE_ARCH/$name-$ver.apk"
+	fi
 	[ -f "$f" ] || { echo "mklayer: missing $f" >&2; exit 1; }
 	files="$files $f"
 done <"$LAYER_LOCK"
@@ -45,7 +57,7 @@ done
 # --force-non-repository: installing .apk files directly is otherwise refused (it would not survive a
 # reboot of a diskless system; irrelevant for an installed image).
 # shellcheck disable=SC2086
-apk --root "$R" --arch "$ALPINE_ARCH" --keys-dir "$R/etc/apk/keys" --repositories-file /dev/null \
+apk --root "$R" --arch "$ALPINE_ARCH" --keys-dir "$keys" --repositories-file /dev/null \
 	--no-network --no-cache --force-non-repository add $files
 
 cleanup

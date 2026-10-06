@@ -32,11 +32,12 @@ tools)
 	# Package-owned paths that trip a check for a reason that is the package's, not the image's (each is verified to
 	# still apply by check-image.py, so a stale entry fails):
 	#   seabios firmware: 32-bit x86 code that QEMU loads as a BIOS, never run by the image's own kernel
-	#   clang links: upstream clang-extra-tools / clang21-extra-tools links point at ../lib/llvm22/bin/..., which no
-	#     package provides (c-index-test) or only the uninstalled llvm22 does (clang-offload-packager)
+	#   c-index-test: the clang-extra-tools link points at ../lib/llvm22/bin/c-index-test, which no package provides (the
+	#     vendored clang22 APKBUILD builds that tool only under want_check); check-image.py verifies that no installed
+	#     package owns the missing target
 	#   host-path needles: example paths in upstream documentation and strings, not a path of this host
 	exempt_args=(--non-x86 usr/share/seabios/bios-coreboot.bin
-		--dangling usr/bin/c-index-test --dangling usr/bin/clang-offload-packager
+		--dangling usr/bin/c-index-test
 		--needle-ok usr/share/cmake/Modules/FindDoxygen.cmake:/home/user
 		--needle-ok usr/share/cmake/Help/variable/CMAKE_EXPORT_SARIF.rst:/home/user
 		--needle-ok usr/share/cmake/Help/variable/CMAKE_EXPORT_COMPILE_COMMANDS.rst:/home/user
@@ -202,6 +203,16 @@ after="$(sha256sum "$tarball" | cut -d' ' -f1)"
 if [ "$before" = "$after" ]; then ok "clean rebuild from the $parent_label and the pinned packages gives the identical archive ($after)"; else bad "image is not deterministic: $before != $after"; fi
 if cmp -s "$scratch.manifest.before" "$manifest"; then ok "manifest identical after the rebuild"; else bad "manifest differs after the rebuild"; fi
 rm -f "$scratch.manifest.before"
+
+if [ "$layer" = tools ]; then
+	# the cgroup v2 test bed is made from the tools image just rebuilt: built again from nothing, then a second build must
+	# reproduce it byte for byte (make-guest.sh --check)
+	echo "== cgroup v2 test bed (guest kernel of the functional tests)"
+	rc=0
+	out="$("$ALPINE_BUILD_DIR/make-guest.sh" --clean 2>&1 && "$ALPINE_BUILD_DIR/make-guest.sh" 2>&1 && "$ALPINE_BUILD_DIR/make-guest.sh" --check 2>&1)" || rc=$?
+	printf '%s\n' "$out"
+	if [ "$rc" != 0 ] || grep -q '^FAIL' <<<"$out"; then bad "the cgroup v2 test bed is not reproduced from its pins"; fi
+fi
 
 echo "== $test_label"
 rc=0

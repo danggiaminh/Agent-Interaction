@@ -3,7 +3,7 @@
 
   lock-layer.py --resolved FILE --aports DIR --upstream DIR --mirror URL --branch v3.24 --arch x86_64 --out dev.lock \
                 --what "the development layer adds to the base image" --pkgs guest/dev.pkgs --make make-dev.sh \
-                [--exceptions guest/tools.exceptions]
+                [--exceptions guest/tools.exceptions] [--packages .build/packages]
 
 FILE has one "name version repo origin" line per package, as resolved by guest/layerlock.sh against the
 live repositories. Every package must be built from an aport of the vendored tree at exactly that
@@ -11,6 +11,11 @@ version: where the live index has moved ahead of the vendored aports (the reposi
 after the release tag), the vendored version is locked instead, if the mirror still serves it. Each
 file is downloaded into --upstream/<repo>/<arch>/ and its sha256 is recorded. The mirror is not
 trusted: the layer build checks the sha256 again and apk verifies the signature against the image's keys.
+
+A row of repo "local" (guest/tools.local) is a package of the locally built repository --packages/main/<arch>: nothing is
+downloaded, its version must equal the vendored aport's, and the last column is the datahash of its payload
+(.PKGINFO), which is the same in every environment, not the sha256 of the .apk, which carries the signature of
+the environment's own key.
 
 --exceptions names the one way out when the mirror has retired the vendored version: a line
 "origin locked-version vendored-version reason..." pins every package of that aport at its live version instead. It
@@ -41,11 +46,21 @@ def sha256(path):
     return h.hexdigest()
 
 
+def datahash(apk):
+    """The payload hash recorded in the .PKGINFO of an .apk (second gzip stream of the archive)."""
+    out = subprocess.run(["tar", "-xzOf", apk, ".PKGINFO"], check=True, capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        if line.startswith("datahash = "):
+            return line.split(" = ", 1)[1]
+    sys.exit(f"lock-layer: {apk} has no datahash in .PKGINFO")
+
+
 def main():
     ap = argparse.ArgumentParser()
     for k in ("resolved", "aports", "upstream", "mirror", "branch", "arch", "out", "what", "pkgs", "make"):
         ap.add_argument(f"--{k}", required=True)
     ap.add_argument("--exceptions")
+    ap.add_argument("--packages")
     a = ap.parse_args()
 
     exceptions = {}  # origin aport -> (locked version, vendored version, reason)
@@ -63,6 +78,18 @@ def main():
         if not line.strip():
             continue
         name, ver, repo, origin = line.split()
+        if repo == "local":
+            if not a.packages:
+                sys.exit(f"lock-layer: {name} is a local package: --packages is needed")
+            main_repo = "main"
+            want = vendored_version(a.aports, main_repo, origin)
+            if ver != want:
+                sys.exit(f"lock-layer: local package {name}-{ver} is not built from the vendored aport {origin} ({want})")
+            path = os.path.join(a.packages, "main", a.arch, f"{name}-{ver}.apk")
+            if not os.path.isfile(path):
+                sys.exit(f"lock-layer: {path} is missing: run build-base.sh")
+            rows.append((name, ver, repo, origin, datahash(path)))
+            continue
         want = vendored_version(a.aports, repo, origin)
         if ver != want and origin in exceptions:
             locked, vendored, reason = exceptions[origin]
@@ -92,6 +119,8 @@ def main():
         fh.write(
             f"# Packages {a.what} (resolved from {a.pkgs}), one per line:\n"
             "#   name version repo origin sha256-of-the-.apk\n"
+            "# (repo \"local\": a package of the locally built repository, guest/tools.local; its last column is the datahash of the\n"
+            "# payload, which is the same in every environment, instead of the sha256 of the .apk)\n"
             f"# Official signed binary packages of the Alpine {a.branch} repositories. Every version equals the pkgver-pkgrel of its\n"
             f"# origin aport in vendor/alpine-aports. {a.make} checks each sha256, apk verifies each signature against the\n"
             f"# Alpine release keys of the image. Refresh deliberately: {a.make} --refresh-lock, then review the diff.\n"

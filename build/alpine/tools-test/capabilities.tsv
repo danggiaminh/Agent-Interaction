@@ -1,0 +1,64 @@
+# What each capability needs and which inventory row proves it in each privilege tier.
+#   needs  none  any workload can use it: the unprivileged session must be PASS (or LIMIT)
+#          root  only real root can: the unprivileged session must be DENIED by a deny: row (never reported as working),
+#                the privileged session PASS or LIMIT, or the guest PASS where the host must not be made to do it
+#          host  the host kernel or hardware must provide it: the privileged session must be PASS or LIMIT (a LIMIT
+#                names what the host lacks in limits.tsv); the unprivileged cell is never a deny: row that passes
+#   guest  a PASSing row of the test bed guest (cgroup v2 kernel with the features the host lacks), or '-'
+# Every deny: row of the inventory must be referenced here: a refusal is only evidence when a capability depends on it.
+# cap	area	needs	unpriv	priv	guest	description
+cgv2-memory-oom	cgroup v2	root	deny_mount_cgroup2	cgv2_memory	g_cgv2_memory	cgroup v2 memory.max with the OOM killer; the mount itself needs real root
+cgv2-pids	cgroup v2	root	deny_mount_cgroup2	cgv2_pids	g_cgv2_pids	cgroup v2 pids.max fork limit; the mount itself needs real root
+cgv2-cpu-quota	cgroup v2	root	deny_mount_cgroup2	cgv2_cpu_quota	g_cgv2_cpu_quota	cgroup v2 cpu.max bandwidth quota; the mount itself needs real root
+cgv2-cpu-weight	cgroup v2	root	deny_mount_cgroup2	cgv2_cpu_weight	g_cgv2_cpu_weight	cgroup v2 cpu.weight proportional share; the mount itself needs real root
+cgv2-cpuset	cgroup v2	root	deny_mount_cgroup2	cgv2_cpuset	g_cgv2_cpuset	cgroup v2 cpuset.cpus pinning; the mount itself needs real root
+cgv2-io	cgroup v2	root	deny_mount_cgroup2	cgv2_io	g_cgv2_io	cgroup v2 io.max throttling; the mount itself needs real root
+cgv2-freeze	cgroup v2	root	deny_mount_cgroup2	cgv2_freeze	g_cgv2_freeze	cgroup v2 cgroup.freeze; the mount itself needs real root
+cgv2-kill	cgroup v2	root	deny_mount_cgroup2	cgv2_kill	g_cgv2_kill	cgroup v2 cgroup.kill; the mount itself needs real root
+cgv2-psi	cgroup v2	root	deny_mount_cgroup2	cgv2_psi	g_cgv2_psi	cgroup v2 pressure stall information per cgroup; the mount itself needs real root
+cgv1-memory-oom	cgroup v1	root	deny_mount_cgroup2	cgv1_memory	-	cgroup v1 memory.limit_in_bytes with the OOM killer; the guest test bed is cgroup v2 only
+cgv1-pids	cgroup v1	root	deny_mount_cgroup2	cgv1_pids	-	cgroup v1 pids.max fork limit; the guest test bed is cgroup v2 only
+cgv1-cpu-quota	cgroup v1	root	deny_mount_cgroup2	cgv1_cpu_quota	-	cgroup v1 cpu.cfs_quota_us bandwidth quota; the guest test bed is cgroup v2 only
+cgv1-cpu-weight	cgroup v1	root	deny_mount_cgroup2	cgv1_cpu_weight	-	cgroup v1 cpu.shares proportional share; the guest test bed is cgroup v2 only
+cgv1-cpuset	cgroup v1	root	deny_mount_cgroup2	cgv1_cpuset	-	cgroup v1 cpuset.cpus pinning; the guest test bed is cgroup v2 only
+cgv1-io	cgroup v1	root	deny_mount_cgroup2	cgv1_io	-	cgroup v1 blkio throttling; the guest test bed is cgroup v2 only
+container-memory	containers	root	deny_mount_cgroup2	docker_memory_limit_rc	-	docker run --memory kills the process that exceeds it
+container-pids	containers	root	deny_mount_cgroup2	docker_pids_limit	-	docker run --pids-limit refuses forks past it
+container-cpu	containers	root	deny_mount_cgroup2	docker_cpu_limit	-	docker run --cpus bounds the CPU time
+ns-pid-ns	namespaces	none	userns_pid_ns	pid_namespace	g_ns_pid	private process table
+ns-mount-ns	namespaces	none	userns_mount_ns	-	g_ns_mnt	private mount table
+ns-uts-ns	namespaces	none	userns_uts_ns	-	g_ns_uts	private host name
+ns-ipc-ns	namespaces	none	userns_ipc_ns	-	g_ns_ipc	private System V IPC
+ns-net-ns	namespaces	none	userns_net_ns	-	g_ns_net	private network stack, loopback only
+ns-veth	namespaces	none	userns_veth_ping	ping_veth	g_veth_ping	veth pair between two network namespaces
+ns-nftables	namespaces	none	userns_nft	nft_counted	g_nft_drop	nftables rules inside a network namespace
+ns-rlimit-cpu	namespaces	none	rlimit_cpu	-	-	RLIMIT_CPU kills a spinning process
+ns-user-ns	namespaces	none	userns_real_root	-	g_ns_user	uid 0 in a user namespace is not host root
+qemu-tcg	virtualization	none	qemu_tcg_serial	-	guest_boot	QEMU boots a kernel under software emulation (TCG)
+qemu-kvm	virtualization	host	qemu_accel_kvm	priv_qemu_kvm	-	QEMU with hardware acceleration (-accel kvm): needs /dev/kvm and nested virtualization
+libvirt-tcg-domain	virtualization	root	deny_mount_cgroup2	domain_start	-	libvirt defines, starts and talks to a domain of type qemu (TCG)
+libvirt-kvm-domain	virtualization	host	domain_kvm_start	domain_kvm_start	-	libvirt starts a domain of type kvm
+libvirt-network	virtualization	host	net_start	net_start	-	libvirt's own virtual network (needs the tc csum action in the kernel)
+vhost-net	virtualization	host	priv_dev_vhost_net	priv_dev_vhost_net	-	in-kernel virtio-net backend
+tun-tap	virtualization	host	priv_dev_net_tun	priv_dev_net_tun	-	/dev/net/tun for tap devices
+ftrace-events	tracing	root	deny_mount_tracefs	ftrace_events	g_ftrace_events	tracefs trace events
+ftrace-function	tracing	host	ftrace_function	ftrace_function	g_ftrace_function	the function tracer and its filter
+perf-tracepoints	tracing	root	deny_mount_tracefs	perf_tracepoint_stat	g_perf_tracepoint	perf on kernel tracepoints
+perf-software	tracing	none	perf_stat_sw	perf_cpu_clock	g_perf_software	perf software events (task-clock, cpu-clock)
+perf-hardware	tracing	host	perf_hw_cycles	perf_hw_cycles_priv	-	hardware performance counters (cycles, instructions): need a PMU
+bpf-programs	tracing	root	deny_bpf_map	bpf_prog_load	g_bpf_prog_load	loading BPF programs into the kernel
+bpf-maps	tracing	root	deny_bpf_map	bpf_map_create	g_bpf_map	BPF maps
+schedstat	tracing	host	priv_schedstat	priv_schedstat	-	/proc/schedstat scheduler statistics
+kernel-modules	tracing	host	priv_lib_modules	priv_lib_modules	-	loadable kernel modules
+loop-device	storage	root	deny_loop_device	losetup_attach	g_loop_ext4	loop devices attach image files
+mount-ext4	storage	root	deny_mount_block_fs	loop_mount_ext4	g_ext4	mounting a block-backed file system
+fuse-mount	storage	root	deny_fuse_mount	fuse2fs_mount	-	FUSE mounts (fuse2fs)
+block-nodes	storage	root	deny_mknod_block	priv_mknod_block	-	creating block device nodes
+mount-xfs	storage	host	mount_xfs	mount_xfs	-	mounting xfs needs kernel support
+mount-btrfs	storage	host	mount_btrfs	mount_btrfs	-	mounting btrfs needs kernel support
+mount-vfat	storage	host	mount_vfat	mount_vfat	-	mounting vfat needs kernel support
+loop-partscan	storage	host	loop_partscan_nodes	loop_partscan_nodes	-	partition nodes on a loop device (GPT or MBR parser in the kernel)
+set-clock	privileged	root	deny_set_clock	-	g_set_clock	setting the system clock (never done on the host)
+raise-nofile	privileged	root	deny_nofile_raise	priv_fd_hard_raise	g_fd_hard_raise	raising the hard open-file limit
+netem	privileged	host	tc_netem	tc_netem	g_netem_delay	netem delay, loss and rate
+dummy-link	privileged	host	dummy_link	dummy_link	g_dummy_link	dummy network devices

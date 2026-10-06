@@ -11,6 +11,7 @@ if section ident; then
 	kv gcc_version "$(gcc -dumpfullversion)"
 	kv gxx_version "$(g++ -dumpfullversion)"
 	kv clang_version "$(clang --version | sed -n '1s/.*version \([0-9.]*\).*/\1/p')"
+	kv llvm_version "$(llvm22-objdump --version | sed -n 's/^ *LLVM version //p')"
 	kv clang_tidy_version "$(clang-tidy --version | sed -n 's/.*LLVM version \([0-9.]*\).*/\1/p')"
 	kv clang_format_version "$(clang-format --version | sed -n 's/.*version \([0-9.]*\).*/\1/p')"
 	kv cppcheck_version "$(cppcheck --version | sed 's/^Cppcheck //')"
@@ -68,6 +69,9 @@ if section compile; then
 	found gcc_run '^42$' "$T/clean-gcc"
 	run clang_build clang -O2 -Wall -Wextra -Werror -o "$T/clean-clang" c/clean.c
 	found clang_run '^42$' "$T/clean-clang"
+	found llvm_objdump '<add>:' llvm22-objdump -d "$T/clean-gcc"
+	found llvm_nm ' T add$' llvm22-nm "$T/clean-gcc"
+	run llvm_ar sh -c 'gcc -O2 -c -o "$1/clean.o" c/clean.c && llvm22-ar rcs "$1/libclean.a" "$1/clean.o" && llvm22-ar t "$1/libclean.a" | grep -qx clean.o' sh "$T"
 	found elf_file 'ELF 64-bit LSB.*x86-64.*interpreter /lib/ld-musl-x86_64.so.1' file "$T/clean-clang"
 	run gxx_build g++ -std=c++20 -O2 -Wall -Wextra -Werror -pthread -o "$T/hello-gxx" cpp/hello.cpp
 	found gxx_run '^cpp-ok 55 caught$' "$T/hello-gxx"
@@ -366,7 +370,8 @@ if section qemu; then
 	kv qemu_tcg_boot_rc "$?"
 	found qemu_tcg_serial '^BOOT-OK$' cat "$V/ser.txt"
 	found qemu_machines 'q35' qemu-system-x86_64 -M help
-	found qemu_accels 'tcg' qemu-system-x86_64 -accel help
+	kv qemu_accels "$(qemu-system-x86_64 -accel help | sed '1d' | tr '\n' ' ' | sed 's/ $//')"
+	kvm_probe qemu_accel_kvm
 	ls /usr/share/qemu /usr/share/seabios >/dev/null 2>&1
 	kv seabios_file "$(ls /usr/share/seabios/bios-256k.bin 2>/dev/null || echo missing)"
 	kv ovmf_files "$(ls /usr/share/OVMF/OVMF_CODE.fd /usr/share/OVMF/OVMF_VARS.fd 2>/dev/null | tr '\n' ' ')"
@@ -383,10 +388,53 @@ if section qemu; then
 	found ovmf_serial 'BdsDxe: No bootable option or device was found' sh -c "grep -a -o 'BdsDxe: No bootable option or device was found' $V/ovmf-ser.txt"
 fi
 
-# ------------------------------------------------------------------------------------------------ what the unprivileged session lacks
+# ------------------------------------------------------------------------------------------------ what the unprivileged session can isolate, and what it is refused
+# The session is root of a user namespace, never the host's root: what it can isolate on its own must work, and
+# what needs the host's root must be refused ("denied:<the refusal>"). An operation that succeeds although it needs
+# the host's root is a leak ("leaked:"), which the judge fails. The privileged session proves the same tools work.
 if section limits; then
-	kv dev_kvm "$([ -e /dev/kvm ] && echo present || echo absent)"
-	kv dev_fuse "$([ -e /dev/fuse ] && echo present || echo absent)"
+	kv userns_real_root "$(awk '{ r = ($1 == 0 && $2 == 0 && $3 >= 4294967295) } END { print r ? "yes" : "no" }' /proc/self/uid_map)"
+	# deny KEY CMD...: "denied:" and the refusal message when CMD fails, "leaked:" when it succeeds
+	deny() {
+		k="$1"
+		shift
+		if "$@" >"$T/$k.log" 2>&1; then kv "$k" "leaked:the unprivileged session could do it"
+		else
+			m="$(grep -i -m 1 'denied\|not permitted\|failed\|error' "$T/$k.log" | cut -c1-200)"
+			kv "$k" "denied:${m:-$(lastline "$T/$k.log")}"
+		fi
+	}
+	mkdir -p "$T/deny/tr" "$T/deny/cg"
+	truncate -s 4M "$T/deny/disk.img"
+	mke2fs -q -F "$T/deny/disk.img"
+	deny deny_loop_device losetup --find --show "$T/deny/disk.img"
+	deny deny_mount_block_fs mount -t ext4 -o ro "$T/deny/disk.img" "$T/deny/tr"
+	deny deny_mount_tracefs mount -t tracefs nodev "$T/deny/tr"
+	deny deny_mount_cgroup2 mount -t cgroup2 none "$T/deny/cg"
+	deny deny_bpf_map bpftool map create "$T/deny/map" type array key 4 value 4 entries 1 name probe
+	deny deny_mknod_block mknod "$T/deny/sda" b 8 0
+	# busybox date reports "can't set date: Operation not permitted" but still exits 0, so the clock is set through clock_settime(2)
+	deny deny_set_clock python3 -c 'import time; time.clock_settime(time.CLOCK_REALTIME, time.clock_gettime(time.CLOCK_REALTIME))'
+	# lower the hard limit, then raise it again: refused without the host's CAP_SYS_RESOURCE, whatever the starting value
+	deny deny_nofile_raise sh -c 'ulimit -n 1024 && ulimit -Hn 2048'
+	# FUSE needs /dev/fuse, which the sandbox's private /dev does not carry
+	mkdir -p "$T/deny/fuse"
+	deny deny_fuse_mount fuse2fs -o ro "$T/deny/disk.img" "$T/deny/fuse"
+	# isolation that needs no privilege
+	kv userns_pid_ns "$(unshare --fork --pid sh -c 'echo pid=$$' 2>&1 | grep -q '^pid=1$' && echo ok || echo fail:init-is-not-pid-1)"
+	if unshare --mount --propagation unchanged sh -c "mount -t tmpfs tmpfs $T/deny/tr && touch $T/deny/tr/inside" >"$T/userns_mount.log" 2>&1 && [ ! -e "$T/deny/tr/inside" ]; then kv userns_mount_ns "ok a tmpfs mounted in a private mount namespace is invisible outside it"
+	else kv userns_mount_ns "fail:$(firstline "$T/userns_mount.log")"; fi
+	inside="$(unshare --uts sh -c 'hostname isolated && hostname' 2>&1)"
+	kv userns_uts_ns "$([ "$inside" = isolated ] && [ "$(hostname)" != isolated ] && echo ok || echo "fail:inside=$inside outside=$(hostname)")"
+	kv userns_ipc_ns "$([ "$(unshare --ipc readlink /proc/self/ns/ipc)" != "$(readlink /proc/self/ns/ipc)" ] && echo ok || echo fail:same-ipc-namespace)"
+	kv userns_net_ns "$(unshare --net sh -c 'ip -o link show | cut -d: -f2 | tr -d " \n"' 2>&1)"
+	if unshare --net sh -c 'ip link set lo up && ip link add v0 type veth peer name v1 && ip addr add 10.9.0.1/24 dev v0 && ip addr add 10.9.0.2/24 dev v1 && ip link set v0 up && ip link set v1 up && ping -c 1 -W 2 10.9.0.2' >"$T/userns_veth.log" 2>&1; then kv userns_veth_ping "ok 1 packet through a veth pair inside a private network namespace"
+	else kv userns_veth_ping "fail:$(lastline "$T/userns_veth.log")"; fi
+	if unshare --net sh -c 'nft add table inet probe && nft add chain inet probe input "{ type filter hook input priority 0 ; }" && nft add rule inet probe input tcp dport 9 drop && nft list ruleset' >"$T/userns_nft.log" 2>&1 && grep -q 'tcp dport 9 drop' "$T/userns_nft.log"; then kv userns_nft "ok an nft rule inside a private network namespace"
+	else kv userns_nft "fail:$(lastline "$T/userns_nft.log")"; fi
+	rc=0
+	sh -c 'ulimit -t 1; while :; do :; done' >/dev/null 2>&1 || rc=$?
+	kv rlimit_cpu "$([ "$rc" = 137 ] || [ "$rc" = 152 ] && echo "ok killed after 1 s of CPU time, rc=$rc" || echo "fail:rc=$rc")"
 	kv ulimit_nofile "$(ulimit -n)/$(ulimit -Hn)"
 	kv perf_event_paranoid "$(cat /proc/sys/kernel/perf_event_paranoid)"
 fi

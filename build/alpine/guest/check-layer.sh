@@ -10,18 +10,33 @@ R="/build/images/$LAYER_ROOT"
 keys="$R/etc/apk/keys"
 
 # Every locked package file is the pinned one and carries a valid signature of the Alpine release keys that
-# the image itself ships (the same check apk made when it installed the file).
-n=0 files=""
+# the image itself ships (the same check apk made when it installed the file). A package of repo "local" is
+# pinned by the datahash of its payload and signed with this environment's package key, trusted here only.
+n=0 nlocal=0 files="" vkeys="$keys"
 while read -r name ver repo origin sha; do
 	case "$name" in '#'* | '') continue ;; esac
-	f="/build/upstream/$repo/$ALPINE_ARCH/$name-$ver.apk"
 	n=$((n + 1))
-	if [ "$(sha256sum "$f" | cut -d' ' -f1)" != "$sha" ]; then bad "$name-$ver.apk does not match its sha256 in $lockname"; fi
+	if [ "$repo" = local ]; then
+		f="/build/packages/main/$ALPINE_ARCH/$name-$ver.apk"
+		nlocal=$((nlocal + 1))
+		if [ ! -f "$f" ] || [ "$(tar -xzOf "$f" .PKGINFO | sed -n 's/^datahash = //p')" != "$sha" ]; then
+			bad "$name-$ver.apk (local) does not match its datahash in $lockname"
+		fi
+		if [ "$vkeys" = "$keys" ]; then
+			vkeys=/tmp/verify-keys
+			rm -rf "$vkeys" && mkdir "$vkeys"
+			cp "$keys"/* "$vkeys"/
+			cp "/home/${BUILDER_USER:-builder}"/.abuild/*.rsa.pub "$vkeys"/
+		fi
+	else
+		f="/build/upstream/$repo/$ALPINE_ARCH/$name-$ver.apk"
+		if [ "$(sha256sum "$f" | cut -d' ' -f1)" != "$sha" ]; then bad "$name-$ver.apk does not match its sha256 in $lockname"; fi
+	fi
 	files="$files $f"
 done <"$LAYER_LOCK"
 # shellcheck disable=SC2086
-if out="$(apk --keys-dir "$keys" verify $files 2>&1)"; then
-	ok "apk verify: all $n locked packages match $lockname and carry a valid Alpine release signature"
+if out="$(apk --keys-dir "$vkeys" verify $files 2>&1)"; then
+	ok "apk verify: all $n locked packages match $lockname and carry a valid signature ($nlocal of the local repository, pinned by datahash)"
 else
 	bad "apk verify failed: $(printf '%s\n' "$out" | head -n 5)"
 fi

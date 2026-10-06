@@ -15,6 +15,7 @@
 #   clang22               clang/clang++ (links with the gcc toolchain of the dev layer)
 #   compiler-rt           clang's runtime libraries: ASan, UBSan, TSan, LSan, MSan, coverage and profile instrumentation
 #   clang22-extra-tools   clang-format, clang-tidy
+#   llvm22                llvm-symbolizer, llvm-profdata, llvm-cov, llvm-objdump, llvm-ar, ...; clang-offload-packager is a link into it
 #   cppcheck              static analysis independent of the compiler
 # Rust format, lint, test, profile
 #   rustfmt rust-clippy   cargo fmt, cargo clippy
@@ -65,6 +66,7 @@ file
 clang22
 compiler-rt
 clang22-extra-tools
+llvm22
 cppcheck
 rustfmt
 rust-clippy

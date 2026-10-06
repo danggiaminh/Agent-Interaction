@@ -1,0 +1,7 @@
+# Guest kernel of the cgroup v2 test bed (make-guest.sh): ONE official, signed Alpine package, pinned by sha256.
+#   name  version  repo  origin  sha256-of-the-apk
+# The test bed boots this kernel under QEMU (hardware KVM when the host offers it, software emulation otherwise)
+# because the cloud host's own kernel offers only a hybrid cgroup v1/v2 hierarchy (see README, "Cgroup v2"). The kernel
+# is the guest of the tests only: it is never installed into the base, development or tools image.
+# linux-lts, not linux-virt: the virt flavour is built without CONFIG_FUNCTION_TRACER.
+linux-lts 6.18.55-r0 main linux-lts 02ba9491d4cc110707de64ed03dd7e2fa5c93fdd851979c244ceb018785a9eea

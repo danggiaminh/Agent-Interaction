@@ -6,18 +6,7 @@
 #   priv.sh [section...]     default: every section (useful for iterating: priv.sh loop net)
 cd /work || exit 1
 . /work/common.sh
-
-# waitfor SECONDS CMD...: poll CMD every 0.5 s until it succeeds.
-waitfor() {
-	n=$(($1 * 2))
-	shift
-	while [ "$n" -gt 0 ]; do
-		"$@" >/dev/null 2>&1 && return 0
-		sleep 0.5
-		n=$((n - 1))
-	done
-	return 1
-}
+. /work/cgroup.sh
 
 # mountfs DIR: the file system type mounted on DIR, from /proc/mounts.
 mountfs() { awk -v d="$1" '$2 == d { t = $3 } END { print t ? t : "none" }' /proc/mounts; }
@@ -37,7 +26,8 @@ if section session; then
 	kv hostname "$(hostname)"
 	kv pid_namespace "$(tr '\0' ' ' </proc/1/cmdline | grep -q inner-privileged && echo private || echo shared)"
 	kv net_namespace_ifaces "$(ls /sys/class/net | tr '\n' ' ')"
-	kv cgroup_layout "$(mountfs /sys/fs/cgroup/memory) $(mountfs /sys/fs/cgroup/unified)"
+	cg_detect
+	cg_layout_facts ""
 	kv tracefs "$(mountfs /sys/kernel/tracing)"
 	kv lo_state "$(ip -o link show lo | sed -n 's/.*<\([^>]*\)>.*/\1/p')"
 fi
@@ -133,7 +123,7 @@ if section fuse; then
 	mkdir -p "$U/tree/etc" "$U/mnt"
 	printf 'hello image\n' >"$U/tree/etc/motd"
 	mke2fs -q -t ext4 -d "$U/tree" "$U/ext4.img" 16M
-	kv priv_dev_fuse "$([ -c /dev/fuse ] && echo present || echo absent)"
+	if [ -c /dev/fuse ]; then kv priv_dev_fuse ok; else kv priv_dev_fuse "unsupported:/dev/fuse does not exist"; fi
 	run fuse2fs_mount fuse2fs -o rw "$U/ext4.img" "$U/mnt"
 	waitfor 5 findmnt -n "$U/mnt"
 	found fuse2fs_findmnt 'fuse' findmnt -n -o FSTYPE "$U/mnt"
@@ -158,14 +148,20 @@ if section trace; then
 	echo 0 >"$I/tracing_on" 2>/dev/null
 	found ftrace_events 'sched_switch:' cat "$I/trace"
 	echo 0 >"$I/events/sched/sched_switch/enable" 2>/dev/null
-	{ echo function >"$I/current_tracer"; } 2>/dev/null
+	echo 0 >"$I/tracing_on" 2>/dev/null
 	{ echo 'vfs_read' >"$I/set_ftrace_filter"; } 2>/dev/null
+	ferr="$({ echo function >"$I/current_tracer"; } 2>&1 | tail -n 1)"
+	echo >"$I/trace" 2>/dev/null
 	echo 1 >"$I/tracing_on" 2>/dev/null
-	cat /etc/hostname >/dev/null
+	# dd reads with read(2); busybox cat copies with sendfile(2), which never reaches vfs_read
+	dd if=/etc/hostname of=/dev/null bs=1 count=4 2>/dev/null
 	echo 0 >"$I/tracing_on" 2>/dev/null
 	# the function tracer is refused by some cloud kernels (EPERM): the fact then names the tracer that stayed active
 	fn="$(grep -E -m 1 'vfs_read' "$I/trace" | cut -c1-200)"
-	kv ftrace_function "${fn:-tracer:$(cat "$I/current_tracer")}"
+	kv ftrace_function "${fn:-tracer:$(cat "$I/current_tracer") ${ferr:-no error, no vfs_read call recorded}}"
+	# the cause of a refused function tracer: root cannot even open the list of traceable functions (EPERM on some kernels)
+	fo="$({ : <"$TR/available_filter_functions"; } 2>&1 | head -n 1 | cut -c1-200)"
+	if [ -z "$fo" ]; then kv host_ftrace_filter_open allowed; else kv host_ftrace_filter_open "denied:open available_filter_functions: ${fo##*: }"; fi
 	echo nop >"$I/current_tracer" 2>/dev/null
 	run ftrace_instance_remove rmdir "$I"
 	found perf_tracepoint_stat 'sched:sched_switch' perf stat -e sched:sched_switch -a -- sleep 0.3
@@ -258,32 +254,18 @@ if section net; then
 fi
 
 # ------------------------------------------------------------------------------------------------ cgroup resource limits
+# Layout-neutral (cgroup.sh): the same tests drive the cgroup v1 API and the cgroup v2 API, whichever hierarchy the
+# host mounts. What the host's layout cannot provide is reported as "unsupported:<proof>", never as ok.
 if section cgroup; then
-	CG=/sys/fs/cgroup
 	CT="$T/ctr-test"
-	for c in memory pids cpu; do
-		kv "cgroup_$c" "$([ -d "$CG/$c" ] && echo mounted || echo missing)"
-		mkdir -p "$CG/$c/toolsprobe"
-	done
-	# memory: a 32 MiB limit, a process that wants 200 MiB
-	echo 33554432 >"$CG/memory/toolsprobe/memory.limit_in_bytes"
-	[ -e "$CG/memory/toolsprobe/memory.memsw.limit_in_bytes" ] && echo 33554432 >"$CG/memory/toolsprobe/memory.memsw.limit_in_bytes"
-	sh -c "echo \$\$ >$CG/memory/toolsprobe/cgroup.procs && exec $CT mem 200" >"$T/cg-mem.log" 2>&1
-	kv cgroup_memory_oom_rc "$?"
-	oomk() { sed -n 's/^oom_kill //p' "$CG/memory/toolsprobe/memory.oom_control"; }
-	found cgroup_memory_oom_kill '^oom_kill [1-9]' cat "$CG/memory/toolsprobe/memory.oom_control"
-	# pids: at most 8 tasks
-	echo 8 >"$CG/pids/toolsprobe/pids.max"
-	found cgroup_pids_limit 'forked=[0-9] of 30 \(refused\)' sh -c "echo \$\$ >$CG/pids/toolsprobe/cgroup.procs && exec $CT fork 30"
-	# cpu: half of one CPU
-	echo 100000 >"$CG/cpu/toolsprobe/cpu.cfs_period_us"
-	echo 50000 >"$CG/cpu/toolsprobe/cpu.cfs_quota_us"
-	found cgroup_cpu_quota 'cpu-ratio=' sh -c "echo \$\$ >$CG/cpu/toolsprobe/cgroup.procs && exec $CT cpu 3"
-	# stress-ng inside the memory cgroup: its vm worker is OOM-killed again and again, stress-ng itself completes
-	before="$(oomk)"
-	found cgroup_stress_ng 'successful run completed' sh -c "echo \$\$ >$CG/memory/toolsprobe/cgroup.procs && exec stress-ng --vm 1 --vm-bytes 200M --vm-keep --timeout 3s"
-	kv cgroup_stress_ng_oom_kills "$(($(oomk) - before))"
-	for c in memory pids cpu; do rmdir "$CG/$c/toolsprobe" 2>/dev/null; done
+	# a block device for the io limits: a loop device on a file
+	truncate -s 16M "$T/cgdisk.img"
+	CG_BLKDEV="$(losetup --find --show "$T/cgdisk.img" 2>/dev/null)"
+	cg_detect
+	cg_v1 cgv1_
+	cg_v2 cgv2_
+	cg_stress_ng ""
+	[ -z "$CG_BLKDEV" ] || losetup -d "$CG_BLKDEV"
 fi
 
 # ------------------------------------------------------------------------------------------------ libvirt (QEMU driver, TCG)
@@ -299,8 +281,23 @@ if section libvirt; then
 	found virsh_hypervisor 'Running hypervisor: QEMU' $VIRSH version
 	found virsh_capabilities '<arch>x86_64</arch>' $VIRSH capabilities
 	found virsh_domcaps_tcg '<domainCapabilities>' $VIRSH domcapabilities --virttype qemu --arch x86_64 --machine q35
-	found virsh_domcaps_kvm '<domainCapabilities>|failed to get emulator capabilities|not supported|error' $VIRSH domcapabilities --virttype kvm --arch x86_64 --machine q35
-	found virt_host_validate 'QEMU: Checking for hardware virtualization' virt-host-validate qemu
+	# KVM is a capability of the host: the verdict comes from libvirt itself, and a host with /dev/kvm must say ok
+	$VIRSH domcapabilities --virttype kvm --arch x86_64 --machine q35 >"$V/domcaps-kvm.log" 2>&1
+	if grep -q '<domain>kvm</domain>' "$V/domcaps-kvm.log"; then kv virsh_domcaps_kvm ok
+	elif [ -e /dev/kvm ]; then kv virsh_domcaps_kvm "fail:/dev/kvm exists but libvirt says: $(lastline "$V/domcaps-kvm.log")"
+	else kv virsh_domcaps_kvm "unsupported:$(lastline "$V/domcaps-kvm.log")"; fi
+	virt-host-validate qemu >"$V/hostvalidate.log" 2>&1
+	hv="$(sed -n 's/^ *QEMU: Checking for hardware virtualization *: //p' "$V/hostvalidate.log")"
+	case "$hv" in
+	PASS*) kv virt_host_validate_hw ok ;;
+	FAIL* | WARN*) kv virt_host_validate_hw "unsupported:$hv" ;;
+	*) kv virt_host_validate_hw "fail:virt-host-validate gave no verdict on hardware virtualization" ;;
+	esac
+	cgl="$(sed -n "s/^ *QEMU: Checking for cgroup '\([a-z_]*\)' controller support *: \(.*\)/\1 \2/p" "$V/hostvalidate.log")"
+	cgbad="$(echo "$cgl" | grep -v ' PASS' | tr '\n' ';' | cut -c1-200)"
+	if [ -z "$cgl" ]; then kv virt_host_validate_cgroups "fail:virt-host-validate checked no cgroup controllers"
+	elif [ -z "$cgbad" ]; then kv virt_host_validate_cgroups "ok $(echo "$cgl" | cut -d' ' -f1 | tr '\n' ' ' | sed 's/ $//')"
+	else kv virt_host_validate_cgroups "unsupported:$cgbad"; fi
 	# storage: a directory pool and a qcow2 volume made through libvirt
 	run pool_define $VIRSH pool-define-as toolspool dir --target /var/lib/libvirt/images
 	run pool_start $VIRSH pool-start toolspool
@@ -321,11 +318,26 @@ if section libvirt; then
 	found domain_serial '^BOOT-OK' cat /var/lib/libvirt/images/serial.txt
 	found domain_state 'running' $VIRSH domstate toolsprobe
 	found domain_info 'CPU\(s\): *1' $VIRSH dominfo toolsprobe
+	# libvirt programs the host's cgroup layout for the running domain: the limit it reads back is the one in force
+	if $VIRSH schedinfo toolsprobe --set cpu_shares=512 >"$V/shares.log" 2>&1 && grep -q '^cpu_shares *: *512' "$V/shares.log"; then kv domain_cpu_shares "ok $(grep -m 1 '^cpu_shares' "$V/shares.log" | tr -s ' ')"
+	else kv domain_cpu_shares "fail:$(lastline "$V/shares.log")"; fi
+	if $VIRSH memtune toolsprobe --hard-limit 400000 >"$V/memtune.log" 2>&1 && $VIRSH memtune toolsprobe >"$V/memtune.log" 2>&1 && grep -q '^hard_limit *: *400000' "$V/memtune.log"; then kv domain_mem_limit "ok $(grep -m 1 '^hard_limit' "$V/memtune.log" | tr -s ' ')"
+	else kv domain_mem_limit "fail:$(lastline "$V/memtune.log")"; fi
 	found domain_qemu_process 'qemu-system-x86_64.*-accel tcg|qemu-system-x86_64.*accel=tcg' sh -c 'ps -eo args | grep "[q]emu-system-x86_64"'
 	found domain_blk 'boot.img' $VIRSH domblklist toolsprobe
 	run domain_destroy $VIRSH destroy toolsprobe
 	found domain_state_after 'shut off' $VIRSH domstate toolsprobe
 	run domain_undefine $VIRSH undefine toolsprobe
+	# the same machine as a KVM domain: it boots only where /dev/kvm is usable, otherwise libvirt must refuse it
+	: >/var/lib/libvirt/images/serial.txt
+	sed -e "s/type='qemu'/type='kvm'/" "$V/dom.xml" >"$V/dom-kvm.xml"
+	if $VIRSH define "$V/dom-kvm.xml" >"$V/kvm.log" 2>&1 && $VIRSH start toolsprobe >>"$V/kvm.log" 2>&1; then
+		if waitfor 90 grep -q BOOT-OK /var/lib/libvirt/images/serial.txt && ps -eo args | grep -q '[q]emu-system-x86_64.*accel=kvm'; then kv domain_kvm_start "ok BOOT-OK on accel=kvm"
+		else kv domain_kvm_start "fail:the KVM domain started but did not boot on accel=kvm"; fi
+		$VIRSH destroy toolsprobe >/dev/null 2>&1
+	elif [ -e /dev/kvm ]; then kv domain_kvm_start "fail:/dev/kvm exists but libvirt cannot run a KVM domain: $(lastline "$V/kvm.log")"
+	else kv domain_kvm_start "unsupported:$(lastline "$V/kvm.log")"; fi
+	$VIRSH undefine toolsprobe >/dev/null 2>&1
 	# libvirt's own virtual networks: its firewall setup programs a tc "csum" action for DHCP replies, which needs a
 	# kernel module; the fact records whether the network starts or why it does not
 	cat >"$V/net.xml" <<'EOF'
@@ -339,7 +351,10 @@ if section libvirt; then
 </network>
 EOF
 	run net_define $VIRSH net-define "$V/net.xml"
-	found net_start 'Network toolsnet started|Failed to load TC action module' $VIRSH net-start toolsnet
+	# a libvirt network needs the tc csum action (a kernel module for its DHCP firewall rule); ok when it starts
+	if $VIRSH net-start toolsnet >"$V/netstart.log" 2>&1; then kv net_start ok
+	elif grep -q 'Failed to load TC action module' "$V/netstart.log" && [ ! -d /lib/modules ]; then kv net_start "unsupported:$(grep -m 1 'Failed to apply firewall command' "$V/netstart.log" | cut -c1-300)"
+	else kv net_start "fail:$(lastline "$V/netstart.log")"; fi
 	$VIRSH net-destroy toolsnet >/dev/null 2>&1
 	run net_undefine $VIRSH net-undefine toolsnet
 	# a VM attached to a host bridge (libvirt creates the tap device on it)
@@ -378,7 +393,13 @@ if section docker; then
 	found docker_info_server 'Server Version: ' docker info
 	found docker_storage_driver 'Storage Driver: overlay' docker info
 	found docker_runtime 'Runtimes:.*runc' docker info
-	found docker_cgroup 'Cgroup (Driver|Version): ' docker info
+	# Docker must use the cgroup API the host layout offers: version 2 only on a pure cgroup2 host
+	cg_detect
+	dcg="$(docker info --format '{{.CgroupVersion}} {{.CgroupDriver}}' 2>/dev/null)"
+	dcgwant=1
+	[ "$CG_MODE" != v2 ] || dcgwant=2
+	if [ "${dcg%% *}" = "$dcgwant" ]; then kv docker_cgroup "ok version=${dcg%% *} driver=${dcg#* } layout=$CG_MODE"
+	else kv docker_cgroup "fail:docker reports cgroup version '${dcg%% *}', the layout is $CG_MODE (wanted $dcgwant)"; fi
 	found docker_version_server '^[0-9]+\.[0-9]+' docker version --format '{{.Server.Version}}'
 	found containerd_socket 'containerd' sh -c 'ls /run/docker/containerd/ 2>/dev/null; ls /run/containerd 2>/dev/null; ps -eo args | grep "[c]ontainerd"'
 	# build, load and run
@@ -427,17 +448,60 @@ if section docker; then
 fi
 
 # ------------------------------------------------------------------------------------------------ what this host lacks
+# A capability fact is "ok" only when the capability works; when the host lacks it the fact is "unsupported:<what the
+# host says>", and "fail:" when something is there but broken. The host_* facts are the causes (what the kernel, the CPU
+# and the VM report): limits.tsv ties every limit of the host to one of them, and the judge refuses a limit without it.
 if section limits; then
-	kv priv_dev_kvm "$([ -e /dev/kvm ] && echo present || echo absent)"
-	kv priv_dev_vhost_net "$([ -e /dev/vhost-net ] && echo present || echo absent)"
-	kv priv_dev_net_tun "$([ -c /dev/net/tun ] && echo present || echo absent)"
-	kv priv_lib_modules "$([ -d /lib/modules ] && ls /lib/modules | head -n 1 | grep . || echo absent)"
-	# With KVM the stopped machine just sits there until the timeout kills it; without, QEMU exits at once.
-	kvm_out="$(timeout 3 qemu-system-x86_64 -accel kvm -display none -S -monitor none -machine q35 2>&1)" && kvm_rc=0 || kvm_rc=$?
-	case "$kvm_rc" in 124 | 143) kv priv_qemu_kvm ok ;; *) kv priv_qemu_kvm "$(echo "$kvm_out" | tail -n 1 | cut -c1-200)" ;; esac
-	kv priv_fd_hard_raise "$(sh -c 'ulimit -Hn 4194304' 2>&1 | head -n 1 | grep . || echo ok)"
+	capeff="$(sed -n 's/^CapEff:[[:space:]]*//p' /proc/self/status)"
+	cpuflags="$(grep -m 1 '^flags' /proc/cpuinfo)"
+	kv host_kernel "$(uname -r)"
+	kv host_cap_sys_resource "$([ $((0x$capeff >> 24 & 1)) = 1 ] && echo yes || echo no)"
+	kv host_cpu_virt_flags "$(echo "$cpuflags" | tr ' ' '\n' | grep -x -E 'vmx|svm' | sort -u | tr '\n' ' ' | sed 's/ $//' | grep . || echo none)"
+	kv host_cpu_hypervisor "$(echo "$cpuflags" | grep -qw hypervisor && echo yes || echo no)"
+	kv host_pmu "$(ls /sys/bus/event_source/devices 2>/dev/null | grep -q -x -E 'cpu|cpu_core|cpu_atom|armv[0-9a-z_]+' && echo present || echo absent)"
+	# the lockdown level: securityfs is not mounted in the sandbox, so it is mounted for the read and unmounted again
+	mkdir -p "$T/sec"
+	if mount -t securityfs none "$T/sec" 2>/dev/null; then
+		lockdown="$(sed -n 's/.*\[\([a-z]*\)\].*/\1/p' "$T/sec/lockdown" 2>/dev/null)"
+		umount "$T/sec" 2>/dev/null
+	fi
+	# the kernel configuration is the fallback and the source of the host_config facts (dmesg rotates and is not evidence)
+	cfg() {
+		if [ ! -r /proc/config.gz ]; then echo unknown
+		elif zcat /proc/config.gz | grep -q "^CONFIG_$1=[ym]"; then zcat /proc/config.gz | sed -n "s/^CONFIG_$1=//p"
+		else echo unset; fi
+	}
+	if [ -n "${lockdown:-}" ]; then kv host_lockdown "$lockdown"
+	elif [ "$(cfg LOCK_DOWN_KERNEL_FORCE_INTEGRITY)" = y ]; then kv host_lockdown integrity
+	elif [ "$(cfg LOCK_DOWN_KERNEL_FORCE_CONFIDENTIALITY)" = y ]; then kv host_lockdown confidentiality
+	else kv host_lockdown none; fi
+	# the build options behind the limits: "unset" means the host kernel was built without it (a module counts as "m")
+	cfgl=""
+	for c in KVM_INTEL KVM_AMD VHOST_NET SCHEDSTATS XFS_FS BTRFS_FS VFAT_FS EFI_PARTITION MSDOS_PARTITION NET_SCH_NETEM NET_ACT_CSUM DUMMY KPROBES MODULES; do
+		cfgl="$cfgl $c=$(cfg "$c")"
+	done
+	kv host_config "${cfgl# }"
+	kv host_filesystems "$(sed 's/^[a-z]*[[:space:]]*//; /^$/d' /proc/filesystems | sort | tr '\n' ' ' | sed 's/ $//')"
+	kv host_modules "$([ -d /lib/modules ] && [ -n "$(ls /lib/modules 2>/dev/null)" ] && echo present || echo absent)"
+
+	# /dev/kvm: the device, and whether root can open it (a node that cannot be opened is a defect, not a limit)
+	if [ ! -e /dev/kvm ]; then kv priv_dev_kvm "unsupported:/dev/kvm does not exist"
+	elif { : <>/dev/kvm; } 2>/dev/null; then kv priv_dev_kvm ok
+	else kv priv_dev_kvm "fail:/dev/kvm exists but cannot be opened"; fi
+	if [ -e /dev/vhost-net ]; then kv priv_dev_vhost_net ok; else kv priv_dev_vhost_net "unsupported:/dev/vhost-net does not exist"; fi
+	if [ -c /dev/net/tun ]; then kv priv_dev_net_tun ok; else kv priv_dev_net_tun "unsupported:/dev/net/tun does not exist"; fi
+	if [ -d /lib/modules ] && [ -n "$(ls /lib/modules 2>/dev/null)" ]; then kv priv_lib_modules "ok $(ls /lib/modules | head -n 1)"
+	else kv priv_lib_modules "unsupported:/lib/modules is absent or empty, so the kernel has no loadable modules"; fi
+	kvm_probe priv_qemu_kvm
+	# a block device node (the sandbox refuses it to the unprivileged session: deny_mknod_block)
+	run priv_mknod_block sh -c 'mknod "$1" b 7 250 && test -b "$1" && rm -f "$1"' sh "$T/blknode"
+	# raising a hard RLIMIT_NOFILE (here: lowered first, then raised again) needs CAP_SYS_RESOURCE
+	raise="$(sh -c 'ulimit -n 1024 && ulimit -Hn 2048' 2>&1 | head -n 1)"
+	if [ -z "$raise" ]; then kv priv_fd_hard_raise ok
+	elif [ $((0x$capeff >> 24 & 1)) = 0 ]; then kv priv_fd_hard_raise "unsupported:$raise (CAP_SYS_RESOURCE is not in the capability set)"
+	else kv priv_fd_hard_raise "fail:$raise"; fi
 	kv priv_hard_nofile "$(ulimit -Hn)"
 	kv priv_nr_open "$(cat /proc/sys/fs/nr_open)"
-	kv priv_schedstat "$([ -e /proc/schedstat ] && echo present || echo absent)"
+	if [ -e /proc/schedstat ]; then kv priv_schedstat ok; else kv priv_schedstat "unsupported:/proc/schedstat does not exist (CONFIG_SCHEDSTATS is off or kernel.sched_schedstats=0)"; fi
 	kv priv_perf_event_paranoid "$(cat /proc/sys/kernel/perf_event_paranoid)"
 fi

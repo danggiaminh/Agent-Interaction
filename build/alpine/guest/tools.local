@@ -1,0 +1,6 @@
+# Packages of the tools layer that come from the locally built repository (.build/packages, built from the
+# vendored aports by build-base.sh) instead of the official mirror.  One line per package:  name  reason
+# tools.lock pins them as "name version local origin datahash": the datahash is the payload hash of the
+# package, which is identical in every environment (the .apk itself carries this environment's signature).
+# Only packages whose official build cannot work with the locally built package they belong to belong here.
+musl-dbg  The base image's musl is built from the vendored aport in this environment; its build-id differs from the official musl's, so the official musl-dbg symbols belong to a different libc.so build-id and gdb, valgrind and perf could not use them (check-image.py verifies the build-id of every debug file).

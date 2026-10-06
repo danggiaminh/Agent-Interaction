@@ -1,5 +1,7 @@
 # Packages the tools layer adds to the development image (resolved from guest/tools.pkgs), one per line:
 #   name version repo origin sha256-of-the-.apk
+# (repo "local": a package of the locally built repository, guest/tools.local; its last column is the datahash of the
+# payload, which is the same in every environment, instead of the sha256 of the .apk)
 # Official signed binary packages of the Alpine v3.24 repositories. Every version equals the pkgver-pkgrel of its
 # origin aport in vendor/alpine-aports. make-tools.sh checks each sha256, apk verifies each signature against the
 # Alpine release keys of the image. Refresh deliberately: make-tools.sh --refresh-lock, then review the diff.
@@ -154,6 +156,7 @@ libxtables 1.8.13-r0 main iptables 4b5c981a77af40f965debe18f06c0c20268956f141a1b
 linux-headers 7.0.0-r1 main linux-headers c4535f3f0dc6fd4d80efa7ff2a7a72a2d3f8dae31e2587c0785cc3243889cdf2
 linux-tools-gpio 7.1.5-r0 main linux-tools c7f983bd812756b15e65087d19939e68ce0472a3b1c3f668c142a19f851da27e
 linux-tools-iio 7.1.5-r0 main linux-tools 5cd32d5ae77dfe4e4ade3dc1ac0faafc33d84a4993907f55c624afe58e0f1e09
+llvm22 22.1.3-r0 main llvm22 f1964556dafd84871571054a32b95c87e4156b4ee25672063cbd7fb93db2fa7d
 llvm22-linker-tools 22.1.3-r0 main llvm22 c810c6203676d5dbf48e7db52446c89d33e005d69aa2b03738884e53ebe8f646
 log_proxy 0.7.4-r0 community log_proxy efe4888b9531753effd052132a45947bafaceb547ed483f87ade6c328fa17ffd
 losetup 2.42.3-r1 main util-linux 06e6e223c2dca8820f146a3ae4eecd10bf2f3698ecf7da07d8beec05aa4f70ac
@@ -170,7 +173,7 @@ mariadb-connector-c 3.4.6-r0 main mariadb-connector-c 8fedab344a8c08622185592b09
 mount 2.42.3-r1 main util-linux 1e16b79830a029ea4784d53ae59fed22e46dc4e7254d0998c467f61b30235ab7
 mpdecimal 4.0.1-r0 main mpdecimal 1278f374bbc8b4aad674244458cca5fc63e0780a921138eef400d5db64381a31
 mtools 4.0.49-r0 main mtools 1c184791987bd684c807fdb18454a254dfbc0c568d71e6b9c1b3918410ce06a3
-musl-dbg 1.2.6-r2 main musl 2a1a59c196861a56efb3113def256774286b338a76eaf8d95449308294d470a6
+musl-dbg 1.2.6-r2 local musl a3e9c379bbdb0df43aa811fe0740c9356efd905e33aa456e4c6d2494295d6e27
 musl-fts 1.2.7-r7 main musl-fts 10563dc485f24f7cd987e0f3c68552e2c6417b61f5c8cb6b39cbf9af46ea09a7
 ncurses-terminfo-base 6.6_p20260516-r0 main ncurses ce83be6d0bd10584a53c3a5868cc1595ce5f0f8e0b621f8f7f70b6144e521fc9
 netcat-openbsd 1.234.1-r0 main netcat-openbsd 031be54954a4be213747b209de5b154dafd77c0997c741668242d1c7b42992ce

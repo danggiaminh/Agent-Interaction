@@ -19,6 +19,21 @@ found() {
 	m="$(grep -E -m 1 -e "$re" "$T/$k.log" | cut -c1-200)"
 	if [ -n "$m" ]; then kv "$k" "$m"; else kv "$k" "none:$(tail -n 1 "$T/$k.log" | cut -c1-200)"; fi
 }
+# lastline FILE: the last non-empty line of FILE, at most 200 characters.
+lastline() { grep . "$1" | tail -n 1 | cut -c1-200; }
+# firstline FILE: the first non-empty line of FILE, at most 200 characters.
+firstline() { grep . "$1" | head -n 1 | cut -c1-200; }
+# kvm_probe KEY: "ok" when QEMU can start a machine with -accel kvm (the stopped machine then sits there until the
+# timeout kills it; without KVM QEMU exits at once), "unsupported:<QEMU's own reason>" when the host has no /dev/kvm,
+# "fail:" when /dev/kvm exists and QEMU still cannot use it.
+kvm_probe() {
+	kvm_out="$(timeout 3 qemu-system-x86_64 -accel kvm -display none -S -monitor none -machine q35 2>&1)" && kvm_rc=0 || kvm_rc=$?
+	case "$kvm_rc" in
+	124 | 143) kv "$1" ok ;;
+	*) if [ -e /dev/kvm ]; then kv "$1" "fail:/dev/kvm exists but qemu -accel kvm exits: $(echo "$kvm_out" | tail -n 1 | cut -c1-200)"
+	else kv "$1" "unsupported:$(echo "$kvm_out" | tail -n 1 | cut -c1-200)"; fi ;;
+	esac
+}
 # same KEY FILE FILE: yes/no, are the two files byte for byte equal.
 same() { kv "$1" "$(cmp -s "$2" "$3" && echo yes || echo no)"; }
 sha() { sha256sum "$1" | cut -d' ' -f1; }
@@ -31,4 +46,15 @@ ensure_rust() {
 	rm -rf "$T/rust"
 	cp -a /work/rust "$T/rust"
 	(cd "$T/rust" && cargo build --release --offline --locked) >"$T/ensure_rust.log" 2>&1
+}
+# waitfor SECONDS CMD...: poll CMD every 0.5 s until it succeeds.
+waitfor() {
+	n=$(($1 * 2))
+	shift
+	while [ "$n" -gt 0 ]; do
+		"$@" >/dev/null 2>&1 && return 0
+		sleep 0.5
+		n=$((n - 1))
+	done
+	return 1
 }

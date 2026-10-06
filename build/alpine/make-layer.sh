@@ -23,13 +23,13 @@ layer="${1:-}"
 case "$layer" in
 dev)
 	label="development layer" parent_label="base image" make=make-dev.sh
-	name="$DEV_IMAGE_NAME" parent="$BASE_IMAGE_NAME" parent_key=base pkgs="$DEV_PKGS" lock="$DEV_LOCK" exceptions=""
+	name="$DEV_IMAGE_NAME" parent="$BASE_IMAGE_NAME" parent_key=base pkgs="$DEV_PKGS" lock="$DEV_LOCK" exceptions="" locals=""
 	what="the development layer adds to the base image"
 	parent_hint="run build-base.sh and make-base.sh first"
 	;;
 tools)
 	label="tools layer" parent_label="development image" make=make-tools.sh
-	name="$TOOLS_IMAGE_NAME" parent="$DEV_IMAGE_NAME" parent_key=dev pkgs="$TOOLS_PKGS" lock="$TOOLS_LOCK" exceptions="$TOOLS_EXCEPTIONS"
+	name="$TOOLS_IMAGE_NAME" parent="$DEV_IMAGE_NAME" parent_key=dev pkgs="$TOOLS_PKGS" lock="$TOOLS_LOCK" exceptions="$TOOLS_EXCEPTIONS" locals="$TOOLS_LOCAL"
 	what="the tools layer adds to the development image"
 	parent_hint="run make-dev.sh first"
 	;;
@@ -54,9 +54,10 @@ case "${1:-}" in
 	resolved="$(mktemp)"
 	trap 'rm -f "$resolved"' EXIT
 	log "resolving $(grep -vc '^#' "$pkgs") top-level packages against the live $ALPINE_BRANCH repositories"
-	"$ENTER" --ephemeral --user root --env "PARENT_IMAGE_NAME=$parent" --env "PKGS_FILE=/guest/$pkgs_file" -- /bin/sh /guest/layerlock.sh >"$resolved"
+	"$ENTER" --ephemeral --user root --env "PARENT_IMAGE_NAME=$parent" --env "PKGS_FILE=/guest/$pkgs_file" \
+		${locals:+--env "LOCAL_FILE=/guest/$(basename "$locals")"} -- /bin/sh /guest/layerlock.sh >"$resolved"
 	python3 "$ALPINE_BUILD_DIR/lock-layer.py" --resolved "$resolved" --aports "$REPO_ROOT/$APORTS_DIR" --upstream "$UPSTREAM_DIR" \
-		--mirror "$ALPINE_MIRROR" --branch "$ALPINE_BRANCH" --arch "$ALPINE_ARCH" --out "$lock" \
+		--mirror "$ALPINE_MIRROR" --branch "$ALPINE_BRANCH" --arch "$ALPINE_ARCH" --out "$lock" --packages "$PKG_DIR" \
 		--what "$what" --pkgs "guest/$pkgs_file" --make "$make" ${exceptions:+--exceptions "$exceptions"}
 	msg="$(vendor_pristine)" || die "vendored aports was MODIFIED: $msg"
 	log "wrote $lock ($(grep -vc '^#' "$lock") packages); review the diff"
@@ -77,6 +78,14 @@ parent_sha="$(sha256sum "$parent_tar" | cut -d' ' -f1)"
 log "checking $(grep -vc '^#' "$lock") locked packages"
 while read -r pname ver repo origin sha; do
 	case "$pname" in '#'* | '') continue ;; esac
+	if [ "$repo" = local ]; then
+		# Built from the vendored aports by build-base.sh in this environment; pinned by payload hash.
+		f="$PKG_DIR/main/$ALPINE_ARCH/$pname-$ver.apk"
+		[ -f "$f" ] || die "locally built $pname-$ver.apk is missing from $PKG_DIR; run build-base.sh"
+		[ "$(tar -xzOf "$f" .PKGINFO | sed -n 's/^datahash = //p')" = "$sha" ] ||
+			die "locally built $pname-$ver.apk does not match the datahash in $lock_file"
+		continue
+	fi
 	f="$UPSTREAM_DIR/$repo/$ALPINE_ARCH/$pname-$ver.apk"
 	if [ ! -f "$f" ]; then
 		mkdir -p "$(dirname "$f")"
@@ -117,7 +126,12 @@ LC_ALL=C tar --create --file - --directory "$R" --sort=name --format=posix \
 		"$R/lib/apk/db/installed" | LC_ALL=C sort | while read -r p v o; do
 		if line="$(awk -v p="$p" -v v="$v" '$1==p && $2==v {print $3, $4, $5}' "$lock" | head -n 1)" && [ -n "$line" ]; then
 			read -r repo _ sha <<<"$line"
-			apk="$UPSTREAM_DIR/$repo/$ALPINE_ARCH/$p-$v.apk"
+			if [ "$repo" = local ]; then
+				apk="$PKG_DIR/main/$ALPINE_ARCH/$p-$v.apk"
+				sha="$(sha256sum "$apk" | cut -d' ' -f1)"
+			else
+				apk="$UPSTREAM_DIR/$repo/$ALPINE_ARCH/$p-$v.apk"
+			fi
 			dh="$(tar -xzOf "$apk" .PKGINFO 2>/dev/null | sed -n 's/^datahash = //p')"
 			echo "$p $v $o $sha $dh"
 		elif line="$(awk -v p="$p" -v v="$v" '$1==p && $2==v {print $3, $4, $5}' "$parent_manifest")" && [ -n "$line" ]; then
