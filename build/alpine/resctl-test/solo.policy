@@ -1,0 +1,24 @@
+# One class only: recover removes the domain of every class this policy does not name, once it is empty.
+
+[system]
+cpu.weight = 1000
+memory.reserve = 64M
+
+[workload]
+memory.max = 512M
+pids.max = 512
+
+[class.interactive]
+cpu.weight = 800
+memory.max = 256M
+pids.max = 256
+
+[limits.interactive]
+memory.max = 128M
+pids.max = 128
+
+[stop]
+grace = 2s
+
+[recover]
+orphans = kill

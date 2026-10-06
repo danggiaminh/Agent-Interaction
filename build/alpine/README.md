@@ -27,6 +27,9 @@ build/alpine/tools-test.sh             # only the functional run (3 sessions): P
 build/alpine/tools-judge-selftest.py UNPRIV.facts PRIV.facts GUEST.facts   # prove the judge fails on damaged facts (tools-test.sh runs it)
 build/alpine/make-guest.sh [--check|--clean]   # build / verify / remove the cgroup v2 test bed (guest kernel + initramfs) in .build/guest
 build/alpine/tools-run.sh [--privileged] [--copy SRC:DST] [--out DIR:HOSTDIR] -- cmd   # run a command in a throwaway copy of the tools image
+
+build/alpine/check-resctl.sh [--facts DIR]   # resource control (runtime/resctl): build, test and judge it in 3 sessions; exit 1 only on FAIL
+build/alpine/resctl-judge-selftest.py UNPRIV.facts PRIV.facts GUEST.facts   # prove that judge fails on damaged facts and tables (check-resctl.sh runs it)
 ```
 `make-dev.sh` and `make-tools.sh` (and the two `check-*.sh`) are one mechanism, `make-layer.sh` and `check-layer.sh`, with the layer
 name as first argument (`dev` or `tools`).
@@ -250,6 +253,45 @@ limits; the facts come back as `g_*` and are judged like every other row.
   and reads its serial output (PASS), `virsh domcapabilities --virttype kvm`, a `<domain type='kvm'>` and `virt-host-validate`'s hardware
   check fail (LIMIT), while `virt-host-validate`'s cgroup checks pass. None of the KVM rows is ever reported as working here.
 
+## Resource control (`runtime/resctl`)
+`resctl` (see `runtime/resctl/README.md`) gives AI workloads explicit resource domains and a lifecycle, on the cgroup layout of the
+machine it runs on: `agent-interaction/system` (critical services: limits and protection, never killed, frozen or stopped by
+resctl), `agent-interaction/workload` (the aggregate ceiling), `.../workload/<class>` (class ceiling and CPU weight) and
+`.../workload/<class>/<id>` (one workload and its own kill domain). A policy file bounds memory, CPU, process count, I/O and
+swap per workload, per class and in aggregate; a start can raise a default only up to the class ceiling, and a policy that cannot
+mean what it says is refused. The commands are `probe policy init create run enter freeze thaw kill remove stop list status
+recover teardown`. The crate has no dependency (`Cargo.lock` lists itself alone) and is built, formatted, linted and tested inside
+the tools image.
+
+`check-resctl.sh` validates it in three sessions, like `tools-test.sh`, and `resctl-judge.py` judges every fact against
+`resctl-test/checks.tsv` (103 rows: id, area, resource, environments, fact, expectation, description):
+- **unprivileged** (`resctl-test/unpriv.sh`, prefix `u_`): `cargo fmt --check`, `clippy -D warnings`, the 53 unit tests, the release
+  build (the binary the other sessions run), then what resctl does with no hierarchy at all: `probe` and `policy` work, and `init`,
+  `run` and `enter` are refused with the "unsupported" code (`deny:` rows, DENIED) and create nothing.
+- **privileged** (`resctl-test/priv.sh`, prefix `h_`, and `v_`): real root on this host's hybrid hierarchy. Normal operation (domains,
+  policy refusals, `run`, `list`, `status`); the limits by effect (memory OOM kill with exit 137 and `oom_kill`, `pids.max` refusing
+  forks, cpuset, no swap, CPU quota 0.51 for 0.50, CPU weights 800:100 measured 7.9:1, `io.max` throttling 4 MiB in 4 s against 0.02 s,
+  PSI after CPU contention); isolation (a system canary survives every kill and every attempt to reach `system`; a sibling workload,
+  the class ceiling, the aggregate ceiling and a fork bomb each stay inside their own domain); termination (graceful and forced
+  `stop`, `setsid` escapees, a workload at its process limit, frozen workloads, `remove` of a running one); recovery (orphans, empty
+  domains, dropped classes, `teardown`, re-init). `v_` repeats the sections that depend on the lifecycle backend with the v1 freezer
+  forced (`--lifecycle v1`): the limits, throttle and pressure rows read the same v1 resource hierarchies as `h_`, and pressure has no
+  v1 source at all, so those rows have no `hostv1` environment.
+- **guest** (`resctl-test/guest.sh`, prefix `g_`): the whole suite on the pure cgroup v2 hierarchy of the test bed (QEMU, TCG on this
+  host): v2 memory, `memory.high`, `memory.oom.group`, the system memory protection, and the v1 freezer refused as unsupported.
+
+Every row ends as PASS, DENIED, LIMIT or FAIL. Four rows are LIMIT on this host (`resctl-test/limits.tsv`, class `host-config`):
+the memory protection of the system domain (`memory.low`), `memory.oom.group` and `memory.high`, all v2-only memory files, and the
+same system-protection row of the v1-freezer pass. Each is accepted only while resctl reports the matching
+`unbound=<setting>: needs the cgroup v2 memory controller`, the host's memory controller is measured to be v1 (`h_feature_memory`,
+`h_cgroup_v2_controllers`), and the same row passes in the guest. A host with a v2 memory controller turns the failure back into
+FAIL. The kill domains, the system domain, the lifecycle, isolation and recovery rows cannot be limited at all.
+After the judge, `resctl-judge-selftest.py` runs 49 cases that damage the facts and the tables (a missing, extra, duplicated or
+misplaced fact, a refusal that was a success, a killed system canary, a leftover domain, a guest that did not boot, a limit with a
+wrong or unmeasured cause, without a guest proof or on an isolation, termination, recovery or deny row, a vacuous expectation) and
+requires the judge to reject each one; then the host is compared with its state before the sessions (sandboxes, mounts, loop devices, cgroup directories,
+resctl domains, nftables tables, daemons) and `vendor/alpine-aports` is checked for changes.
+
 ## Isolation
 - Own mount/PID/IPC/UTS namespaces, chroot into `.build/rootfs`, environment rebuilt with `env -i` (no host variables or tokens;
   only `HTTPS_PROXY`/`NO_PROXY` and the CA bundle are passed when the host uses a proxy). `--offline` adds a network namespace.
@@ -329,6 +371,9 @@ Remove these files on a host with IPv6.
   - *host configuration* (`host-config`): the cgroup layout is hybrid (see "Cgroup v2"): no cgroup v2 memory, pids, cpu, cpuset or io
     controller; Docker runs on cgroup v1 and warns about its deprecation. The session has no `CAP_SYS_RESOURCE`, so the hard
     `RLIMIT_NOFILE` cannot be raised. Needed: a unified cgroup v2 hierarchy with delegated controllers, `CAP_SYS_RESOURCE`.
+    resctl is affected only through the memory controller: `memory.high`, `memory.oom.group` and the memory protection of the system domain
+    exist only in cgroup v2, so on this host they are reported `unbound` and `check-resctl.sh` reports them as LIMIT (proven in the
+    guest, functional under TCG, not timing-accurate); every other limit, the kill domains and the lifecycle are proven natively.
   - *upstream*: `ltrace -e <symbol>` across all libraries aborts on musl (use `-e <symbol>@MAIN`). Everything else of ltrace works.
 - The official `musl-dbg` does not match the locally built `musl` of the base, so the layer carries the `musl-dbg` built next to that
   `musl` (see Provenance); the symbols of libc frames match the installed libc, checked by build-id.

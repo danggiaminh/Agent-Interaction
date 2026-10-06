@@ -1,0 +1,19 @@
+[package]
+name = "resctl"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Resource control for Agent-Interaction workloads: cgroup domains, limits and lifecycle"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "resctl"
+path = "src/main.rs"
+
+# No external crates: the toolchain image builds offline, and the crate talks to the kernel through files only.
+
+[profile.release]
+opt-level = "s"
+panic = "abort"

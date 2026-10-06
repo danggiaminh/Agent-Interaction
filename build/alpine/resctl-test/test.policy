@@ -1,0 +1,33 @@
+# The policy the resctl suite runs under: absolute sizes, so the results do not depend on the memory of the machine.
+
+[system]
+cpu.weight = 1000
+memory.reserve = 64M
+
+[workload]
+memory.max = 512M
+pids.max = 512
+
+[class.interactive]
+cpu.weight = 800
+memory.max = 256M
+pids.max = 256
+
+[limits.interactive]
+memory.max = 128M
+pids.max = 128
+
+[class.batch]
+cpu.weight = 100
+memory.max = 128M
+pids.max = 128
+
+[limits.batch]
+memory.max = 96M
+pids.max = 64
+
+[stop]
+grace = 2s
+
+[recover]
+orphans = kill

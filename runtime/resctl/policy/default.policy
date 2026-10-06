@@ -1,0 +1,40 @@
+# Default resource policy for Agent-Interaction workloads (see ../README.md for the grammar).
+#
+# Domains:    agent-interaction/system     critical services: never killed, frozen or stopped by resctl
+#             agent-interaction/workload   every AI workload together: the ceiling that keeps them off the system's memory
+#             agent-interaction/workload/<class>/<id>   one workload: its own limits and its own kill domain
+# Percentages are of the MemTotal of the machine, bound when the policy is loaded.
+
+[system]
+cpu.weight = 1000
+memory.reserve = 128M
+
+[workload]
+memory.max = 75%
+pids.max = 4096
+
+# interactive: an agent a person is waiting for
+[class.interactive]
+cpu.weight = 800
+memory.max = 50%
+pids.max = 2048
+
+[limits.interactive]
+memory.max = 25%
+pids.max = 256
+
+# batch: background and bulk work; yields the CPU to everything else
+[class.batch]
+cpu.weight = 100
+memory.max = 50%
+pids.max = 2048
+
+[limits.batch]
+memory.max = 25%
+pids.max = 128
+
+[stop]
+grace = 5s
+
+[recover]
+orphans = kill

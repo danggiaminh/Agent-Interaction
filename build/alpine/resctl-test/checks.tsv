@@ -1,0 +1,131 @@
+# What the resource-control suite (suite.sh, unpriv.sh) must report. One row per behaviour, tab separated:
+#   id  area  resource  envs  fact  expectation  description
+# envs are the environments the row applies to; the judge (resctl-judge.py) expands it to one row "<id>.<env>" per
+# environment and reads the fact "<prefix><fact>" of that environment's session:
+#   unpriv  u_  the unprivileged session (a user namespace: no cgroup hierarchy, builds and tests the crate)
+#   host    h_  the real root of this host, lifecycle auto (limits through the hierarchy that has the controller)
+#   hostv1  v_  the same host with the cgroup v1 freezer forced as the lifecycle backend; it runs only the sections that
+#               depend on that backend (layout normal isolation terminate recover lifecycle): the limits, throttle and
+#               pressure rows read the same v1 resource hierarchies as host, and pressure has no v1 source at all
+#   guest   g_  the cgroup v2 test bed guest (cgroup_no_v1=all): the layout the host cannot offer
+#   bed         the facts of the guest session itself (QEMU, boot): no prefix
+# A fact may be covered once per environment; every fact an environment reports must be covered, and every row must
+# have its fact. `area` is the section of the suite (what is being exercised), `resource` the domain being controlled:
+#   memory cpu processes io lifecycle protection (the system domain outside every kill domain) policy platform
+# Expectations are those of tools-test/inventory.tsv: ok | =VALUE | ~REGEX | deny:REGEX (a refusal that is expected).
+# A failing row is a LIMIT only through an entry of limits.tsv (a measured cause plus a passing guest proof).
+#
+# ---- build: the crate builds clean and its unit tests pass inside the session
+fmt	build	platform	unpriv	fmt	ok	cargo fmt --check
+clippy	build	platform	unpriv	clippy	ok	cargo clippy --all-targets -D warnings
+unit	build	platform	unpriv	unit	~^ok [5-9][0-9] tests$|^ok [1-9][0-9]{2,} tests$	the unit tests of the crate pass (at least 50 of them ran)
+release	build	platform	unpriv	release	~^ok [0-9]+ bytes$	the release binary builds
+deps	build	platform	unpriv	deps	ok	the crate has no dependency to fetch or audit
+# ---- layout: what resctl sees, against what the mounts and the controller lists say
+layout	layout	platform	unpriv,host,hostv1,guest	layout	ok	resctl's reading of the cgroup layout equals the one of the mounts (unprivileged: none)
+no_hierarchy	layout	platform	unpriv	no_hierarchy	ok	no cgroup hierarchy exists in the unprivileged session
+mode_host	layout	platform	host,hostv1	cgroup_mode	~^(v1|v2|hybrid)$	the cgroup layout of the host (measured, not assumed)
+mode_guest	layout	platform	guest	cgroup_mode	=v2	the test bed guest is cgroup v2 only
+v1_host	layout	platform	host,hostv1	cgroup_v1_controllers	~^(none|.*\b(memory|pids|cpu|blkio|cpuset|freezer)\b.*)$	the cgroup v1 controllers of the host (the measured cause of its limits)
+v1_guest	layout	platform	guest	cgroup_v1_controllers	=none	the test bed guest has no cgroup v1 controller
+v2_host	layout	platform	host,hostv1	cgroup_v2_controllers	~^(none|.*\b(hugetlb|memory|pids|cpu|io|cpuset)\b.*)$	the controllers of the unified hierarchy of the host (the measured cause of its limits)
+v2_guest	layout	platform	guest	cgroup_v2_controllers	~^(?=.*\bmemory\b)(?=.*\bpids\b)(?=.*\bcpu\b)(?=.*\bio\b)(?=.*\bcpuset\b)	the test bed guest's unified hierarchy has memory, pids, cpu, io and cpuset
+feature_memory	layout	memory	host,hostv1	feature_memory	~^v[12]:/	memory limits are bound to a hierarchy
+feature_pids	layout	processes	host,hostv1	feature_pids	~^v[12]:/	process-count limits are bound to a hierarchy
+feature_cpu_quota	layout	cpu	host,hostv1	feature_cpu_quota	~^v[12]:/	the CPU quota is bound to a hierarchy
+feature_cpu_weight	layout	cpu	host,hostv1	feature_cpu_weight	~^v[12]:/	the CPU weight is bound to a hierarchy
+feature_cpuset	layout	cpu	host,hostv1	feature_cpuset	~^v[12]:/	CPU pinning is bound to a hierarchy
+feature_io	layout	io	host,hostv1	feature_io	~^v[12]:/	I/O limits are bound to a hierarchy
+feature_freeze_auto	layout	lifecycle	host	feature_freeze	~^v[12]:/	freezing is bound to a hierarchy
+feature_kill_auto	layout	lifecycle	host	feature_kill	~^v[12]:/	killing is bound to a hierarchy
+feature_pressure_auto	layout	lifecycle	host	feature_pressure	~^v[12]:/	pressure information is bound to a hierarchy
+feature_freeze_v1	layout	lifecycle	hostv1	feature_freeze	~^v1:/	the forced v1 lifecycle freezes through the v1 freezer
+feature_kill_v1	layout	lifecycle	hostv1	feature_kill	~^v1:/	the forced v1 lifecycle kills through the v1 freezer
+feature_pressure_v1	layout	lifecycle	hostv1	feature_pressure	~^unbound:pressure needs cgroup v2	the forced v1 lifecycle has no pressure information, and says why
+feature_v2	layout	platform	guest	feature_memory	~^v2:/	on the guest every feature is served by cgroup v2: memory
+feature_pids_v2	layout	platform	guest	feature_pids	~^v2:/	on the guest every feature is served by cgroup v2: pids
+feature_cpu_quota_v2	layout	platform	guest	feature_cpu_quota	~^v2:/	on the guest every feature is served by cgroup v2: CPU quota
+feature_cpu_weight_v2	layout	platform	guest	feature_cpu_weight	~^v2:/	on the guest every feature is served by cgroup v2: CPU weight
+feature_cpuset_v2	layout	platform	guest	feature_cpuset	~^v2:/	on the guest every feature is served by cgroup v2: cpuset
+feature_io_v2	layout	platform	guest	feature_io	~^v2:/	on the guest every feature is served by cgroup v2: I/O
+feature_freeze_v2	layout	platform	guest	feature_freeze	~^v2:/	on the guest every feature is served by cgroup v2: freeze
+feature_kill_v2	layout	platform	guest	feature_kill	~^v2:/	on the guest every feature is served by cgroup v2: kill
+feature_pressure_v2	layout	platform	guest	feature_pressure	~^v2:/	on the guest every feature is served by cgroup v2: pressure
+layout_bound	layout	platform	host,hostv1,guest	layout_bound	ok	every feature is served by a hierarchy
+swap_accounting	layout	memory	host,hostv1,guest	swap_accounting	~^(yes|no)( |$)	whether swap is accounted, and through which file (informational: swap_denied is judged)
+# ---- normal operation: the domain tree, the default limits, a workload from start to the end
+policy	normal	policy	unpriv	policy	ok	the built-in policy binds to the machine
+policy_file	normal	policy	unpriv	policy_file	ok	--policy FILE replaces the built-in policy
+help	normal	policy	unpriv	help	ok	help lists every command
+init	normal	protection	host,hostv1,guest	init	ok	system, workload and the classes exist in every serving hierarchy; init is idempotent
+init_limits	normal	memory	host,hostv1,guest	init_limits	ok	the aggregate and class ceilings of memory and process count are in place
+init_weights	normal	cpu	host,hostv1,guest	init_weights	ok	the CPU weights of system and of the classes are in place
+system_protection	normal	protection	host,hostv1,guest	system_protection	ok	the system domain is protected from reclaim (memory.low)
+run_rc	normal	lifecycle	host,hostv1,guest	run_rc	ok	a workload's exit status comes through; the domain stays, empty
+run_member	normal	lifecycle	host,hostv1,guest	run_member	ok	the workload runs inside its domain in every hierarchy
+list_status	normal	lifecycle	host,hostv1,guest	list_status	ok	list and status show a running workload
+create_remove	normal	lifecycle	host,hostv1,guest	create_remove	ok	create, a duplicate create refused, remove
+policy_refusal	normal	policy	host,hostv1,guest	policy_refusal	ok	a request above the class ceiling is refused before anything is created
+usage_errors	normal	policy	host,hostv1,guest	usage_errors	ok	system, workload, unknown classes, path tricks and unknown programs are refused
+# ---- resource limits: each limit is enforced by the kernel and the violation ends in the workload only
+memory_oom	limits	memory	host,guest	memory_oom	ok	a workload over memory.max is OOM-killed inside its domain
+pids_limit	limits	processes	host,guest	pids_limit	ok	forks beyond pids.max fail
+cpuset	limits	cpu	host,guest	cpuset	ok	a workload runs only on its CPUs
+swap_denied	limits	memory	host,guest	swap_denied	ok	a workload cannot swap by default
+oom_group	limits	memory	host,guest	oom_group	ok	an OOM kill takes the whole workload (--oom-group yes) or only a process (no)
+# ---- throttling
+cpu_quota	throttle	cpu	host,guest	cpu_quota	ok	a workload's CPU time is capped to its quota
+cpu_weight	throttle	cpu	host,guest	cpu_weight	ok	under contention the workloads share the CPU in proportion to their weights
+io_throttle	throttle	io	host,guest	io_throttle	ok	a write rate limit throttles a workload's block I/O
+# ---- pressure conditions
+psi_cpu	pressure	cpu	host,guest	psi_cpu	ok	CPU pressure shows in the pressure files of the domain
+memory_high	pressure	memory	host,guest	memory_high	ok	over memory.high a workload is throttled and reclaimed, not killed
+# ---- workload isolation
+system_unreachable	isolation	protection	unpriv,host,hostv1,guest	system_unreachable	ok	no command can name the system or the workload domain as something to kill, stop or freeze
+sibling_isolation	isolation	memory	host,hostv1,guest	sibling_isolation	ok	one workload's OOM kill leaves its sibling running
+class_ceiling	isolation	memory	host,hostv1,guest	class_ceiling	ok	the class ceiling bounds the sum of the workloads of a class
+aggregate_ceiling	isolation	memory	host,hostv1,guest	aggregate_ceiling	ok	the workload ceiling bounds the sum of every class
+fork_bomb_isolated	isolation	processes	host,hostv1,guest	fork_bomb_isolated	ok	a fork bomb is bounded and a system job keeps starting processes meanwhile
+system_canary	isolation	protection	host,hostv1,guest	system_canary	ok	a process in the system domain survives the workload stress
+policy_refused	isolation	policy	unpriv	policy_refused	ok	a policy whose class ceiling is above the workload ceiling is refused
+init_denied	isolation	protection	unpriv	init_denied	deny:^resctl: unsupported: memory limits: no hierarchy carries the memory controller	creating the domains is refused where there is no hierarchy
+run_denied	isolation	protection	unpriv	run_denied	deny:^resctl: unsupported: .* does not exist	starting a workload is refused where there is no hierarchy
+enter_denied	isolation	protection	unpriv	enter_denied	deny:^resctl: unsupported: .* does not exist	entering the system domain is refused where there is no hierarchy
+# ---- termination
+freeze_thaw	terminate	lifecycle	host,hostv1,guest	freeze_thaw	ok	a frozen workload gets no CPU time; thawed it runs again
+stop_graceful	terminate	lifecycle	host,hostv1,guest	stop_graceful	ok	stop sends TERM and the workload ends within the grace period
+stop_forced	terminate	lifecycle	host,hostv1,guest	stop_forced	ok	a workload that ignores TERM is killed after the grace period
+kill_escapees	terminate	lifecycle	host,hostv1,guest	kill_escapees	ok	kill ends every process of the domain, setsid and daemons included
+kill_pidslimit	terminate	processes	host,hostv1,guest	kill_pidslimit	ok	kill ends a workload that sits at its process limit
+kill_frozen	terminate	lifecycle	host,hostv1,guest	kill_frozen	ok	kill ends a frozen workload
+stop_frozen	terminate	lifecycle	host,hostv1,guest	stop_frozen	ok	stop thaws a frozen workload first
+remove_populated	terminate	lifecycle	host,hostv1,guest	remove_populated	ok	remove kills a running workload and removes its domain from every hierarchy
+terminate_clean	terminate	lifecycle	host,hostv1,guest	terminate_clean	ok	after the terminations no workload process is left
+system_canary_terminate	terminate	protection	host,hostv1,guest	system_canary_terminate	ok	a process in the system domain survives every termination
+# ---- recovery
+recover_orphan	recover	lifecycle	host,hostv1,guest	recover_orphan	ok	recover kills an orphaned workload and removes its domain
+recover_keep	recover	lifecycle	host,hostv1,guest	recover_keep	ok	recover --orphans keep leaves the orphan running
+recover_idempotent	recover	lifecycle	host,hostv1,guest	recover_idempotent	ok	recover on a clean system does nothing
+recover_empty	recover	lifecycle	host,hostv1,guest	recover_empty	ok	recover removes the empty domain a failed start left
+recover_class	recover	lifecycle	host,hostv1,guest	recover_class	ok	recover removes a class the policy no longer names; init restores it
+system_canary_recover	recover	protection	host,hostv1,guest	system_canary_recover	ok	a process in the system domain survives recovery
+teardown_keeps_system	recover	protection	host,hostv1,guest	teardown_keeps_system	ok	teardown removes the workload domains and keeps the system domain while it holds a process
+teardown_clean	recover	lifecycle	host,hostv1,guest	teardown_clean	ok	teardown removes everything when the system domain is empty
+reinit_after_teardown	recover	lifecycle	host,hostv1,guest	reinit_after_teardown	ok	init and run work after a teardown
+system_canary_reinit	recover	protection	host,hostv1,guest	system_canary_reinit	ok	a process in the system domain survives a teardown and a re-init
+# ---- lifecycle backends
+lifecycle_v2	lifecycle	lifecycle	host,hostv1,guest	lifecycle_v2	ok	--lifecycle v2 serves freeze, kill and pressure from cgroup v2
+lifecycle_v1_host	lifecycle	lifecycle	host,hostv1	lifecycle_v1	ok	--lifecycle v1 serves freeze and kill from the v1 freezer, and reports pressure unbound
+lifecycle_v1_guest	lifecycle	lifecycle	guest	lifecycle_v1	deny:^resctl: unsupported: .*v1 freezer is not mounted	--lifecycle v1 is refused where there is no v1 freezer
+system_canary_lifecycle	lifecycle	protection	host,hostv1,guest	system_canary_lifecycle	ok	a process in the system domain survives the lifecycle switches
+leftovers	lifecycle	lifecycle	host,hostv1,guest	leftovers	ok	no domain of the suite is left behind in any hierarchy
+# ---- the test bed session itself
+guest_qemu_rc	bed	platform	bed	guest_qemu_rc	=0	the guest's QEMU exited cleanly
+qmp	bed	platform	bed	qmp	ok	QEMU answered on its QMP socket
+qmp_kvm_present	bed	platform	bed	qmp_kvm_present	~^(yes|no)$	whether this QEMU has KVM (informational)
+qmp_kvm_enabled	bed	platform	bed	qmp_kvm_enabled	~^(yes|no)$	whether the guest runs with KVM (informational)
+qmp_qemu_version	bed	platform	bed	qmp_qemu_version	~^[0-9]+\.[0-9]+	the QEMU version
+qmp_status	bed	platform	bed	qmp_status	=running	the guest was running when QMP was queried
+guest_accel	bed	platform	bed	guest_accel	~^(kvm|tcg)$	the guest's accelerator: tcg is functional but not timing-accurate (informational)
+guest_boot	bed	platform	bed	guest_boot	ok	the guest kernel booted and ran the suite
+guest_script_rc	bed	platform	bed	guest_script_rc	=0	the suite script exited 0 in the guest

@@ -1,0 +1,33 @@
+# The aggregate ceiling is lower than the sum of the class ceilings: the workload domain binds before either class does.
+
+[system]
+cpu.weight = 1000
+memory.reserve = 64M
+
+[workload]
+memory.max = 96M
+pids.max = 256
+
+[class.interactive]
+cpu.weight = 800
+memory.max = 80M
+pids.max = 128
+
+[limits.interactive]
+memory.max = 64M
+pids.max = 64
+
+[class.batch]
+cpu.weight = 100
+memory.max = 80M
+pids.max = 128
+
+[limits.batch]
+memory.max = 64M
+pids.max = 64
+
+[stop]
+grace = 2s
+
+[recover]
+orphans = kill

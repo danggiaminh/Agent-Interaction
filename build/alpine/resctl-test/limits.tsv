@@ -1,0 +1,20 @@
+# The behaviours of the resource-control suite that the host this was run on cannot show, each as a limitation with its
+# measured cause. Tab separated, one row per checks.tsv row of an environment ("<id>.<env>", host or hostv1 only):
+#   id  class  accepts  cause  proof  requires  explanation
+# A failing row becomes a LIMIT only when all three conditions hold (resctl-judge.py):
+#   accepts  the value matches this specific pattern (the value resctl reported for the limitation, never any failure)
+#   cause    every condition holds on the measured facts of any session: FACT~REGEX or FACT!~REGEX, joined by " && "
+#   proof    every row named here is PASS and is the same fact in the cgroup v2 test bed guest, which shows that the
+#            behaviour works wherever the cause does not apply
+# A leaked value (the operation worked where it had to be refused) is never a limitation. Rows of the areas build,
+# layout, isolation, terminate, recover and lifecycle cannot be limited: the kill domains and the system domain have no
+# exception. `class` is one of host-hw host-kernel host-config (the classes of tools-test/limits.tsv).
+#
+# All four limits have one cause: the memory controller of this host is a cgroup v1 controller, so the unified hierarchy
+# has no memory controller and the v2-only memory files (memory.low, memory.high, memory.oom.group) have nothing to bind
+# to. resctl serves memory.max, the swap limit and the OOM kill through v1, and reports each v2-only setting as
+# "unbound=<setting>: needs the cgroup v2 memory controller" instead of pretending to apply it.
+system_protection.host	host-config	^unsupported:unbound=system memory\.low: needs the cgroup v2 memory controller$	h_feature_memory~^v1: && h_cgroup_v2_controllers!~(^| )memory( |$)	system_protection.guest	a cgroup v2 memory controller in the unified hierarchy (kernel parameter cgroup_no_v1=memory or cgroup_no_v1=all, or no v1 memory hierarchy mounted)	memory.low, the protection of the system domain from reclaim, exists only in cgroup v2; this host serves memory through cgroup v1, so resctl cannot protect the system domain from memory reclaim here (the system domain is still outside every kill domain and has its own limits and CPU weight)
+system_protection.hostv1	host-config	^unsupported:unbound=system memory\.low: needs the cgroup v2 memory controller$	v_feature_memory~^v1: && v_cgroup_v2_controllers!~(^| )memory( |$)	system_protection.guest	a cgroup v2 memory controller in the unified hierarchy (kernel parameter cgroup_no_v1=memory or cgroup_no_v1=all, or no v1 memory hierarchy mounted)	the same limit as system_protection.host, with the v1 freezer as the lifecycle backend
+oom_group.host	host-config	^unsupported:unbound=memory\.oom\.group of 	h_feature_memory~^v1: && h_cgroup_v2_controllers!~(^| )memory( |$)	oom_group.guest	a cgroup v2 memory controller in the unified hierarchy (kernel parameter cgroup_no_v1=memory or cgroup_no_v1=all, or no v1 memory hierarchy mounted)	memory.oom.group (an OOM kill takes the whole workload) exists only in cgroup v2; with cgroup v1 memory the kernel kills one process at a time, and resctl says so rather than claiming a whole-workload kill (a workload's kill domain still ends the rest on termination)
+memory_high.host	host-config	^unsupported:unbound=memory\.high of 	h_feature_memory~^v1: && h_cgroup_v2_controllers!~(^| )memory( |$)	memory_high.guest	a cgroup v2 memory controller in the unified hierarchy (kernel parameter cgroup_no_v1=memory or cgroup_no_v1=all, or no v1 memory hierarchy mounted)	memory.high (throttle and reclaim before the hard limit) exists only in cgroup v2; with cgroup v1 memory a workload is held only by memory.max and killed at it, and resctl says so rather than pretending to throttle
