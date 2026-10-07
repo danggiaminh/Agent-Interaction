@@ -1,5 +1,7 @@
 //! `resctl`: the command line of the resource controller. See ../README.md.
 
+#![forbid(unsafe_code)]
+
 use resctl::domain::{Controller, Error, Result, Stopped, Target, Workload, SYSTEM, WORKLOAD};
 use resctl::fs::{Host, RealHost};
 use resctl::layout::{Layout, Lifecycle};

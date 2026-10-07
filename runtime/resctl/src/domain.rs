@@ -839,9 +839,7 @@ impl<'a> Controller<'a> {
             Api::V1 => {
                 for _ in 0..5 {
                     let _ = self.set_frozen(rel, true);
-                    for pid in self.pids(rel) {
-                        let _ = self.host.signal(pid, 9);
-                    }
+                    let _ = self.host.signal(&self.pids(rel), 9);
                     self.set_frozen(rel, false)?;
                     if self
                         .wait(KILL_MS / 5, "killing", || self.pids(rel).is_empty())
@@ -872,9 +870,7 @@ impl<'a> Controller<'a> {
         if self.is_frozen(&rel) {
             self.set_frozen(&rel, false)?;
         }
-        for pid in pids {
-            let _ = self.host.signal(pid, 15);
-        }
+        let _ = self.host.signal(&pids, 15);
         if self
             .wait(grace_ms, "stopping", || self.pids(&rel).is_empty())
             .is_ok()
@@ -1959,7 +1955,7 @@ grace = 1500ms
         assert!(!h.dir_exists("/c/memory/agent-interaction/workload"));
         assert!(h.dir_exists("/c/memory/agent-interaction/system"));
         h.proc_in(5, &[]);
-        h.signal(5, 9).unwrap();
+        h.signal(&[5], 9).unwrap();
         assert!(c.teardown().unwrap().is_empty());
         for hier in ["memory", "pids", "cpu", "cpuset", "blkio", "unified"] {
             assert!(
