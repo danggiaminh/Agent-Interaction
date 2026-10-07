@@ -13,7 +13,16 @@
 //! [limits.batch]      what one workload of the class gets unless its start says otherwise
 //! memory.max = 1G
 //! pids.max = 256
+//! [restart]           how often, and how fast, a supervised workload is started again (every count has a fixed cap)
+//! max = 3
+//! window = 60s
+//! [supervise]         how many workloads are supervised at once
+//! workloads = 16
+//! [run]               whose privileges a supervised workload runs with
+//! uid = 65534
 //! ```
+//!
+//! No section or key grants protected status: critical processes are registered by an operator, never by the policy.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -89,6 +98,57 @@ pub enum Orphans {
     Keep,
 }
 
+/// Hard caps on the restart policy. A policy that asks for more is refused, not clamped: the bound on automatic restart
+/// activity is explicit, and a configuration file cannot widen it.
+pub const MAX_RESTARTS: u32 = 10;
+pub const MAX_RESTARTS_TOTAL: u32 = 100;
+pub const MAX_START_RATE: u32 = 120;
+pub const MAX_SUPERVISED: u32 = 64;
+pub const MIN_BACKOFF_MS: u64 = 10;
+pub const MIN_WINDOW_MS: u64 = 1_000;
+
+/// Whether a supervised workload that ended on its own is started again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RestartMode {
+    /// Never: any end that nobody asked for makes the workload `failed`.
+    Never,
+    /// After an unexpected end (non-zero exit or a signal); a clean exit finishes the workload.
+    OnFailure,
+    /// After every end that nobody asked for, a clean exit included, within the same limits.
+    Always,
+}
+
+/// How often, and how fast, a supervised workload may be restarted. Every count is capped by the constants above.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Restart {
+    pub mode: RestartMode,
+    /// Automatic restarts allowed within one `window`.
+    pub max: u32,
+    pub window_ms: u64,
+    /// Automatic restarts allowed during one run of the supervisor, however far apart.
+    pub total: u32,
+    /// Delay before the first restart of a window; it doubles with each further restart up to `backoff_max_ms`.
+    pub backoff_ms: u64,
+    pub backoff_max_ms: u64,
+    /// Starts per minute, all workloads together: a restart waits for room, a manual start is refused.
+    pub rate: u32,
+}
+
+/// How many workloads may be supervised at once.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Supervise {
+    pub workloads: u32,
+}
+
+/// Whose privileges a supervised workload runs with.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Run {
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    /// A workload may run as root (as the user or the group 0, or as resctl itself when that is root).
+    pub allow_root: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Policy {
     pub system: SystemPolicy,
@@ -96,6 +156,48 @@ pub struct Policy {
     pub classes: BTreeMap<String, Class>,
     pub stop_grace_ms: u64,
     pub orphans: Orphans,
+    pub restart: Restart,
+    pub supervise: Supervise,
+    pub run: Run,
+}
+
+impl RestartMode {
+    pub fn parse(s: &str) -> Result<RestartMode, String> {
+        match s {
+            "never" => Ok(RestartMode::Never),
+            "on-failure" => Ok(RestartMode::OnFailure),
+            "always" => Ok(RestartMode::Always),
+            _ => Err(format!("`{s}` is not never, on-failure or always")),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            RestartMode::Never => "never",
+            RestartMode::OnFailure => "on-failure",
+            RestartMode::Always => "always",
+        }
+    }
+}
+
+impl Default for Restart {
+    fn default() -> Restart {
+        Restart {
+            mode: RestartMode::OnFailure,
+            max: 3,
+            window_ms: 60_000,
+            total: 10,
+            backoff_ms: 500,
+            backoff_max_ms: 30_000,
+            rate: 30,
+        }
+    }
+}
+
+impl Default for Supervise {
+    fn default() -> Supervise {
+        Supervise { workloads: 16 }
+    }
 }
 
 impl Mem {
@@ -350,6 +452,18 @@ impl Limits {
     }
 }
 
+/// What no policy can say. Protected status belongs to the critical processes that an operator registers with `resctl
+/// protect`; the files that configure the workloads have no way to hand it out, to a class or to a single workload.
+const PROTECTION: &str = "a policy cannot grant protected status: critical processes are registered by an operator with `resctl protect`";
+
+fn grants_protection(word: &str) -> bool {
+    let w = word.to_ascii_lowercase();
+    w.contains("protect")
+        || w.contains("critical")
+        || w.starts_with("oom_score")
+        || w.starts_with("oom.score")
+}
+
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Section {
     System,
@@ -358,6 +472,9 @@ enum Section {
     Limits(String),
     Stop,
     Recover,
+    Restart,
+    Supervise,
+    Run,
 }
 
 impl Section {
@@ -368,13 +485,46 @@ impl Section {
             "workload" => Ok(Section::Workload),
             "stop" => Ok(Section::Stop),
             "recover" => Ok(Section::Recover),
+            "restart" => Ok(Section::Restart),
+            "supervise" => Ok(Section::Supervise),
+            "run" => Ok(Section::Run),
+            _ if name.split('.').next().is_some_and(grants_protection) => Err(PROTECTION.into()),
             _ => match (named("class."), named("limits.")) {
                 (Some(c), _) if valid_name(&c) && c != "system" && c != "workload" => Ok(Section::Class(c)),
                 (_, Some(c)) if valid_name(&c) => Ok(Section::Limits(c)),
                 (Some(c), _) | (_, Some(c)) => Err(format!("`{c}` is not a usable class name (letters, digits, - and _; not system or workload)")),
-                _ => Err(format!("unknown section [{name}] (system workload class.NAME limits.NAME stop recover)")),
+                _ => Err(format!("unknown section [{name}] (system workload class.NAME limits.NAME stop recover restart supervise run)")),
             },
         }
+    }
+}
+
+/// A count between `min` and the fixed cap `max`: a policy that asks for more is refused, not clamped.
+fn parse_count(s: &str, min: u32, max: u32, what: &str) -> Result<u32, String> {
+    match s.parse::<u32>() {
+        Ok(n) if (min..=max).contains(&n) => Ok(n),
+        Ok(n) if n > max => Err(format!("`{s}` is above the fixed limit of {max} {what}")),
+        _ => Err(format!(
+            "`{s}` is not a number of {what} between {min} and {max}"
+        )),
+    }
+}
+
+/// A duration of at least `min_ms`.
+fn parse_span(s: &str, min_ms: u64, what: &str) -> Result<u64, String> {
+    let ms = parse_duration(s)?;
+    if ms < min_ms {
+        Err(format!("`{s}` is below the smallest {what} ({min_ms}ms)"))
+    } else {
+        Ok(ms)
+    }
+}
+
+/// A user or group id; the all-ones id is the kernel's "unchanged".
+pub fn parse_id(s: &str, what: &str) -> Result<u32, String> {
+    match s.parse::<u32>() {
+        Ok(n) if n != u32::MAX => Ok(n),
+        _ => Err(format!("`{s}` is not a numeric {what}")),
     }
 }
 
@@ -388,6 +538,9 @@ impl Policy {
             classes: BTreeMap::new(),
             stop_grace_ms: 5000,
             orphans: Orphans::Kill,
+            restart: Restart::default(),
+            supervise: Supervise::default(),
+            run: Run::default(),
         };
         let mut declared = BTreeSet::new(); // class.NAME sections
         let mut limited = BTreeSet::new(); // limits.NAME sections
@@ -470,6 +623,25 @@ impl Policy {
         {
             errors.push("[workload] must set memory.max and pids.max: they keep the workloads away from the memory and processes of system".into());
         }
+        let r = &p.restart;
+        if r.backoff_max_ms < r.backoff_ms {
+            errors.push(format!(
+                "[restart] backoff.max {}ms is below backoff {}ms",
+                r.backoff_max_ms, r.backoff_ms
+            ));
+        }
+        if r.max > r.total {
+            errors.push(format!(
+                "[restart] max {} is above total {}: the total bounds every run, so the larger window limit could never be reached",
+                r.max, r.total
+            ));
+        }
+        if !p.run.allow_root && (p.run.uid == Some(0) || p.run.gid == Some(0)) {
+            errors.push(
+                "[run] uid and gid 0 are root: a workload runs as root only with allow.root = yes"
+                    .into(),
+            );
+        }
         if errors.is_empty() {
             Ok(p)
         } else {
@@ -478,8 +650,37 @@ impl Policy {
     }
 
     fn set(&mut self, s: &Section, key: &str, v: &str) -> Result<(), String> {
+        if grants_protection(key) {
+            return Err(PROTECTION.into());
+        }
         let weight = |v: &str| parse_weight(v);
         match (s, key) {
+            (Section::Restart, "mode") => self.restart.mode = RestartMode::parse(v)?,
+            (Section::Restart, "max") => {
+                self.restart.max = parse_count(v, 1, MAX_RESTARTS, "restarts per window")?
+            }
+            (Section::Restart, "window") => {
+                self.restart.window_ms = parse_span(v, MIN_WINDOW_MS, "restart window")?
+            }
+            (Section::Restart, "total") => {
+                self.restart.total = parse_count(v, 1, MAX_RESTARTS_TOTAL, "restarts per run")?
+            }
+            (Section::Restart, "backoff") => {
+                self.restart.backoff_ms = parse_span(v, MIN_BACKOFF_MS, "restart backoff")?
+            }
+            (Section::Restart, "backoff.max") => {
+                self.restart.backoff_max_ms = parse_span(v, MIN_BACKOFF_MS, "restart backoff")?
+            }
+            (Section::Restart, "rate") => {
+                self.restart.rate = parse_count(v, 1, MAX_START_RATE, "starts per minute")?
+            }
+            (Section::Supervise, "workloads") => {
+                self.supervise.workloads =
+                    parse_count(v, 1, MAX_SUPERVISED, "supervised workloads")?
+            }
+            (Section::Run, "uid") => self.run.uid = Some(parse_id(v, "user id")?),
+            (Section::Run, "gid") => self.run.gid = Some(parse_id(v, "group id")?),
+            (Section::Run, "allow.root") => self.run.allow_root = parse_bool(v)?,
             (Section::System, "cpu.weight") => self.system.cpu_weight = Some(weight(v)?),
             (Section::System, "memory.reserve") => {
                 self.system.memory_reserve = Some(Mem::parse(v)?)
@@ -618,11 +819,27 @@ pids.max = 64
 grace = 1500ms
 [recover]
 orphans = keep
+[restart]
+mode = always
+max = 5
+window = 30s
+total = 20
+backoff = 250ms
+backoff.max = 10s
+rate = 60
+[supervise]
+workloads = 8
+[run]
+uid = 1000
+gid = 1001
 ";
 
     fn parse(t: &str) -> Vec<String> {
         Policy::parse(t).err().unwrap_or_default()
     }
+
+    /// The smallest policy that is valid; the tests add the line under test to it.
+    const BASE: &str = "[workload]\nmemory.max = 1G\npids.max = 10\n[class.a]\n[limits.a]\nmemory.max = 1M\npids.max = 5\n";
 
     #[test]
     fn parses_the_whole_grammar() {
@@ -643,6 +860,91 @@ orphans = keep
         assert_eq!(p.stop_grace_ms, 1500);
         assert_eq!(p.orphans, Orphans::Keep);
         assert_eq!(p.classes.len(), 2);
+        assert_eq!(
+            p.restart,
+            Restart {
+                mode: RestartMode::Always,
+                max: 5,
+                window_ms: 30_000,
+                total: 20,
+                backoff_ms: 250,
+                backoff_max_ms: 10_000,
+                rate: 60,
+            }
+        );
+        assert_eq!(p.supervise.workloads, 8);
+        assert_eq!(
+            p.run,
+            Run {
+                uid: Some(1000),
+                gid: Some(1001),
+                allow_root: false
+            }
+        );
+    }
+
+    #[test]
+    fn what_a_policy_leaves_out_is_bounded_by_the_defaults() {
+        let p = Policy::parse(BASE).unwrap();
+        assert_eq!(p.restart, Restart::default());
+        assert_eq!(p.supervise, Supervise::default());
+        assert_eq!(p.run, Run::default());
+        let r = &p.restart;
+        assert_eq!(r.mode, RestartMode::OnFailure);
+        assert!(
+            (1..=MAX_RESTARTS).contains(&r.max)
+                && (1..=MAX_RESTARTS_TOTAL).contains(&r.total)
+                && (1..=MAX_START_RATE).contains(&r.rate)
+                && (1..=MAX_SUPERVISED).contains(&p.supervise.workloads)
+                && r.window_ms >= MIN_WINDOW_MS
+                && r.backoff_ms >= MIN_BACKOFF_MS
+                && r.backoff_max_ms >= r.backoff_ms
+                && r.max <= r.total,
+            "the defaults are inside the caps"
+        );
+        // no uid or gid by default: a supervisor that is root then refuses to run anything unless allow.root says so
+        assert_eq!(
+            (p.run.uid, p.run.gid, p.run.allow_root),
+            (None, None, false)
+        );
+    }
+
+    #[test]
+    fn the_caps_are_exact() {
+        let at = |line: &str| Policy::parse(&format!("{BASE}{line}"));
+        for ok in [
+            "[restart]\nmax = 10\ntotal = 100\nrate = 120\n",
+            "[restart]\nmax = 1\ntotal = 1\nrate = 1\nwindow = 1s\nbackoff = 10ms\nbackoff.max = 10ms\n",
+            "[restart]\nwindow = 60m\n",
+            "[supervise]\nworkloads = 64\n",
+            "[run]\nuid = 0\ngid = 0\nallow.root = yes\n",
+        ] {
+            assert!(at(ok).is_ok(), "{ok:?}: {:?}", at(ok));
+        }
+        for (bad, want) in [
+            ("[restart]\nmax = 11\n", "above the fixed limit of 10"),
+            ("[restart]\ntotal = 101\n", "above the fixed limit of 100"),
+            ("[restart]\nrate = 121\n", "above the fixed limit of 120"),
+            (
+                "[supervise]\nworkloads = 65\n",
+                "above the fixed limit of 64",
+            ),
+            ("[restart]\nmax = 0\n", "between 1 and 10"),
+            ("[restart]\ntotal = 0\n", "between 1 and 100"),
+            ("[restart]\nrate = 0\n", "between 1 and 120"),
+            ("[supervise]\nworkloads = 0\n", "between 1 and 64"),
+            ("[restart]\nmax = many\n", "restarts per window"),
+            ("[restart]\nwindow = 999ms\n", "smallest restart window"),
+            ("[restart]\nwindow = 61m\n", "duration"),
+            ("[restart]\nbackoff = 9ms\n", "smallest restart backoff"),
+            ("[restart]\nbackoff.max = 5ms\n", "smallest restart backoff"),
+        ] {
+            let e = at(bad).err().unwrap_or_default();
+            assert!(
+                e.iter().any(|m| m.contains(want)),
+                "{bad:?} should say {want:?}, said {e:?}"
+            );
+        }
     }
 
     #[test]
@@ -680,7 +982,7 @@ orphans = keep
 
     #[test]
     fn rejects_what_it_cannot_mean() {
-        let cases: [(&str, &str); 14] = [
+        let cases = [
             ("[bogus]\n", "unknown section"),
             ("[class.system]\n", "not a usable class name"),
             ("[class.a/b]\n", "not a usable class name"),
@@ -701,6 +1003,49 @@ orphans = keep
             ),
             ("[class.a]\n[limits.a]\ncpuset.cpus = 3-1\n", "CPU list"),
             ("[stop]\ngrace = soon\n", "duration"),
+            (
+                "[restart]\nmode = sometimes\n",
+                "not never, on-failure or always",
+            ),
+            ("[restart]\nmode = never\nmode = always\n", "set twice"),
+            (
+                "[restart]\nbackoff = 60s\n",
+                "backoff.max 30000ms is below backoff",
+            ),
+            (
+                "[restart]\nmax = 10\ntotal = 5\n",
+                "max 10 is above total 5",
+            ),
+            ("[restart]\nwindow.max = 1\n", "not a key of this section"),
+            ("[supervise]\nmax = 1\n", "not a key of this section"),
+            ("[run]\nuid = -1\n", "not a numeric user id"),
+            ("[run]\ngid = 4294967295\n", "not a numeric group id"),
+            ("[run]\nuid = 0\n", "allow.root = yes"),
+            ("[run]\ngid = 0\n", "allow.root = yes"),
+            ("[run]\nallow.root = maybe\n", "yes or no"),
+            ("[protect]\n", "cannot grant protected status"),
+            ("[protected]\npid = 1\n", "cannot grant protected status"),
+            ("[critical.workloads]\n", "cannot grant protected status"),
+            (
+                "[system]\ncritical = yes\n",
+                "cannot grant protected status",
+            ),
+            (
+                "[class.a]\nprotected = yes\n",
+                "cannot grant protected status",
+            ),
+            (
+                "[limits.a]\nprotect = yes\n",
+                "cannot grant protected status",
+            ),
+            (
+                "[limits.a]\noom_score_adj = -1000\n",
+                "cannot grant protected status",
+            ),
+            (
+                "[run]\nOOM_SCORE_ADJ = -1000\n",
+                "cannot grant protected status",
+            ),
         ];
         for (text, want) in cases {
             let e = parse(text);

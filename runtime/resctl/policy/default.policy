@@ -38,3 +38,30 @@ grace = 5s
 
 [recover]
 orphans = kill
+
+# Restart policy of a supervised workload (`resctl supervise`). Every count is bounded, and the caps are fixed in resctl:
+# a policy that asks for more is refused, not clamped.
+#   max      automatic restarts within one `window`        (at most 10)
+#   total    automatic restarts during one supervisor run  (at most 100)
+#   backoff  the wait before the first restart; it doubles with each further restart of a window, up to backoff.max
+#   rate     starts per minute, all workloads together: a restart waits for room, a manual start is refused (at most 120)
+# A workload that uses up its budget is `failed` and stays that way until an operator runs `resctl reset`.
+[restart]
+mode = on-failure
+max = 3
+window = 60s
+total = 10
+backoff = 500ms
+backoff.max = 30s
+rate = 30
+
+# How many workloads one machine supervises at once (at most 64).
+[supervise]
+workloads = 16
+
+# A workload never runs with the privileges of resctl: it is switched to this user and group before it executes. A
+# supervisor that is root and has no uid and gid here refuses to start anything; allow.root = yes (and uid 0) is for a
+# workload that is trusted as much as the system.
+[run]
+uid = 65534
+gid = 65534
