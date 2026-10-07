@@ -9,10 +9,15 @@
 //!
 //! The tree is created in every hierarchy that serves a feature (see `layout`), and a process is attached to the same
 //! directory in all of them. Everything that ends processes takes a `Workload`, which cannot name `system`.
+//!
+//! Critical processes live in `system`, outside every kill domain. The controller is given the list of them
+//! (`with_critical`) and applies it wherever a process is signalled, killed or moved: one that is found inside a workload
+//! domain is moved out before the domain is touched, and one that cannot be moved out is stepped around, never killed.
 
 use crate::fs::Host;
 use crate::layout::{Api, Feature, Layout};
 use crate::policy::{valid_name, Dev, IoLimit, Limits, Mem, Num, Orphans, Policy, CPU_PERIOD_US};
+use std::cell::RefCell;
 use std::fmt;
 use std::io;
 
@@ -23,6 +28,8 @@ pub const WORKLOAD: &str = "agent-interaction/workload";
 const FREEZE_MS: u64 = 5_000;
 const KILL_MS: u64 = 10_000;
 const REMOVE_MS: u64 = 3_000;
+/// Rounds of the kill that signals one process at a time (used only around a critical process that cannot be moved out).
+const KILL_ROUNDS: u64 = 10;
 
 #[derive(Debug)]
 pub enum Error {
@@ -188,6 +195,95 @@ pub struct Recovered {
     pub removed: Vec<String>,
     pub killed: Vec<String>,
     pub kept: Vec<String>,
+    /// Workloads whose supervisor is alive: not orphans, and left alone.
+    pub live: Vec<String>,
+    /// Workloads whose domain could not be emptied or removed, with the reason. The others were recovered all the same.
+    pub stuck: Vec<(String, String)>,
+}
+
+/// What `teardown` left behind.
+#[derive(Debug, Default)]
+pub struct TornDown {
+    /// Domains that stay on purpose (`system` while it holds processes).
+    pub kept: Vec<String>,
+    /// Domains that could not be emptied or removed, with the reason. The others were removed all the same.
+    pub stuck: Vec<(String, String)>,
+}
+
+/// A critical process that was found inside a workload domain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rescue {
+    pub pid: i32,
+    /// The domain it was found in (relative to the root of the hierarchy).
+    pub from: String,
+    /// Whether it is out of every workload domain now.
+    pub moved: bool,
+}
+
+/// Where a process runs, as far as the domains tell.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Placement {
+    /// Inside the workload domain: the directory (relative to the root of the hierarchy) of the first hierarchy that says so.
+    Workload(String),
+    System,
+    Elsewhere,
+}
+
+impl Placement {
+    /// The path below the workload domain (`CLASS/ID`, or more for a child domain of the workload), `CLASS` or `workload`
+    /// for a process in a directory above a workload.
+    pub fn workload(&self) -> Option<String> {
+        match self {
+            Placement::Workload(rel) => Some(
+                rel.strip_prefix(WORKLOAD)
+                    .map(|r| r.trim_start_matches('/'))
+                    .filter(|r| !r.is_empty())
+                    .unwrap_or("workload")
+                    .to_string(),
+            ),
+            _ => None,
+        }
+    }
+}
+
+/// The processes no kill may reach, asked for at every kill so that a registration made a moment ago counts. An error
+/// means the registry cannot be read: nothing that kills goes ahead on a guess.
+pub type Shield<'a> = &'a dyn Fn() -> Result<Vec<i32>>;
+
+/// `path` is `dir` or below it.
+fn inside(path: &str, dir: &str) -> bool {
+    path == dir
+        || path
+            .strip_prefix(dir)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Where the text of a `/proc/PID/cgroup` says a process runs. A process inside the workload domain in any hierarchy
+/// counts as inside it: that is the hierarchy a kill may use.
+pub fn domain_of_cgroup(text: &str) -> Placement {
+    let mut found = Placement::Elsewhere;
+    for line in text.lines() {
+        // HIERARCHY-ID:CONTROLLERS:PATH, and the path may hold colons
+        let Some(path) = line.splitn(3, ':').nth(2) else {
+            continue;
+        };
+        let path = path.strip_suffix(" (deleted)").unwrap_or(path);
+        let path = path.trim_start_matches('/');
+        if inside(path, WORKLOAD) {
+            return Placement::Workload(path.to_string());
+        }
+        if inside(path, SYSTEM) {
+            found = Placement::System;
+        }
+    }
+    found
+}
+
+/// The workload domain this very process runs in, if it runs in one: what a workload is, however it came to call this
+/// program. A process that cannot be placed is an error, never "not confined".
+pub fn confined(host: &dyn Host) -> io::Result<Option<String>> {
+    let text = host.read("/proc/self/cgroup")?;
+    Ok(domain_of_cgroup(&text).workload())
 }
 
 fn tokens(s: &str) -> Vec<String> {
@@ -214,11 +310,20 @@ fn pressure_total(text: &str) -> Option<u64> {
         .find_map(|w| w.strip_prefix("total=")?.parse().ok())
 }
 
+/// A failure of one domain, as against one of the machine: the other domains can still be dealt with.
+fn domain_failure(e: &Error) -> bool {
+    matches!(e, Error::Refused(_) | Error::Timeout(_) | Error::Io(_))
+}
+
 pub struct Controller<'a> {
     host: &'a dyn Host,
     layout: &'a Layout,
     policy: Policy,
     mem_total: u64,
+    /// The registered critical processes, when there are any to protect.
+    shield: Option<Shield<'a>>,
+    /// What was found inside a workload domain and moved out (or could not be) since `take_rescues`.
+    rescued: RefCell<Vec<Rescue>>,
 }
 
 impl<'a> Controller<'a> {
@@ -235,7 +340,21 @@ impl<'a> Controller<'a> {
             layout,
             policy,
             mem_total,
+            shield: None,
+            rescued: RefCell::new(Vec::new()),
         })
+    }
+
+    /// Protect the processes `shield` names: wherever one is found inside a workload domain that is about to be signalled,
+    /// killed or entered, it is moved out first, and it is never signalled or killed.
+    pub fn with_critical(mut self, shield: Shield<'a>) -> Controller<'a> {
+        self.shield = Some(shield);
+        self
+    }
+
+    /// The critical processes found inside workload domains (and moved out, or not) since the last call.
+    pub fn take_rescues(&self) -> Vec<Rescue> {
+        std::mem::take(&mut *self.rescued.borrow_mut())
     }
 
     pub fn policy(&self) -> &Policy {
@@ -759,6 +878,11 @@ impl<'a> Controller<'a> {
                 "process 1 is never moved into a workload".into(),
             ));
         }
+        if matches!(t, Target::Workload(_)) && !self.critical_among(&[pid])?.is_empty() {
+            return Err(Error::Refused(format!(
+                "process {pid} is critical: it is never moved into a workload"
+            )));
+        }
         for path in self.procs_paths(t)? {
             self.host
                 .write(&path, &pid.to_string())
@@ -828,9 +952,154 @@ impl<'a> Controller<'a> {
         self.set_frozen(&rel, false)
     }
 
+    // ---- critical processes ----
+
+    /// The members of `pids` that are registered critical processes. An unreadable registry is an error: nothing that
+    /// kills or enters a workload goes ahead on a guess.
+    fn critical_among(&self, pids: &[i32]) -> Result<Vec<i32>> {
+        let Some(shield) = self.shield else {
+            return Ok(Vec::new());
+        };
+        let critical = shield()?;
+        Ok(pids
+            .iter()
+            .copied()
+            .filter(|p| critical.contains(p))
+            .collect())
+    }
+
+    /// The processes of the domain that are not in `keep`.
+    fn others(&self, rel: &str, keep: &[i32]) -> Vec<i32> {
+        self.pids(rel)
+            .into_iter()
+            .filter(|p| !keep.contains(p))
+            .collect()
+    }
+
+    fn note_rescue(&self, r: Rescue) {
+        let mut log = self.rescued.borrow_mut();
+        if !log.contains(&r) {
+            log.push(r);
+        }
+    }
+
+    /// Take a process into `system`, in every hierarchy (all of them are tried: a process left inside a workload domain in
+    /// one hierarchy is still inside it).
+    fn to_system(&self, pid: i32) -> Result<()> {
+        let mut first = None;
+        for path in self.procs_paths(&Target::System)? {
+            if let Err(e) = self.host.write(&path, &pid.to_string()) {
+                first.get_or_insert_with(|| io_err(&format!("move {pid} to {path}"), &e));
+            }
+        }
+        first.map_or(Ok(()), Err)
+    }
+
+    /// Where a process runs, by its `/proc/PID/cgroup`.
+    pub fn placement(&self, pid: i32) -> io::Result<Placement> {
+        self.host
+            .read(&format!("/proc/{pid}/cgroup"))
+            .map(|t| domain_of_cgroup(&t))
+    }
+
+    /// Move the critical processes found inside `rel` out of it. Returns the ones that stay in it because they could not
+    /// be moved.
+    fn shelter(&self, rel: &str) -> Result<Vec<i32>> {
+        let critical = self.critical_among(&self.pids(rel))?;
+        let mut stuck = Vec::new();
+        for pid in critical {
+            let moved = self.to_system(pid).is_ok() && !self.pids(rel).contains(&pid);
+            self.note_rescue(Rescue {
+                pid,
+                from: rel.to_string(),
+                moved,
+            });
+            if !moved {
+                stuck.push(pid);
+            }
+        }
+        Ok(stuck)
+    }
+
+    /// Every registered critical process that runs inside a workload domain is moved out of it. For a supervisor about to
+    /// start a workload, and for recovery after a failure: protection must hold again before anything else happens.
+    pub fn rescue_misplaced(&self) -> Result<Vec<Rescue>> {
+        let Some(shield) = self.shield else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        for pid in shield()? {
+            if let Ok(Placement::Workload(from)) = self.placement(pid) {
+                let moved = self.to_system(pid).is_ok()
+                    && !matches!(self.placement(pid), Ok(Placement::Workload(_)));
+                let r = Rescue { pid, from, moved };
+                self.note_rescue(r.clone());
+                out.push(r);
+            }
+        }
+        Ok(out)
+    }
+
+    fn stuck_error(&self, rel: &str, stuck: &[i32]) -> Error {
+        let list: Vec<String> = stuck.iter().map(i32::to_string).collect();
+        Error::Refused(format!(
+            "{rel} holds critical process(es) {} that cannot be moved out: they are left alone, so the domain stays",
+            list.join(",")
+        ))
+    }
+
+    /// Kill what is in the domain except `keep`, one process at a time: `cgroup.kill` and the freezer take the whole
+    /// domain, `keep` included.
+    fn kill_around(&self, rel: &str, keep: &[i32]) -> Result<()> {
+        if self.is_frozen(rel) {
+            self.set_frozen(rel, false)?;
+        }
+        for _ in 0..KILL_ROUNDS {
+            let rest = self.others(rel, keep);
+            if rest.is_empty() {
+                return Ok(());
+            }
+            let _ = self.host.signal(&rest, 9);
+            if self
+                .wait(KILL_MS / KILL_ROUNDS, "killing", || {
+                    self.others(rel, keep).is_empty()
+                })
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+        Err(Error::Timeout(format!(
+            "{rel} still has processes after killing"
+        )))
+    }
+
+    /// The kernel's count of the processes its out-of-memory killer ended in the domain, where it counts them.
+    pub fn oom_kills(&self, rel: &str) -> Option<u64> {
+        match self.at(Feature::Memory, rel)? {
+            (Api::V2, h) => keyed(&self.get(h, rel, "memory.events")?, "oom_kill"),
+            (Api::V1, h) => keyed(&self.get(h, rel, "memory.oom_control")?, "oom_kill"),
+        }
+    }
+
+    /// Whether the workload has a domain (in any hierarchy).
+    pub fn exists(&self, w: &Workload) -> bool {
+        self.exists_anywhere(&w.rel())
+    }
+
     /// End every process of the domain, forks included. v2 does it in one write; the v1 freezer cannot (a frozen task does
     /// not die until it is thawed), so it freezes the domain so nothing forks, signals everything, thaws, and checks.
+    /// A critical process inside is moved out first. One that cannot be moved is left alone: the rest of the domain is
+    /// killed and the domain stays, with a `Refused` that says why.
     fn kill_rel(&self, rel: &str) -> Result<()> {
+        if self.pids(rel).is_empty() {
+            return Ok(());
+        }
+        let stuck = self.shelter(rel)?;
+        if !stuck.is_empty() {
+            self.kill_around(rel, &stuck)?;
+            return Err(self.stuck_error(rel, &stuck));
+        }
         if self.pids(rel).is_empty() {
             return Ok(());
         }
@@ -869,24 +1138,40 @@ impl<'a> Controller<'a> {
         self.kill_rel(&rel)
     }
 
-    /// SIGTERM to everything, `grace_ms` to exit, then the kill.
+    /// SIGTERM to everything, `grace_ms` to exit, then the kill. A critical process inside is moved out first and is never
+    /// signalled; one that cannot be moved out is left alone, the rest of the domain still ends, and the call says so
+    /// with a `Refused`.
     pub fn stop(&self, w: &Workload, grace_ms: u64) -> Result<Stopped> {
         let rel = self.require(w)?;
-        let pids = self.pids(&rel);
-        if pids.is_empty() {
+        if self.pids(&rel).is_empty() {
             return Ok(Stopped::Empty);
+        }
+        let stuck = self.shelter(&rel)?;
+        let pids = self.others(&rel, &stuck);
+        if pids.is_empty() {
+            return if stuck.is_empty() {
+                Ok(Stopped::Empty)
+            } else {
+                Err(self.stuck_error(&rel, &stuck))
+            };
         }
         if self.is_frozen(&rel) {
             self.set_frozen(&rel, false)?;
         }
         let _ = self.host.signal(&pids, 15);
         if self
-            .wait(grace_ms, "stopping", || self.pids(&rel).is_empty())
+            .wait(grace_ms, "stopping", || {
+                self.others(&rel, &stuck).is_empty()
+            })
             .is_ok()
         {
-            return Ok(Stopped::Graceful);
+            return if stuck.is_empty() {
+                Ok(Stopped::Graceful)
+            } else {
+                Err(self.stuck_error(&rel, &stuck))
+            };
         }
-        let left = self.pids(&rel).len();
+        let left = self.others(&rel, &stuck).len();
         self.kill_rel(&rel)?;
         Ok(Stopped::Killed(left))
     }
@@ -983,7 +1268,7 @@ impl<'a> Controller<'a> {
                 add("memory.current", self.get(h, rel, "memory.current"));
                 add("memory.peak", self.get(h, rel, "memory.peak"));
                 add("memory.max", self.get(h, rel, "memory.max"));
-                add("memory.oom_kill", num(keyed(&ev, "oom_kill")));
+                add("memory.oom_kill", num(self.oom_kills(rel)));
                 add("memory.high_events", num(keyed(&ev, "high")));
                 add("memory.max_events", num(keyed(&ev, "max")));
             }
@@ -991,12 +1276,7 @@ impl<'a> Controller<'a> {
                 add("memory.current", self.get(h, rel, "memory.usage_in_bytes"));
                 add("memory.peak", self.get(h, rel, "memory.max_usage_in_bytes"));
                 add("memory.max", self.get(h, rel, "memory.limit_in_bytes"));
-                add(
-                    "memory.oom_kill",
-                    num(self
-                        .get(h, rel, "memory.oom_control")
-                        .and_then(|t| keyed(&t, "oom_kill"))),
-                );
+                add("memory.oom_kill", num(self.oom_kills(rel)));
                 // failcnt counts the hits of the memory limit. While memory+swap is pinned to a limit (--swap none),
                 // the kernel fails the charge on the memory+swap counter first and counts it nowhere: zero would
                 // be a wrong answer there, so the key is left out
@@ -1045,18 +1325,34 @@ impl<'a> Controller<'a> {
     /// For a supervisor that starts with no workload of its own running: every workload domain found is an orphan.
     /// Empty ones are removed; running ones are killed and removed, or kept, as the policy says. `system` is never touched.
     pub fn recover(&self, orphans: Orphans) -> Result<Recovered> {
+        self.recover_with(orphans, &|_| false)
+    }
+
+    /// `recover` for a machine where supervisors may be running: `live` says which workloads have one. Those are not
+    /// orphans and are left alone. A domain that cannot be emptied or removed is reported and the others are dealt with
+    /// all the same.
+    pub fn recover_with(
+        &self,
+        orphans: Orphans,
+        live: &dyn Fn(&Workload) -> bool,
+    ) -> Result<Recovered> {
         self.init()?;
         let mut done = Recovered::default();
         for e in self.list() {
             let name = e.workload.to_string();
-            if e.procs == 0 {
-                self.remove(&e.workload)?;
-                done.removed.push(name);
-            } else if orphans == Orphans::Kill {
-                self.remove(&e.workload)?;
-                done.killed.push(name);
-            } else {
+            if live(&e.workload) {
+                done.live.push(name);
+                continue;
+            }
+            if e.procs > 0 && orphans == Orphans::Keep {
                 done.kept.push(name);
+                continue;
+            }
+            match self.remove(&e.workload) {
+                Ok(()) if e.procs == 0 => done.removed.push(name),
+                Ok(()) => done.killed.push(name),
+                Err(err) if domain_failure(&err) => done.stuck.push((name, err.to_string())),
+                Err(err) => return Err(err),
             }
         }
         // a class the policy no longer names, left without workloads
@@ -1073,28 +1369,43 @@ impl<'a> Controller<'a> {
     }
 
     /// Remove every workload (killed), every class and the workload domain. `system` is kept as long as it holds
-    /// processes. Returns what was kept.
-    pub fn teardown(&self) -> Result<Vec<String>> {
-        let mut kept = Vec::new();
+    /// processes. A domain that cannot be emptied or removed is reported and the others are removed all the same.
+    pub fn teardown(&self) -> Result<TornDown> {
+        let mut done = TornDown::default();
         for e in self.list() {
-            self.remove(&e.workload)?;
+            match self.remove(&e.workload) {
+                Ok(()) => {}
+                Err(err) if domain_failure(&err) => {
+                    done.stuck.push((e.workload.to_string(), err.to_string()));
+                }
+                Err(err) => return Err(err),
+            }
         }
-        if self.exists_anywhere(WORKLOAD) {
-            self.kill_rel(WORKLOAD)?;
-            self.remove_tree(WORKLOAD)?;
+        if done.stuck.is_empty() && self.exists_anywhere(WORKLOAD) {
+            match self
+                .kill_rel(WORKLOAD)
+                .and_then(|()| self.remove_tree(WORKLOAD))
+            {
+                Ok(()) => {}
+                Err(err) if domain_failure(&err) => {
+                    done.stuck.push((WORKLOAD.to_string(), err.to_string()));
+                }
+                Err(err) => return Err(err),
+            }
         }
         if self.exists_anywhere(SYSTEM) {
             let n = self.pids(SYSTEM).len();
             if n == 0 && self.union_subdirs(SYSTEM).is_empty() {
                 self.remove_tree(SYSTEM)?;
             } else {
-                kept.push(format!("system: {n} process(es) stay in their domain"));
+                done.kept
+                    .push(format!("system: {n} process(es) stay in their domain"));
             }
         }
         if self.exists_anywhere(BASE) && self.union_subdirs(BASE).is_empty() {
             self.remove_tree(BASE)?;
         }
-        Ok(kept)
+        Ok(done)
     }
 }
 
@@ -1958,20 +2269,490 @@ grace = 1500ms
         running(&c, &h, "a", &[10]);
         h.proc_in(5, &[]);
         c.attach(&Target::System, 5).unwrap();
-        let kept = c.teardown().unwrap();
+        let kept = c.teardown().unwrap().kept;
         assert_eq!(kept.len(), 1, "{kept:?}");
         assert!(!h.alive(10) && h.alive(5));
         assert!(!h.dir_exists("/c/memory/agent-interaction/workload"));
         assert!(h.dir_exists("/c/memory/agent-interaction/system"));
         h.proc_in(5, &[]);
         h.signal(&[5], 9).unwrap();
-        assert!(c.teardown().unwrap().is_empty());
+        assert!(c.teardown().unwrap().kept.is_empty());
         for hier in ["memory", "pids", "cpu", "cpuset", "blkio", "unified"] {
             assert!(
                 !h.dir_exists(&format!("/c/{hier}/agent-interaction")),
                 "{hier}"
             );
         }
+    }
+
+    // ---- critical processes ----
+
+    /// A registry that names `pids`.
+    fn registry(pids: &[i32]) -> impl Fn() -> Result<Vec<i32>> {
+        let pids = pids.to_vec();
+        move || Ok(pids.clone())
+    }
+
+    /// A registry that cannot be read.
+    fn broken_registry() -> Result<Vec<i32>> {
+        Err(Error::State("the critical registry is corrupt".into()))
+    }
+
+    /// The hosts the lifecycle is tested on: a v2 machine, and a hybrid one that limits through v1.
+    fn both() -> [(FakeHost, Lifecycle); 2] {
+        [(v2_host(), Lifecycle::Auto), (hybrid_host(), Lifecycle::V1)]
+    }
+
+    /// The workload `batch/a`, holding the ordinary processes 10 and 12 and the process 11, which got in before it was
+    /// registered as critical (or by a path that was not asked).
+    fn holding_a_critical_process(h: &FakeHost, l: &Layout) -> Workload {
+        let plain = setup(h, l);
+        plain.init().unwrap();
+        running(&plain, h, "a", &[10, 11, 12])
+    }
+
+    fn signalled(h: &FakeHost, pid: i32) -> bool {
+        h.signals().iter().any(|&(p, _)| p == pid)
+    }
+
+    #[test]
+    fn a_critical_process_inside_a_workload_is_moved_out_before_the_kill() {
+        for (h, flag) in both() {
+            let l = Layout::detect(&h, flag);
+            let a = holding_a_critical_process(&h, &l);
+            let shield = registry(&[11]);
+            let c = setup(&h, &l).with_critical(&shield);
+            c.kill(&a).unwrap();
+            assert!(h.alive(11), "the critical process survives the kill");
+            assert!(
+                !h.alive(10) && !h.alive(12),
+                "the rest of the workload ends"
+            );
+            assert!(!signalled(&h, 11));
+            assert_eq!(c.placement(11).unwrap(), Placement::System);
+            assert_eq!(
+                c.take_rescues(),
+                vec![Rescue {
+                    pid: 11,
+                    from: a.rel(),
+                    moved: true
+                }]
+            );
+            assert!(c.take_rescues().is_empty(), "a rescue is reported once");
+        }
+    }
+
+    #[test]
+    fn stop_never_signals_a_critical_process() {
+        for stubborn in [false, true] {
+            for (h, flag) in both() {
+                let l = Layout::detect(&h, flag);
+                let a = holding_a_critical_process(&h, &l);
+                if stubborn {
+                    h.ignore_term(10);
+                }
+                let shield = registry(&[11]);
+                let c = setup(&h, &l).with_critical(&shield);
+                let want = if stubborn {
+                    Stopped::Killed(1)
+                } else {
+                    Stopped::Graceful
+                };
+                assert_eq!(c.stop(&a, 1500).unwrap(), want);
+                assert!(h.alive(11) && !h.alive(10) && !h.alive(12));
+                assert!(!signalled(&h, 11), "{:?}", h.signals());
+                assert_eq!(c.placement(11).unwrap(), Placement::System);
+            }
+        }
+    }
+
+    #[test]
+    fn remove_keeps_a_critical_process_alive_and_still_removes_the_domain() {
+        for (h, flag) in both() {
+            let l = Layout::detect(&h, flag);
+            let a = holding_a_critical_process(&h, &l);
+            let shield = registry(&[11]);
+            let c = setup(&h, &l).with_critical(&shield);
+            c.remove(&a).unwrap();
+            assert!(h.alive(11) && !h.alive(10) && !h.alive(12));
+            assert!(!c.exists(&a));
+            assert_eq!(c.placement(11).unwrap(), Placement::System);
+            assert!(!signalled(&h, 11));
+        }
+    }
+
+    #[test]
+    fn a_domain_left_with_only_a_critical_process_has_nothing_to_stop() {
+        let h = v2_host();
+        let l = Layout::detect(&h, Lifecycle::Auto);
+        let plain = setup(&h, &l);
+        plain.init().unwrap();
+        let a = running(&plain, &h, "a", &[11]);
+        let shield = registry(&[11]);
+        let c = setup(&h, &l).with_critical(&shield);
+        assert_eq!(c.stop(&a, 100).unwrap(), Stopped::Empty);
+        assert!(h.alive(11) && h.signals().is_empty());
+        assert_eq!(c.placement(11).unwrap(), Placement::System);
+    }
+
+    #[test]
+    fn a_critical_process_that_cannot_be_moved_is_left_alone_and_the_rest_still_ends() {
+        for op in ["kill", "stop", "stop-stubborn", "remove"] {
+            let h = v2_host();
+            let l = Layout::detect(&h, Lifecycle::Auto);
+            let a = holding_a_critical_process(&h, &l);
+            h.deny_writes_to("agent-interaction/system/cgroup.procs");
+            if op == "stop-stubborn" {
+                h.ignore_term(10);
+            }
+            let shield = registry(&[11]);
+            let c = setup(&h, &l).with_critical(&shield);
+            let err = match op {
+                "kill" => c.kill(&a).unwrap_err(),
+                "remove" => c.remove(&a).unwrap_err(),
+                _ => c.stop(&a, 1500).unwrap_err(),
+            };
+            assert!(
+                matches!(err, Error::Refused(ref m) if m.contains("11")),
+                "{op}: {err}"
+            );
+            assert_eq!(err.code(), 2);
+            assert!(h.alive(11), "{op}: the critical process is never killed");
+            assert!(!h.alive(10) && !h.alive(12), "{op}: the others end");
+            assert!(!signalled(&h, 11), "{op}: {:?}", h.signals());
+            assert!(c.exists(&a), "{op}: the domain stays while it holds it");
+            assert_eq!(
+                c.take_rescues(),
+                vec![Rescue {
+                    pid: 11,
+                    from: a.rel(),
+                    moved: false
+                }],
+                "{op}"
+            );
+        }
+    }
+
+    #[test]
+    fn attach_never_puts_a_critical_process_into_a_workload() {
+        let h = v2_host();
+        let l = Layout::detect(&h, Lifecycle::Auto);
+        let plain = setup(&h, &l);
+        plain.init().unwrap();
+        let a = running(&plain, &h, "a", &[10]);
+        h.proc_in(5, &[]);
+        let shield = registry(&[5]);
+        let c = setup(&h, &l).with_critical(&shield);
+        let err = c.attach(&Target::Workload(a.clone()), 5).unwrap_err();
+        assert!(matches!(err, Error::Refused(_)), "{err}");
+        assert!(!h
+            .writes_to("workload/batch/a/cgroup.procs")
+            .contains(&"5".to_string()));
+        assert_eq!(c.placement(5).unwrap(), Placement::Elsewhere);
+        c.attach(&Target::System, 5).unwrap();
+        assert_eq!(c.placement(5).unwrap(), Placement::System);
+        // an ordinary process still enters, and process 1 never does
+        h.proc_in(6, &[]);
+        c.attach(&Target::Workload(a.clone()), 6).unwrap();
+        assert_eq!(c.placement(6).unwrap().workload(), Some("batch/a".into()));
+        assert!(matches!(
+            c.attach(&Target::Workload(a), 1),
+            Err(Error::Refused(_))
+        ));
+    }
+
+    #[test]
+    fn an_unreadable_registry_stops_everything_that_would_kill_or_enter() {
+        let h = v2_host();
+        let l = Layout::detect(&h, Lifecycle::Auto);
+        let a = holding_a_critical_process(&h, &l);
+        let c = setup(&h, &l).with_critical(&broken_registry);
+        for err in [
+            c.kill(&a).unwrap_err(),
+            c.stop(&a, 100).unwrap_err(),
+            c.remove(&a).unwrap_err(),
+            c.rescue_misplaced().unwrap_err(),
+        ] {
+            assert!(matches!(err, Error::State(_)), "{err}");
+        }
+        assert!(h.alive(10) && h.alive(11) && h.alive(12), "nothing ended");
+        assert!(h.signals().is_empty());
+        assert!(c.exists(&a));
+        h.proc_in(6, &[]);
+        assert!(matches!(
+            c.attach(&Target::Workload(a), 6),
+            Err(Error::State(_))
+        ));
+        c.attach(&Target::System, 6).unwrap();
+    }
+
+    #[test]
+    fn rescue_moves_every_critical_process_out_of_the_workload_domains() {
+        for (h, flag) in both() {
+            let l = Layout::detect(&h, flag);
+            let plain = setup(&h, &l);
+            plain.init().unwrap();
+            let a = running(&plain, &h, "a", &[5, 10]);
+            let b = running(&plain, &h, "b", &[6]);
+            h.proc_in(7, &[]);
+            h.proc_in(8, &[]);
+            plain.attach(&Target::System, 8).unwrap();
+            // 99 is not a process any more: it is not placed, so there is nothing to move
+            let shield = registry(&[5, 6, 7, 8, 99]);
+            let c = setup(&h, &l).with_critical(&shield);
+            let got = c.rescue_misplaced().unwrap();
+            assert_eq!(
+                got,
+                vec![
+                    Rescue {
+                        pid: 5,
+                        from: a.rel(),
+                        moved: true
+                    },
+                    Rescue {
+                        pid: 6,
+                        from: b.rel(),
+                        moved: true
+                    },
+                ]
+            );
+            assert_eq!(c.placement(5).unwrap(), Placement::System);
+            assert_eq!(c.placement(6).unwrap(), Placement::System);
+            assert_eq!(c.placement(7).unwrap(), Placement::Elsewhere);
+            assert_eq!(c.placement(8).unwrap(), Placement::System);
+            assert!(h.alive(10), "rescue moves processes, it ends none");
+            assert!(c.rescue_misplaced().unwrap().is_empty());
+            assert_eq!(c.take_rescues(), got);
+        }
+    }
+
+    #[test]
+    fn rescue_reports_a_process_it_could_not_move() {
+        let h = v2_host();
+        let l = Layout::detect(&h, Lifecycle::Auto);
+        let plain = setup(&h, &l);
+        plain.init().unwrap();
+        let a = running(&plain, &h, "a", &[5]);
+        h.deny_writes_to("agent-interaction/system/cgroup.procs");
+        let shield = registry(&[5]);
+        let c = setup(&h, &l).with_critical(&shield);
+        assert_eq!(
+            c.rescue_misplaced().unwrap(),
+            vec![Rescue {
+                pid: 5,
+                from: a.rel(),
+                moved: false
+            }]
+        );
+        assert!(h.alive(5));
+    }
+
+    #[test]
+    fn the_placement_of_a_process_is_read_from_its_cgroup_file() {
+        let wl = |s: &str| Placement::Workload(s.to_string());
+        assert_eq!(
+            domain_of_cgroup("0::/agent-interaction/workload/batch/a\n"),
+            wl("agent-interaction/workload/batch/a")
+        );
+        assert_eq!(
+            domain_of_cgroup("0::/agent-interaction/system\n"),
+            Placement::System
+        );
+        assert_eq!(
+            domain_of_cgroup("0::/agent-interaction/system/sub\n"),
+            Placement::System
+        );
+        for elsewhere in [
+            "",
+            "0::/\n",
+            "0::/user.slice\n",
+            "garbage\n",
+            "0::/foo/agent-interaction/workload/x\n",
+            "0::/agent-interaction/workload2/x\n",
+            "0::/agent-interaction/systemd\n",
+            "0::/agent-interaction\n",
+        ] {
+            assert_eq!(
+                domain_of_cgroup(elsewhere),
+                Placement::Elsewhere,
+                "{elsewhere:?}"
+            );
+        }
+        // one hierarchy that puts it inside a workload is enough
+        let hybrid = "5:memory:/agent-interaction/system\n\
+                      4:pids:/agent-interaction/workload/batch/a\n\
+                      1:name=systemd:/\n\
+                      0::/\n";
+        assert_eq!(
+            domain_of_cgroup(hybrid),
+            wl("agent-interaction/workload/batch/a")
+        );
+        // a path may hold colons and a mark for a removed directory
+        assert_eq!(
+            domain_of_cgroup("0::/agent-interaction/workload/batch/a:b (deleted)\n"),
+            wl("agent-interaction/workload/batch/a:b")
+        );
+        assert_eq!(
+            domain_of_cgroup("0::/agent-interaction/workload/batch/a/child/leaf\n"),
+            wl("agent-interaction/workload/batch/a/child/leaf")
+        );
+    }
+
+    #[test]
+    fn a_placement_names_the_workload_it_is_in() {
+        let name = |text: &str| domain_of_cgroup(text).workload();
+        assert_eq!(
+            name("0::/agent-interaction/workload/batch/a\n"),
+            Some("batch/a".into())
+        );
+        assert_eq!(
+            name("0::/agent-interaction/workload/batch\n"),
+            Some("batch".into())
+        );
+        assert_eq!(
+            name("0::/agent-interaction/workload\n"),
+            Some("workload".into())
+        );
+        assert_eq!(name("0::/agent-interaction/system\n"), None);
+        assert_eq!(name("0::/\n"), None);
+    }
+
+    #[test]
+    fn a_process_is_confined_when_its_own_domain_is_a_workload() {
+        let h = v2_host();
+        let l = Layout::detect(&h, Lifecycle::Auto);
+        let c = setup(&h, &l);
+        c.init().unwrap();
+        let a = running(&c, &h, "a", &[10]);
+        assert_eq!(
+            confined(&h).unwrap(),
+            None,
+            "the default process is outside"
+        );
+        h.set_self(10);
+        assert_eq!(confined(&h).unwrap(), Some(a.to_string()));
+        c.attach(&Target::System, 10).unwrap();
+        assert_eq!(confined(&h).unwrap(), None);
+    }
+
+    #[test]
+    fn oom_kills_are_read_where_the_kernel_counts_them() {
+        let h = v2_host();
+        let l = Layout::detect(&h, Lifecycle::Auto);
+        let c = setup(&h, &l);
+        c.init().unwrap();
+        let a = running(&c, &h, "a", &[]);
+        assert_eq!(c.oom_kills(&a.rel()), Some(0));
+        h.set(
+            "/c/agent-interaction/workload/batch/a/memory.events",
+            "low 0\nhigh 0\nmax 4\noom 2\noom_kill 2\n",
+        );
+        assert_eq!(c.oom_kills(&a.rel()), Some(2));
+        assert_eq!(c.oom_kills("agent-interaction/workload/batch/none"), None);
+
+        let h = hybrid_host();
+        let l = Layout::detect(&h, Lifecycle::V1);
+        let c = setup(&h, &l);
+        c.init().unwrap();
+        let a = running(&c, &h, "a", &[]);
+        h.set(
+            "/c/memory/agent-interaction/workload/batch/a/memory.oom_control",
+            "oom_kill_disable 0\nunder_oom 0\noom_kill 3\n",
+        );
+        assert_eq!(c.oom_kills(&a.rel()), Some(3));
+    }
+
+    #[test]
+    fn recover_leaves_the_workload_of_a_live_supervisor_alone() {
+        let h = v2_host();
+        let l = Layout::detect(&h, Lifecycle::Auto);
+        let c = setup(&h, &l);
+        c.init().unwrap();
+        let a = running(&c, &h, "a", &[10]);
+        running(&c, &h, "b", &[20]);
+        let done = c
+            .recover_with(Orphans::Kill, &|wl: &Workload| wl.id == "a")
+            .unwrap();
+        assert_eq!(done.live, vec!["batch/a"]);
+        assert_eq!(done.killed, vec!["batch/b"]);
+        assert!(done.removed.is_empty() && done.stuck.is_empty());
+        assert!(h.alive(10) && !h.alive(20) && c.exists(&a));
+    }
+
+    #[test]
+    fn recover_and_teardown_keep_a_critical_process_alive_wherever_it_was_found() {
+        let h = v2_host();
+        let l = Layout::detect(&h, Lifecycle::Auto);
+        let a = holding_a_critical_process(&h, &l);
+        let shield = registry(&[11]);
+        let c = setup(&h, &l).with_critical(&shield);
+        let done = c.recover(Orphans::Kill).unwrap();
+        assert_eq!(done.killed, vec![a.to_string()]);
+        assert!(h.alive(11) && !h.alive(10) && !h.alive(12));
+        assert_eq!(c.placement(11).unwrap(), Placement::System);
+        let down = c.teardown().unwrap();
+        assert!(down.stuck.is_empty());
+        assert_eq!(down.kept.len(), 1, "{:?}", down.kept);
+        assert!(down.kept[0].starts_with("system:"));
+        assert!(h.alive(11) && !signalled(&h, 11));
+    }
+
+    #[test]
+    fn recover_reports_a_stuck_workload_and_recovers_the_others() {
+        let h = v2_host();
+        let l = Layout::detect(&h, Lifecycle::Auto);
+        let a = holding_a_critical_process(&h, &l);
+        let plain = setup(&h, &l);
+        running(&plain, &h, "b", &[20]);
+        running(&plain, &h, "gone", &[]);
+        h.deny_writes_to("agent-interaction/system/cgroup.procs");
+        let shield = registry(&[11]);
+        let c = setup(&h, &l).with_critical(&shield);
+        let done = c.recover(Orphans::Kill).unwrap();
+        assert_eq!(done.stuck.len(), 1, "{:?}", done.stuck);
+        assert_eq!(done.stuck[0].0, a.to_string());
+        assert!(done.stuck[0].1.contains("critical"), "{:?}", done.stuck);
+        assert_eq!(done.killed, vec!["batch/b"]);
+        assert_eq!(done.removed, vec!["batch/gone"]);
+        assert!(h.alive(11) && !h.alive(10) && !h.alive(20));
+        assert!(c.exists(&a));
+    }
+
+    #[test]
+    fn recover_stops_at_a_failure_of_the_machine_instead_of_guessing() {
+        let h = v2_host();
+        let l = Layout::detect(&h, Lifecycle::Auto);
+        let a = holding_a_critical_process(&h, &l);
+        let c = setup(&h, &l).with_critical(&broken_registry);
+        assert!(matches!(c.recover(Orphans::Kill), Err(Error::State(_))));
+        assert!(h.alive(10) && h.alive(11) && h.alive(12));
+        assert!(c.exists(&a));
+    }
+
+    #[test]
+    fn teardown_reports_what_it_could_not_remove_and_removes_the_rest() {
+        let h = v2_host();
+        let l = Layout::detect(&h, Lifecycle::Auto);
+        let a = holding_a_critical_process(&h, &l);
+        let plain = setup(&h, &l);
+        let b = running(&plain, &h, "b", &[20]);
+        h.deny_writes_to("agent-interaction/system/cgroup.procs");
+        let shield = registry(&[11]);
+        let c = setup(&h, &l).with_critical(&shield);
+        let down = c.teardown().unwrap();
+        assert_eq!(down.stuck.len(), 1, "{:?}", down.stuck);
+        assert_eq!(down.stuck[0].0, a.to_string());
+        assert!(!c.exists(&b) && !h.alive(20));
+        assert!(c.exists(&a) && h.alive(11) && !h.alive(10));
+        assert!(
+            h.dir_exists("/c/agent-interaction/workload"),
+            "the workload domain stays while one of its domains does"
+        );
+        // once the process that held the domain is gone, the next teardown finishes the job
+        h.exit_proc(11);
+        let down = c.teardown().unwrap();
+        assert!(down.stuck.is_empty() && down.kept.is_empty(), "{down:?}");
+        assert!(!h.dir_exists("/c/agent-interaction"));
     }
 
     #[test]

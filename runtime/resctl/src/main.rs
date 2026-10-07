@@ -457,15 +457,35 @@ fn execute(inv: Invocation) -> Result<()> {
                 ("removed", &done.removed),
                 ("killed", &done.killed),
                 ("kept", &done.kept),
+                ("live", &done.live),
             ] {
                 for n in names {
                     println!("{key}={n}");
                 }
             }
+            for (name, why) in &done.stuck {
+                println!("stuck={name}: {why}");
+            }
+            if !done.stuck.is_empty() {
+                return Err(Error::Io(format!(
+                    "{} workload domain(s) could not be removed",
+                    done.stuck.len()
+                )));
+            }
         }
         Cmd::Teardown => {
-            for k in ctl.teardown()? {
+            let down = ctl.teardown()?;
+            for k in &down.kept {
                 println!("kept={k}");
+            }
+            for (name, why) in &down.stuck {
+                println!("stuck={name}: {why}");
+            }
+            if !down.stuck.is_empty() {
+                return Err(Error::Io(format!(
+                    "{} workload domain(s) could not be removed",
+                    down.stuck.len()
+                )));
             }
             println!("teardown=done");
         }
