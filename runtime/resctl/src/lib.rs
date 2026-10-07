@@ -6,4 +6,5 @@
 pub mod domain;
 pub mod fs;
 pub mod layout;
+pub mod life;
 pub mod policy;
