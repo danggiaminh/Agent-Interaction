@@ -38,15 +38,20 @@ pub enum Error {
     Exists(String),
     Timeout(String),
     Io(String),
+    /// The request does not fit where the workload is in its lifecycle (an illegal change of phase, a failed workload
+    /// that was not reset, a workload that is supervised already).
+    Lifecycle(String),
+    /// The lifecycle state (records, audit trail, registry) cannot be read, written or locked.
+    State(String),
 }
 
 impl Error {
     /// Exit code: 2 for what the caller got wrong, 3 for what the machine cannot or will not do, 1 for the rest.
     pub fn code(&self) -> i32 {
         match self {
-            Error::Policy(_) | Error::Usage(_) | Error::Refused(_) => 2,
+            Error::Policy(_) | Error::Usage(_) | Error::Refused(_) | Error::Lifecycle(_) => 2,
             Error::Unsupported(_) | Error::Denied(_) => 3,
-            Error::Exists(_) | Error::Timeout(_) | Error::Io(_) => 1,
+            Error::Exists(_) | Error::Timeout(_) | Error::Io(_) | Error::State(_) => 1,
         }
     }
 
@@ -60,6 +65,8 @@ impl Error {
             Error::Exists(_) => "exists",
             Error::Timeout(_) => "timeout",
             Error::Io(_) => "error",
+            Error::Lifecycle(_) => "lifecycle",
+            Error::State(_) => "state",
         }
     }
 }
@@ -74,7 +81,9 @@ impl fmt::Display for Error {
             | Error::Denied(m)
             | Error::Exists(m)
             | Error::Timeout(m)
-            | Error::Io(m) => {
+            | Error::Io(m)
+            | Error::Lifecycle(m)
+            | Error::State(m) => {
                 write!(f, "{m}")
             }
         }
@@ -83,7 +92,7 @@ impl fmt::Display for Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-fn io_err(what: &str, e: &io::Error) -> Error {
+pub(crate) fn io_err(what: &str, e: &io::Error) -> Error {
     let msg = format!("{what}: {e}");
     match e.raw_os_error() {
         Some(1 | 13 | 30) => Error::Denied(msg),

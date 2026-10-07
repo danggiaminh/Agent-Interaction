@@ -405,6 +405,12 @@ pub mod fake {
         owners: BTreeMap<String, Owner>,
         /// files the store may not write: a path ending with one of these fails with EACCES
         deny_puts: Vec<String>,
+        /// a rename to a path ending with one of these fails with EACCES
+        deny_renames: Vec<String>,
+        /// processes whose `/proc/PID/stat` fails to read, with the errno it fails with
+        stat_fails: BTreeMap<i32, i32>,
+        /// processes whose `/proc/PID/stat` reads, but is not a stat line
+        stat_garbled: BTreeSet<i32>,
     }
 
     /// What holds a lock of the table: one exclusive holder or any number of shared ones.
@@ -605,8 +611,12 @@ pub mod fake {
             if pid != self.me && !self.procs.contains_key(&pid) {
                 return Some(Err(errno(ENOENT)));
             }
+            if let Some(&code) = self.stat_fails.get(&pid).filter(|_| file == "stat") {
+                return Some(Err(errno(code)));
+            }
             Some(Ok(match file {
                 "cgroup" => self.cgroup_text(pid),
+                "stat" if self.stat_garbled.contains(&pid) => "no process here\n".to_string(),
                 "stat" => format!(
                     "{pid} (fake proc) S 1 {pid} {pid} 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 {} 0 0\n",
                     self.start_of(pid)
@@ -1092,9 +1102,35 @@ pub mod fake {
             self.s.borrow_mut().deny_puts.push(suffix.into());
         }
 
+        /// Every write of the store works again.
+        pub fn allow_puts(&self) {
+            self.s.borrow_mut().deny_puts.clear();
+        }
+
+        /// A rename to a path ending with `suffix` fails.
+        pub fn deny_renames_to(&self, suffix: &str) {
+            self.s.borrow_mut().deny_renames.push(suffix.into());
+        }
+
+        /// Reading `/proc/PID/stat` fails with the errno: EACCES for a process that lives but cannot be examined
+        /// (`hidepid`, a security module), ESRCH for one that ended while it was being read.
+        pub fn fail_stat_of(&self, pid: i32, code: i32) {
+            self.s.borrow_mut().stat_fails.insert(pid, code);
+        }
+
+        /// `/proc/PID/stat` of the process reads, but holds nothing a start time can be taken from.
+        pub fn garble_stat_of(&self, pid: i32) {
+            self.s.borrow_mut().stat_garbled.insert(pid);
+        }
+
         /// The content of a plain file, without any of the cgroup rules.
         pub fn file(&self, path: &str) -> Option<String> {
             self.s.borrow().files.get(path).cloned()
+        }
+
+        /// The names of the plain files directly in the directory, sorted.
+        pub fn files_of(&self, dir: &str) -> Vec<String> {
+            self.files(dir).unwrap_or_default()
         }
     }
 
@@ -1307,6 +1343,9 @@ pub mod fake {
 
         fn rename(&self, from: &str, to: &str) -> io::Result<()> {
             let mut s = self.s.borrow_mut();
+            if s.deny_renames.iter().any(|d| to.ends_with(d.as_str())) {
+                return Err(errno(EACCES));
+            }
             if !s.dirs.contains(parent(to)) || s.dirs.contains(to) {
                 return Err(errno(ENOENT));
             }
