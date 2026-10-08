@@ -411,6 +411,8 @@ pub mod fake {
         stat_fails: BTreeMap<i32, i32>,
         /// processes whose `/proc/PID/stat` reads, but is not a stat line
         stat_garbled: BTreeSet<i32>,
+        /// files that cannot be read, with the errno
+        read_fails: BTreeMap<String, i32>,
     }
 
     /// What holds a lock of the table: one exclusive holder or any number of shared ones.
@@ -1123,6 +1125,11 @@ pub mod fake {
             self.s.borrow_mut().stat_garbled.insert(pid);
         }
 
+        /// Reading the file fails with the errno (`/proc/self/cgroup` when the kernel hides where a process runs).
+        pub fn fail_read_of(&self, path: &str, code: i32) {
+            self.s.borrow_mut().read_fails.insert(path.into(), code);
+        }
+
         /// The content of a plain file, without any of the cgroup rules.
         pub fn file(&self, path: &str) -> Option<String> {
             self.s.borrow().files.get(path).cloned()
@@ -1137,6 +1144,9 @@ pub mod fake {
     impl Host for FakeHost {
         fn read(&self, path: &str) -> io::Result<String> {
             let s = self.s.borrow();
+            if let Some(&code) = s.read_fails.get(path) {
+                return Err(errno(code));
+            }
             if let Some(found) = path.strip_prefix("/proc/").and_then(|r| s.proc_file(r)) {
                 return found;
             }

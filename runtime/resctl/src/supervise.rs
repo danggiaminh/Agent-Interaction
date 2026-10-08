@@ -580,7 +580,7 @@ pub fn supervise(ctx: Ctx<'_>, job: &Job) -> Result<Outcome> {
     result
 }
 
-fn failed_err(w: &Workload, r: &Record) -> Error {
+pub(crate) fn failed_err(w: &Workload, r: &Record) -> Error {
     Error::Lifecycle(format!(
         "{w} failed ({}): `resctl reset {w}` first",
         r.reason

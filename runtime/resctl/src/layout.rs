@@ -90,6 +90,15 @@ impl Lifecycle {
             _ => Err(format!("`{s}` is not a lifecycle (auto v1 v2)")),
         }
     }
+
+    /// The word `parse` reads back: what a supervisor passes on to the helper processes it starts.
+    pub fn name(self) -> &'static str {
+        match self {
+            Lifecycle::Auto => "auto",
+            Lifecycle::V1 => "v1",
+            Lifecycle::V2 => "v2",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
