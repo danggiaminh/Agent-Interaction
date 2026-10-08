@@ -146,14 +146,23 @@ pub fn protect(
             "{pid} is not a process that can be protected"
         )));
     }
-    let name = name.map_or_else(|| format!("pid{pid}"), str::to_string);
-    if !valid_name(&name) {
+    if let Some(name) = name.filter(|n| !valid_name(n)) {
         return Err(Error::Usage(format!(
             "`{}` is not a usable name for a protected process (letters, digits, - and _; at most 32)",
-            tidy(&name)
+            tidy(name)
         )));
     }
     supervise::prelude(c, s)?;
+    // without a name, a process that is registered already keeps the one it has
+    let name = name.map_or_else(
+        || {
+            s.critical()
+                .ok()
+                .and_then(|r| r.live.into_iter().find(|e| e.pid == pid))
+                .map_or_else(|| format!("pid{pid}"), |e| e.name)
+        },
+        str::to_string,
+    );
     let moved = match c.placement(pid) {
         Ok(Placement::System) => false,
         Ok(Placement::Elsewhere) => {
@@ -603,6 +612,25 @@ mod tests {
             .iter()
             .any(|d| d == "901"));
         assert_eq!(s.critical().unwrap().live.len(), 1);
+    }
+
+    #[test]
+    fn protect_without_a_name_keeps_the_name_a_process_is_registered_under() {
+        rig!(h, c, s, ctx);
+        h.proc_in(906, &[SYSDOM]);
+        s.lock().unwrap().protect(906, "svc").unwrap();
+        let p = protect(&c, &s, None, 906).unwrap();
+        assert_eq!((p.name.as_str(), p.moved), ("svc", false));
+        // a name that is given replaces it
+        let p = protect(&c, &s, Some("db"), 906).unwrap();
+        assert_eq!(p.name, "db");
+        let live = s.critical().unwrap().live;
+        assert_eq!(
+            live.iter()
+                .map(|e| (e.pid, e.name.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(906, "db")]
+        );
     }
 
     #[test]

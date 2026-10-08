@@ -30,6 +30,8 @@ const KILL_MS: u64 = 10_000;
 const REMOVE_MS: u64 = 3_000;
 /// Rounds of the kill that signals one process at a time (used only around a critical process that cannot be moved out).
 const KILL_ROUNDS: u64 = 10;
+/// What follows "left alone, so" when a critical process cannot be moved out of a domain that is being killed or removed.
+const STAYS: &str = "the domain stays";
 
 #[derive(Debug)]
 pub enum Error {
@@ -942,8 +944,14 @@ impl<'a> Controller<'a> {
         }
     }
 
+    /// A frozen process serves nobody: a critical process inside the domain is moved out first, and one that cannot be
+    /// moved out keeps the domain from being frozen.
     pub fn freeze(&self, w: &Workload) -> Result<()> {
         let rel = self.require(w)?;
+        let stuck = self.shelter(&rel)?;
+        if !stuck.is_empty() {
+            return Err(self.stuck_error(&rel, &stuck, "the domain is not frozen"));
+        }
         self.set_frozen(&rel, true)
     }
 
@@ -1040,10 +1048,10 @@ impl<'a> Controller<'a> {
         Ok(out)
     }
 
-    fn stuck_error(&self, rel: &str, stuck: &[i32]) -> Error {
+    fn stuck_error(&self, rel: &str, stuck: &[i32], then: &str) -> Error {
         let list: Vec<String> = stuck.iter().map(i32::to_string).collect();
         Error::Refused(format!(
-            "{rel} holds critical process(es) {} that cannot be moved out: they are left alone, so the domain stays",
+            "{rel} holds critical process(es) {} that cannot be moved out: they are left alone, so {then}",
             list.join(",")
         ))
     }
@@ -1098,7 +1106,7 @@ impl<'a> Controller<'a> {
         let stuck = self.shelter(rel)?;
         if !stuck.is_empty() {
             self.kill_around(rel, &stuck)?;
-            return Err(self.stuck_error(rel, &stuck));
+            return Err(self.stuck_error(rel, &stuck, STAYS));
         }
         if self.pids(rel).is_empty() {
             return Ok(());
@@ -1152,7 +1160,7 @@ impl<'a> Controller<'a> {
             return if stuck.is_empty() {
                 Ok(Stopped::Empty)
             } else {
-                Err(self.stuck_error(&rel, &stuck))
+                Err(self.stuck_error(&rel, &stuck, STAYS))
             };
         }
         if self.is_frozen(&rel) {
@@ -1168,7 +1176,7 @@ impl<'a> Controller<'a> {
             return if stuck.is_empty() {
                 Ok(Stopped::Graceful)
             } else {
-                Err(self.stuck_error(&rel, &stuck))
+                Err(self.stuck_error(&rel, &stuck, STAYS))
             };
         }
         let left = self.others(&rel, &stuck).len();
@@ -2434,6 +2442,45 @@ grace = 1500ms
     }
 
     #[test]
+    fn a_critical_process_is_moved_out_before_its_domain_is_frozen_and_never_frozen_if_it_cannot_be(
+    ) {
+        for (h, flag) in both() {
+            let l = Layout::detect(&h, flag);
+            let a = holding_a_critical_process(&h, &l);
+            let shield = registry(&[11]);
+            let c = setup(&h, &l).with_critical(&shield);
+            c.freeze(&a).unwrap();
+            assert!(c.is_frozen(&a.rel()));
+            assert_eq!(c.placement(11).unwrap(), Placement::System);
+            assert_eq!(
+                c.take_rescues(),
+                vec![Rescue {
+                    pid: 11,
+                    from: a.rel(),
+                    moved: true
+                }]
+            );
+            c.thaw(&a).unwrap();
+            assert!(!c.is_frozen(&a.rel()));
+        }
+        for (h, flag) in both() {
+            let l = Layout::detect(&h, flag);
+            let a = holding_a_critical_process(&h, &l);
+            h.deny_writes_to("agent-interaction/system/cgroup.procs");
+            let shield = registry(&[11]);
+            let c = setup(&h, &l).with_critical(&shield);
+            let err = c.freeze(&a).unwrap_err();
+            assert!(
+                matches!(err, Error::Refused(ref m) if m.contains("11") && m.contains("not frozen")),
+                "{err}"
+            );
+            assert_eq!(err.code(), 2);
+            assert!(!c.is_frozen(&a.rel()), "the domain is not frozen");
+            assert!(h.alive(10) && h.alive(11) && h.alive(12));
+        }
+    }
+
+    #[test]
     fn attach_never_puts_a_critical_process_into_a_workload() {
         let h = v2_host();
         let l = Layout::detect(&h, Lifecycle::Auto);
@@ -2471,10 +2518,12 @@ grace = 1500ms
             c.kill(&a).unwrap_err(),
             c.stop(&a, 100).unwrap_err(),
             c.remove(&a).unwrap_err(),
+            c.freeze(&a).unwrap_err(),
             c.rescue_misplaced().unwrap_err(),
         ] {
             assert!(matches!(err, Error::State(_)), "{err}");
         }
+        assert!(!c.is_frozen(&a.rel()));
         assert!(h.alive(10) && h.alive(11) && h.alive(12), "nothing ended");
         assert!(h.signals().is_empty());
         assert!(c.exists(&a));
