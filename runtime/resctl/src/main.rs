@@ -850,6 +850,12 @@ fn dispatch(ctx: Ctx<'_>, cmd: Cmd) -> Result<Next> {
             )
             .and_then(|()| c.attach(&t, me()));
             ops::failed(s, Event::Enter, &subject, started)?;
+            if matches!(t, Target::System) {
+                // What starts in `system` is a critical service: registered, so that no kill reaches it wherever it is.
+                let name = ops::service_name(program(&argv), me());
+                let registered = ops::protect(c, s, Some(&name), me()).map(|_| ());
+                ops::failed(s, Event::Enter, &subject, registered)?;
+            }
             return Ok(Next::Become(argv, None));
         }
         Cmd::Supervise(workload, limits, mode, argv) => {

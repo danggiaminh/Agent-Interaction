@@ -185,6 +185,28 @@ pub fn unprotect(s: &Store<'_>, pid: i32) -> Result<bool> {
     s.lock()?.unprotect(pid)
 }
 
+/// The name under which a service started with `enter system` is registered: the file name of its program with every
+/// character the registry would refuse replaced, or the process id when nothing usable is left.
+pub fn service_name(program: &str, pid: i32) -> String {
+    let base = program.rsplit('/').next().unwrap_or(program);
+    let name: String = base
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .take(32)
+        .collect();
+    if valid_name(&name) {
+        name
+    } else {
+        format!("pid{pid}")
+    }
+}
+
 /// One line per registered critical process, by pid: its name, whether it still runs, where, and when it started.
 /// A registry that cannot be read is reported as one line.
 pub fn critical_lines(c: &Controller<'_>, s: &Store<'_>) -> Result<Vec<String>> {
@@ -983,6 +1005,20 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].subject, "protect");
         assert_eq!(lines[0].detail, "it is not allowed");
+    }
+
+    #[test]
+    fn a_service_is_registered_under_the_name_of_its_program() {
+        assert_eq!(service_name("/usr/sbin/sshd", 7), "sshd");
+        assert_eq!(service_name("sleep", 7), "sleep");
+        assert_eq!(service_name("/opt/my svc/a.b", 7), "a_b");
+        assert_eq!(service_name("-sh", 7), "pid7");
+        assert_eq!(service_name("", 7), "pid7");
+        assert_eq!(service_name("/usr/bin/", 7), "pid7");
+        assert_eq!(service_name(&"x".repeat(80), 7), "x".repeat(32));
+        for p in ["/a/b", "z", "-", "é.é", "a b c"] {
+            assert!(valid_name(&service_name(p, 9)), "{p}");
+        }
     }
 
     #[test]
