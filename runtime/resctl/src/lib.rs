@@ -9,3 +9,4 @@ pub mod layout;
 pub mod life;
 pub mod policy;
 pub mod store;
+pub mod supervise;

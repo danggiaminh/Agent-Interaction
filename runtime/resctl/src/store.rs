@@ -51,7 +51,7 @@ const WARNINGS_MAX: usize = 16;
 /// What reading `/proc/PID/stat` reports of a process that ended while it was being read.
 const ESRCH: i32 = 3;
 
-const RECORDS: &str = "records";
+pub const RECORDS: &str = "records";
 const LOCKS: &str = "locks";
 const QUARANTINE: &str = "quarantine";
 const AUDIT: &str = "audit.log";
@@ -287,6 +287,11 @@ pub struct Critical {
     pub stale: Vec<Entry>,
 }
 
+/// The path of the record of a workload in the state directory.
+pub fn record_rel(w: &Workload) -> String {
+    format!("{RECORDS}/{}.{}", w.class, w.id)
+}
+
 fn render_critical(entries: &[Entry]) -> String {
     let mut s = String::from("v=1\n");
     for e in entries {
@@ -449,7 +454,7 @@ impl<'a> Store<'a> {
     }
 
     fn record_path(&self, w: &Workload) -> String {
-        self.path(&format!("{RECORDS}/{}.{}", w.class, w.id))
+        self.path(&record_rel(w))
     }
 
     fn sup_path(&self, w: &Workload) -> String {
@@ -461,7 +466,8 @@ impl<'a> Store<'a> {
         self.warnings.take()
     }
 
-    fn warn_out(&self, msg: String) {
+    /// Note something that could not be done and did not stop the work; it is printed by the caller.
+    pub fn warn_out(&self, msg: String) {
         let mut w = self.warnings.borrow_mut();
         if w.len() < WARNINGS_MAX && !w.contains(&msg) {
             w.push(msg);
@@ -646,6 +652,15 @@ impl<'a> Store<'a> {
             Ok(None) => false,
             Err(_) => true,
         }
+    }
+
+    /// The registry entry of a process that runs now (`None` when it does not exist).
+    pub fn entry_for(&self, pid: i32, name: &str) -> Result<Option<Entry>> {
+        Ok(self.start_of(pid)?.map(|start| Entry {
+            pid,
+            start,
+            name: name.into(),
+        }))
     }
 
     /// The registry, checked against what runs now.
@@ -991,7 +1006,10 @@ impl Locked<'_, '_> {
     pub fn replace_critical(&self, mut entries: Vec<Entry>) -> Result<()> {
         entries.truncate(MAX_CRITICAL);
         entries.sort_by_key(|e| e.pid);
-        let detail = format!("{} processes", entries.len());
+        let detail = format!(
+            "registry rebuilt from {} process(es) of system",
+            entries.len()
+        );
         self.guarded(Audit::Optional, Event::Recover, "critical", &detail, || {
             self.put_registry(&entries)
         })

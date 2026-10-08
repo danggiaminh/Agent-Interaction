@@ -642,6 +642,12 @@ impl Policy {
                     .into(),
             );
         }
+        if p.run.uid.is_some() != p.run.gid.is_some() {
+            errors.push(
+                "[run] uid and gid go together: a workload that changes only its user keeps the groups of the supervisor"
+                    .into(),
+            );
+        }
         if errors.is_empty() {
             Ok(p)
         } else {
@@ -1022,6 +1028,8 @@ gid = 1001
             ("[run]\ngid = 4294967295\n", "not a numeric group id"),
             ("[run]\nuid = 0\n", "allow.root = yes"),
             ("[run]\ngid = 0\n", "allow.root = yes"),
+            ("[run]\nuid = 1000\n", "uid and gid go together"),
+            ("[run]\ngid = 1000\n", "uid and gid go together"),
             ("[run]\nallow.root = maybe\n", "yes or no"),
             ("[protect]\n", "cannot grant protected status"),
             ("[protected]\npid = 1\n", "cannot grant protected status"),
