@@ -341,6 +341,38 @@ fn parse_critical(text: &str) -> std::result::Result<Vec<Entry>, String> {
     Ok(out)
 }
 
+/// What a registry that does not read as a whole still says: every line that reads on its own as `PID START NAME`. A
+/// damaged line, a damaged header or a missing one costs that line and nothing else. Only the first `STATE_BYTES` are
+/// looked at. A pid listed twice is returned twice: which line is right is for the live process to say.
+fn salvage_critical(text: &str) -> Vec<Entry> {
+    let mut out = Vec::new();
+    let mut seen = 0;
+    for line in text.lines() {
+        seen += line.len() + 1;
+        if seen > STATE_BYTES {
+            break;
+        }
+        let f: Vec<&str> = line.split(' ').collect();
+        let [pid, start, name] = f[..] else {
+            continue;
+        };
+        let Some(pid) = pid.parse::<i32>().ok().filter(|&p| p >= 2) else {
+            continue;
+        };
+        let Ok(start) = start.parse::<u64>() else {
+            continue;
+        };
+        if valid_name(name) {
+            out.push(Entry {
+                pid,
+                start,
+                name: name.into(),
+            });
+        }
+    }
+    out
+}
+
 fn parse_starts(text: &str) -> std::result::Result<Vec<u64>, String> {
     if text.len() > STATE_BYTES {
         return Err(format!("larger than {STATE_BYTES} bytes"));
@@ -681,6 +713,25 @@ impl<'a> Store<'a> {
         Ok(self.critical()?.live.iter().map(|e| e.pid).collect())
     }
 
+    /// The processes a registry that is corrupt as a whole still names: the lines that read on their own, each checked
+    /// against what runs now. Nothing is guessed. A line that does not read, or a process that is not the one that was
+    /// registered, is left out; a process that cannot be examined stays in.
+    pub fn salvage(&self) -> Result<Vec<Entry>> {
+        let Some(text) = self.registry_text()? else {
+            return Ok(Vec::new());
+        };
+        let mut out: Vec<Entry> = Vec::new();
+        for e in salvage_critical(&text) {
+            if out.len() >= MAX_CRITICAL {
+                break;
+            }
+            if self.registered(&e) && out.iter().all(|k| k.pid != e.pid) {
+                out.push(e);
+            }
+        }
+        Ok(out)
+    }
+
     fn starts(&self) -> Vec<u64> {
         match self.host.read(&self.path(STARTS)) {
             Ok(t) => parse_starts(&t).unwrap_or_else(|why| {
@@ -1002,14 +1053,20 @@ impl Locked<'_, '_> {
         Ok(c.stale)
     }
 
-    /// Write the registry anew, from the processes that stand in the system domain: the repair of a corrupt one.
-    pub fn replace_critical(&self, mut entries: Vec<Entry>) -> Result<()> {
+    /// Write the registry anew: the repair of a corrupt one. `entries` holds the `salvaged` entries of the damaged
+    /// registry first, then the processes found in the system domain.
+    pub fn replace_critical(&self, mut entries: Vec<Entry>, salvaged: usize) -> Result<()> {
         entries.truncate(MAX_CRITICAL);
+        let salvaged = salvaged.min(entries.len());
+        let of_system = entries.len() - salvaged;
         entries.sort_by_key(|e| e.pid);
-        let detail = format!(
-            "registry rebuilt from {} process(es) of system",
-            entries.len()
-        );
+        let detail = if salvaged == 0 {
+            format!("registry rebuilt from {of_system} process(es) of system")
+        } else {
+            format!(
+                "registry rebuilt from {of_system} process(es) of system and {salvaged} salvaged entry(ies)"
+            )
+        };
         self.guarded(Audit::Optional, Event::Recover, "critical", &detail, || {
             self.put_registry(&entries)
         })
@@ -1871,18 +1928,21 @@ mod tests {
         let why = s.registry_corrupt().unwrap().unwrap();
         l.quarantine("critical", &why).unwrap();
         assert!(s.registry().unwrap().is_empty());
-        l.replace_critical(vec![
-            Entry {
-                pid: 100,
-                start: 1100,
-                name: "system".into(),
-            },
-            Entry {
-                pid: 5,
-                start: 1005,
-                name: "system".into(),
-            },
-        ])
+        l.replace_critical(
+            vec![
+                Entry {
+                    pid: 100,
+                    start: 1100,
+                    name: "system".into(),
+                },
+                Entry {
+                    pid: 5,
+                    start: 1005,
+                    name: "system".into(),
+                },
+            ],
+            0,
+        )
         .unwrap();
         assert!(s.registry_corrupt().unwrap().is_none());
         assert_eq!(
@@ -1897,6 +1957,128 @@ mod tests {
             .files_of(&format!("{DIR}/quarantine"))
             .iter()
             .any(|n| n.starts_with("critical.")));
+    }
+
+    #[test]
+    fn a_registry_damaged_in_part_still_names_what_reads() {
+        let pids = |text: &str| {
+            salvage_critical(text)
+                .iter()
+                .map(|e| e.pid)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(pids("v=1\n100 5 a\nnonsense\n101 6 b\n"), [100, 101]);
+        assert_eq!(pids("100 5 a\n101 6 b\n"), [100, 101], "no header");
+        assert_eq!(pids("v=2\n100 5 a\n"), [100], "another header");
+        assert_eq!(pids("v=1\n100 5 a\n100 6 b\n"), [100, 100], "listed twice");
+        assert!(pids("garbage").is_empty());
+        assert!(pids("").is_empty());
+        for line in [
+            "1 5 init",
+            "0 5 init",
+            "-4 5 init",
+            "x 5 a",
+            "100 x a",
+            "100 -5 a",
+            "100 5 -a",
+            "100 5 a b",
+            "100 5",
+            "100  5 a",
+            "100 5 a/b",
+        ] {
+            assert!(pids(&format!("v=1\n{line}\n")).is_empty(), "{line:?}");
+        }
+        let late = format!("v=1\n{}100 5 late\n", "x\n".repeat(STATE_BYTES));
+        assert!(pids(&late).is_empty(), "only the first {STATE_BYTES} bytes");
+        let e = &salvage_critical("v=1\n100 5 a\n")[0];
+        assert_eq!((e.pid, e.start, e.name.as_str()), (100, 5, "a"));
+    }
+
+    #[test]
+    fn salvage_keeps_only_the_processes_that_are_still_the_registered_ones() {
+        let h = world();
+        let s = open(&h);
+        let reg = format!("{DIR}/critical");
+        assert!(s.salvage().unwrap().is_empty(), "no registry");
+        for pid in [100, 101, 102, 103, 104, 105] {
+            h.proc_in(pid, &[]);
+        }
+        h.reuse_pid(101);
+        h.exit_proc(102);
+        h.fail_stat_of(105, 13);
+        h.set(
+            &reg,
+            "v=1\n100 1100 a\n101 1101 b\n102 1102 c\n103 9999 d\nbroken\n103 1103 e\n104 1104 f\n105 1105 g\n100 1100 a\n",
+        );
+        let kept = s
+            .salvage()
+            .unwrap()
+            .iter()
+            .map(|e| (e.pid, e.name.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kept,
+            [
+                (100, "a".to_string()),
+                (103, "e".to_string()),
+                (104, "f".to_string()),
+                (105, "g".to_string()),
+            ],
+            "a reused pid, a gone one and a wrong start time are left out; an unexaminable one stays"
+        );
+        h.set(&reg, "garbage");
+        assert!(s.salvage().unwrap().is_empty());
+        let many: String = (200..270)
+            .map(|p| format!("{p} {} s\n", 1000 + p))
+            .collect();
+        assert!(many.len() < STATE_BYTES);
+        for p in 200..270 {
+            h.proc_in(p, &[]);
+        }
+        h.set(&reg, &format!("v=1\n{many}"));
+        assert!(s.registry_corrupt().unwrap().is_some());
+        assert_eq!(s.salvage().unwrap().len(), MAX_CRITICAL);
+    }
+
+    #[test]
+    fn a_rebuilt_registry_says_how_many_entries_were_salvaged() {
+        let h = world();
+        let s = open(&h);
+        let entry = |pid: i32| Entry {
+            pid,
+            start: 1000 + pid as u64,
+            name: "x".into(),
+        };
+        for pid in [100, 101, 102] {
+            h.proc_in(pid, &[]);
+        }
+        let l = s.lock().unwrap();
+        l.replace_critical(vec![entry(102), entry(100), entry(101)], 0)
+            .unwrap();
+        l.replace_critical(vec![entry(102), entry(100), entry(101)], 2)
+            .unwrap();
+        l.replace_critical(vec![entry(102), entry(100)], 9).unwrap();
+        let pids = |s: &Store<'_>| {
+            s.registry()
+                .unwrap()
+                .iter()
+                .map(|e| e.pid)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(pids(&s), [100, 102], "sorted by pid");
+        let said: Vec<String> = lines(&s)
+            .into_iter()
+            .filter(|l| l.event == Event::Recover && l.subject == "critical")
+            .map(|l| l.detail)
+            .collect();
+        assert_eq!(
+            said,
+            [
+                "registry rebuilt from 3 process(es) of system",
+                "registry rebuilt from 1 process(es) of system and 2 salvaged entry(ies)",
+                "registry rebuilt from 0 process(es) of system and 2 salvaged entry(ies)",
+            ]
+        );
     }
 
     #[test]

@@ -459,8 +459,10 @@ pub fn flush_rescues(c: &Controller<'_>, s: &Store<'_>) {
     }
 }
 
-/// An unreadable registry of critical processes is set aside and rebuilt from what runs in `system`: everything there is
-/// critical by placement. Without it every kill would be refused. Whether it was rebuilt.
+/// An unreadable registry of critical processes is set aside and rebuilt: first from the lines of it that still read and
+/// still name the process that was registered (a critical process that was moved into a workload domain is known by the
+/// registry alone, and losing it would cost that process), then from what runs in `system`, where everything is critical
+/// by placement. Without it every kill would be refused. Whether it was rebuilt.
 pub fn heal(c: &Controller<'_>, s: &Store<'_>) -> Result<bool> {
     if s.registry_corrupt()?.is_none() {
         return Ok(false);
@@ -469,10 +471,11 @@ pub fn heal(c: &Controller<'_>, s: &Store<'_>) -> Result<bool> {
     let Some(why) = lock.registry_corrupt()? else {
         return Ok(false);
     };
+    let mut entries = lock.salvage()?;
+    let salvaged = entries.len();
     lock.quarantine("critical", &why)?;
-    let mut entries = Vec::new();
     for pid in c.pids(SYSTEM) {
-        if pid < 2 {
+        if pid < 2 || entries.iter().any(|e| e.pid == pid) {
             continue;
         }
         match lock.entry_for(pid, &format!("pid{pid}")) {
@@ -481,7 +484,7 @@ pub fn heal(c: &Controller<'_>, s: &Store<'_>) -> Result<bool> {
             Err(e) => lock.warn_out(format!("pid {pid} of system is not registered: {e}")),
         }
     }
-    lock.replace_critical(entries)?;
+    lock.replace_critical(entries, salvaged)?;
     Ok(true)
 }
 
@@ -2962,6 +2965,99 @@ mod tests {
         c.kill(&w("batch/a")).unwrap();
         assert!(!h.alive(310));
         assert!(h.alive(900) && h.alive(901));
+        let _ = ctx;
+    }
+
+    #[test]
+    fn a_damaged_registry_keeps_the_critical_process_that_was_moved_into_a_workload() {
+        rig!(h, c, s, p, op, ctx, standard());
+        critical(&h, &s, 900);
+        critical(&h, &s, 902);
+        c.create(&w("batch/a"), &Limits::default()).unwrap();
+        h.proc_in(902, &[dom("a").as_str()]);
+        h.proc_in(310, &[dom("a").as_str()]);
+        h.set(
+            &format!("{DIR}/critical"),
+            "v=1\n900 1900 svc\nthis line is damaged\n902 1902 svc\n",
+        );
+        let r = c.kill(&w("batch/a"));
+        assert!(matches!(r, Err(Error::State(_))), "{r:?}");
+        assert!(h.alive(310) && h.alive(900) && h.alive(902));
+
+        assert!(prelude(&c, &s).unwrap());
+        assert!(h.procs_of(SYSDOM).contains(&902), "moved back to system");
+        assert_eq!(h.procs_of(&dom("a")), vec![310]);
+        let mut known = s.critical_pids().unwrap();
+        known.sort();
+        assert_eq!(known, vec![900, 902]);
+        assert_eq!(
+            details(&s, Event::Recover),
+            vec![
+                "registry rebuilt from 0 process(es) of system and 2 salvaged entry(ies)"
+                    .to_string()
+            ]
+        );
+        c.kill(&w("batch/a")).unwrap();
+        assert!(!h.alive(310));
+        assert!(h.alive(900) && !signalled(&h, 900));
+        assert!(h.alive(902) && !signalled(&h, 902));
+        let _ = ctx;
+    }
+
+    #[test]
+    fn a_rebuilt_registry_adds_what_runs_in_system_to_what_it_salvaged() {
+        rig!(h, c, s, p, op, ctx, standard());
+        critical(&h, &s, 900);
+        h.proc_in(901, &[SYSDOM]);
+        c.create(&w("batch/a"), &Limits::default()).unwrap();
+        h.proc_in(900, &[dom("a").as_str()]);
+        h.proc_in(310, &[dom("a").as_str()]);
+        h.set(
+            &format!("{DIR}/critical"),
+            "v=1\n900 1900 svc\n902 1902 gone\nnonsense\n",
+        );
+        assert!(prelude(&c, &s).unwrap());
+        let mut known = s.critical_pids().unwrap();
+        known.sort();
+        assert_eq!(known, vec![900, 901], "902 does not run, so it is left out");
+        assert_eq!(
+            details(&s, Event::Recover),
+            vec![
+                "registry rebuilt from 1 process(es) of system and 1 salvaged entry(ies)"
+                    .to_string()
+            ]
+        );
+        let names: Vec<String> = s
+            .registry()
+            .unwrap()
+            .iter()
+            .map(|e| format!("{}={}", e.pid, e.name))
+            .collect();
+        assert_eq!(names, ["900=svc", "901=pid901"]);
+        c.kill(&w("batch/a")).unwrap();
+        assert!(!h.alive(310));
+        assert!(h.alive(900) && h.alive(901) && !signalled(&h, 900) && !signalled(&h, 901));
+        assert!(h.procs_of(SYSDOM).contains(&900));
+        let _ = ctx;
+    }
+
+    #[test]
+    fn a_pid_that_was_reused_is_not_kept_critical_by_a_damaged_registry() {
+        rig!(h, c, s, p, op, ctx, standard());
+        critical(&h, &s, 900);
+        c.create(&w("batch/a"), &Limits::default()).unwrap();
+        h.reuse_pid(900);
+        h.proc_in(900, &[dom("a").as_str()]);
+        h.set(&format!("{DIR}/critical"), "v=1\n900 1900 svc\nnonsense\n");
+        assert!(prelude(&c, &s).unwrap());
+        assert!(s.critical_pids().unwrap().is_empty());
+        assert_eq!(
+            details(&s, Event::Recover),
+            vec!["registry rebuilt from 0 process(es) of system".to_string()]
+        );
+        // The process now using the pid is an ordinary one of the workload.
+        c.kill(&w("batch/a")).unwrap();
+        assert!(!h.alive(900));
         let _ = ctx;
     }
 
