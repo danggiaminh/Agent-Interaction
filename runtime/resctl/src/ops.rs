@@ -230,6 +230,36 @@ pub struct Ended {
     pub phase: Option<Phase>,
 }
 
+/// Records why a command did not succeed and hands the result back: a request that the lifecycle or the protection
+/// turns down is a refusal, anything else that goes wrong is a failure of the command on `subject`. A mistake in the
+/// command itself is for its sender only, and is not recorded. Never called while the store is locked.
+pub fn failed<T>(s: &Store<'_>, event: Event, subject: &str, result: Result<T>) -> Result<T> {
+    if let Err(e) = &result {
+        match e {
+            Error::Usage(_) => {}
+            Error::Refused(_) | Error::Lifecycle(_) => refused(s, event.name(), e),
+            _ => note(
+                s,
+                event,
+                subject,
+                &format!("failed: {}", tidy(&e.to_string())),
+            ),
+        }
+    }
+    result
+}
+
+/// Asks that a workload be ended (see `supervise::terminate`) for the command `event`, and records the request when it
+/// is refused or fails.
+fn ask(ctx: Ctx<'_>, w: &Workload, intent: Intent, event: Event) -> Result<Terminated> {
+    failed(
+        ctx.s,
+        event,
+        &w.to_string(),
+        supervise::terminate(ctx, w, intent),
+    )
+}
+
 /// Ends a workload on request. A supervised workload is asked through its record (its supervisor, or the sweep of a
 /// supervisor that is gone, does the rest); a workload nothing supervises, or what a failed one left behind, is
 /// ended by hand. A grace period is only meaningful for the second kind: the supervisor uses the one of the policy.
@@ -242,7 +272,7 @@ pub fn end(ctx: Ctx<'_>, w: &Workload, intent: Intent, grace: Option<u64>) -> Re
             "{w} is supervised: it is stopped with the grace period of the policy, not with --grace"
         )));
     }
-    match supervise::terminate(ctx, w, intent)? {
+    match ask(ctx, w, intent, event_of(intent))? {
         Terminated::Unmanaged => by_hand(ctx, w, intent, grace, None),
         Terminated::Already(p) => {
             if ctx.c.exists(w) {
@@ -310,7 +340,7 @@ fn by_hand(
 /// lifecycle record, which is the history of the workload, stays until `reset` or `teardown`. The phase of the
 /// record, for a workload that has one.
 pub fn remove(ctx: Ctx<'_>, w: &Workload) -> Result<Option<Phase>> {
-    let phase = match supervise::terminate(ctx, w, Intent::Kill)? {
+    let phase = match ask(ctx, w, Intent::Kill, Event::Remove)? {
         Terminated::Unmanaged => None,
         Terminated::Already(p) | Terminated::Supervised(p) | Terminated::Swept(p) => Some(p),
     };
@@ -734,6 +764,36 @@ mod tests {
             "{}",
             kills[0].detail
         );
+    }
+
+    #[test]
+    fn an_end_the_lifecycle_turns_down_is_recorded_as_a_refusal() {
+        rig!(h, c, s, ctx);
+        let starting = w("batch/s");
+        let held = {
+            let lock = s.lock().unwrap();
+            lock.claim(&starting).unwrap().unwrap()
+        };
+        let e = end(ctx, &starting, Intent::Stop, None).unwrap_err();
+        assert!(
+            matches!(&e, Error::Lifecycle(m) if m.contains("try again")),
+            "{e}"
+        );
+        assert_eq!(e.code(), 2);
+        let e = remove(ctx, &starting).unwrap_err();
+        assert_eq!(e.code(), 2, "{e}");
+        let refusals = lines_of(&s, Event::Refuse);
+        let subjects: Vec<&str> = refusals.iter().map(|l| l.subject.as_str()).collect();
+        assert_eq!(subjects, vec!["stop", "remove"]);
+        assert!(
+            refusals.iter().all(|l| l.detail.contains("batch/s")),
+            "{refusals:?}"
+        );
+        assert!(lines_of(&s, Event::Stop).is_empty());
+        assert!(lines_of(&s, Event::Remove).is_empty());
+        drop(held);
+        assert!(end(ctx, &starting, Intent::Stop, None).is_err());
+        assert_eq!(lines_of(&s, Event::Refuse).len(), 2);
     }
 
     #[test]
