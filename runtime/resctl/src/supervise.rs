@@ -31,6 +31,10 @@ const REAP_MS: u64 = 5_000;
 const FINISH_MS: u64 = 20_000;
 /// The longest sleep between two looks at the state: a request is seen within this time.
 const SLICE_MS: u64 = 200;
+/// How long an operator leaves a kill to the supervisor of a workload that is watching its run, before it does it itself.
+const TAKE_MS: u64 = 500;
+/// How often it looks at that supervisor meanwhile.
+const TAKE_POLL_MS: u64 = 10;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The processes of this supervisor.
@@ -1059,15 +1063,40 @@ fn plan(ctx: Ctx<'_>, w: &Workload, intent: Intent) -> Result<Plan> {
     }
 }
 
+/// A kill is the supervisor's to carry out, as the `killing` phase of the workload that the audit trail shows. A supervisor
+/// that is watching its run (`starting`, `running`) is given a moment to notice the request before the operator does it
+/// from here; one in any other phase, or one that does not answer, is not waited for longer than `TAKE_MS`.
+fn let_supervisor_kill(ctx: Ctx<'_>, w: &Workload) {
+    let mut waited = 0;
+    while waited < TAKE_MS {
+        let watching = matches!(
+            ctx.s.peek(w),
+            Ok(Stored::Record(r)) if matches!(r.phase, Phase::Starting | Phase::Running)
+        );
+        if !watching || !matches!(ctx.s.sup_state(w), Ok(Sup::Alive)) {
+            return;
+        }
+        ctx.host.pause(TAKE_POLL_MS);
+        waited += TAKE_POLL_MS;
+    }
+}
+
 /// Wait for the supervisor of `w` to finish what it was asked. `Some`: the final phase. `None`: its record is not final
 /// (the supervisor died on the way).
 fn wait_for(ctx: Ctx<'_>, w: &Workload, intent: Intent) -> Result<Option<Phase>> {
-    if intent == Intent::Kill && ctx.c.exists(w) {
-        // The request is recorded already: the supervisor sees it, and labels the end as asked for.
-        if let Err(e) = ctx.c.kill(w) {
-            ctx.s.warn_out(format!("{w}: the kill failed: {e}"));
+    if intent == Intent::Kill {
+        // The request is recorded already: the supervisor sees it, and labels the end as asked for. What it has not done
+        // when its moment is over, and a stop that is turned into a kill, is done from here; a kill is no use twice.
+        let_supervisor_kill(ctx, w);
+        if ctx.c.exists(w) {
+            if let Err(e) = ctx.c.kill(w) {
+                // A supervisor that was quicker has removed the domain: there is nothing left to kill.
+                if ctx.c.exists(w) {
+                    ctx.s.warn_out(format!("{w}: the kill failed: {e}"));
+                }
+            }
+            flush_rescues(ctx.c, ctx.s);
         }
-        flush_rescues(ctx.c, ctx.s);
     }
     let grace = if intent == Intent::Stop {
         ctx.c.policy().stop_grace_ms
@@ -3551,7 +3580,7 @@ mod tests {
         assert!(h.signals().is_empty(), "{:?}", h.signals());
         assert_eq!(record(&s, "a").intent, Some(Intent::Stop));
 
-        // A kill is done at once from here, and the supervisor is waited for.
+        // A kill is left to the supervisor for a moment, then done from here, and the supervisor is waited for.
         let r = terminate(op, &w("batch/b"), Intent::Kill);
         assert!(
             matches!(&r, Err(Error::Timeout(m)) if m.contains("batch/b: the kill was asked") && m.contains("within 20s")),
@@ -3569,6 +3598,44 @@ mod tests {
         assert!(h.alive(330) && h.dir_exists(&dom("k")));
         assert_eq!(record(&s, "k").intent, None);
         assert!(h.alive(900) && !signalled(&h, 900));
+        let _ = ctx;
+    }
+
+    #[test]
+    fn a_kill_is_left_to_a_supervisor_that_is_watching_its_run_for_a_moment_only() {
+        rig!(h, c, s, p, op, ctx, standard());
+        let _a = orphan(&h, &c, &s, "a", &[300, 301], true);
+        let _b = orphan(&h, &c, &s, "b", &[310], true);
+        // `b` is already being ended by its supervisor: there is nothing to leave to it.
+        {
+            let mut rec = record(&s, "b");
+            rec.advance(Phase::Stopping, 1_700_000_001).unwrap();
+            let lock = s.lock().unwrap();
+            lock.commit(
+                &mut rec,
+                Audit::Optional,
+                Event::Stop,
+                "phase=stopping gen=1 an operator asked for it",
+            )
+            .unwrap();
+        }
+
+        let t0 = h.clock();
+        let r = terminate(op, &w("batch/a"), Intent::Kill);
+        assert!(matches!(&r, Err(Error::Timeout(_))), "{r:?}");
+        let watched = h.clock() - t0;
+        // The supervisor was given its moment, and nothing more than that: then the processes were killed from here.
+        assert!(watched >= FINISH_MS + TAKE_MS, "{watched}");
+        assert!(watched < FINISH_MS + TAKE_MS + 1_000, "{watched}");
+        assert!(!h.alive(300) && !h.alive(301));
+
+        let t0 = h.clock();
+        let r = terminate(op, &w("batch/b"), Intent::Kill);
+        assert!(matches!(&r, Err(Error::Timeout(_))), "{r:?}");
+        let ending = h.clock() - t0;
+        assert!(ending < FINISH_MS + TAKE_MS, "{ending}");
+        assert!(!h.alive(310));
+        assert_eq!(record(&s, "b").intent, Some(Intent::Kill));
         let _ = ctx;
     }
 
