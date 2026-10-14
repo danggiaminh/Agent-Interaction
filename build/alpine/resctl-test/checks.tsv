@@ -5,8 +5,8 @@
 #   unpriv  u_  the unprivileged session (a user namespace: no cgroup hierarchy, builds and tests the crate)
 #   host    h_  the real root of this host, lifecycle auto (limits through the hierarchy that has the controller)
 #   hostv1  v_  the same host with the cgroup v1 freezer forced as the lifecycle backend; it runs only the sections that
-#               depend on that backend (layout normal isolation terminate recover lifecycle): the limits, throttle and
-#               pressure rows read the same v1 resource hierarchies as host, and pressure has no v1 source at all
+#               depend on that backend (layout normal isolation terminate recover process critical lifecycle): the limits,
+#               throttle and pressure rows read the same v1 resource hierarchies as host, and pressure has no v1 source at all
 #   guest   g_  the cgroup v2 test bed guest (cgroup_no_v1=all): the layout the host cannot offer
 #   bed         the facts of the guest session itself (QEMU, boot): no prefix
 # A fact may be covered once per environment; every fact an environment reports must be covered, and every row must
@@ -18,9 +18,10 @@
 # ---- build: the crate builds clean and its unit tests pass inside the session
 fmt	build	platform	unpriv	fmt	ok	cargo fmt --check
 clippy	build	platform	unpriv	clippy	ok	cargo clippy --all-targets -D warnings
-unit	build	platform	unpriv	unit	~^ok [5-9][0-9] tests$|^ok [1-9][0-9]{2,} tests$	the unit tests of the crate pass (at least 50 of them ran)
+unit	build	platform	unpriv	unit	~^ok (2[5-9][0-9]|[3-9][0-9]{2}|[1-9][0-9]{3,}) tests$	the unit tests of the crate pass (at least 250 of them ran)
 release	build	platform	unpriv	release	~^ok [0-9]+ bytes$	the release binary builds
 deps	build	platform	unpriv	deps	ok	the crate has no dependency to fetch or audit
+no_unsafe	build	platform	unpriv	no_unsafe	ok	the crate contains no unsafe code: both crate roots forbid it and no source line uses the keyword
 # ---- layout: what resctl sees, against what the mounts and the controller lists say
 layout	layout	platform	unpriv,host,hostv1,guest	layout	ok	resctl's reading of the cgroup layout equals the one of the mounts (unprivileged: none)
 no_hierarchy	layout	platform	unpriv	no_hierarchy	ok	no cgroup hierarchy exists in the unprivileged session
@@ -57,6 +58,8 @@ swap_accounting	layout	memory	host,hostv1,guest	swap_accounting	~^(yes|no)( |$)	
 policy	normal	policy	unpriv	policy	ok	the built-in policy binds to the machine
 policy_file	normal	policy	unpriv	policy_file	ok	--policy FILE replaces the built-in policy
 help	normal	policy	unpriv	help	ok	help lists every command
+restart_bounds	normal	policy	unpriv	restart_bounds	ok	the restart policy has hard caps and floors that a policy file cannot widen: a value beyond them is refused
+run_policy	normal	policy	unpriv	run_policy	ok	supervised workloads run as an unprivileged user by default; root, or half an identity, is refused unless said outright
 init	normal	protection	host,hostv1,guest	init	ok	system, workload and the classes exist in every serving hierarchy; init is idempotent
 init_limits	normal	memory	host,hostv1,guest	init_limits	ok	the aggregate and class ceilings of memory and process count are in place
 init_weights	normal	cpu	host,hostv1,guest	init_weights	ok	the CPU weights of system and of the classes are in place
@@ -88,9 +91,14 @@ aggregate_ceiling	isolation	memory	host,hostv1,guest	aggregate_ceiling	ok	the wo
 fork_bomb_isolated	isolation	processes	host,hostv1,guest	fork_bomb_isolated	ok	a fork bomb is bounded and a system job keeps starting processes meanwhile
 system_canary	isolation	protection	host,hostv1,guest	system_canary	ok	a process in the system domain survives the workload stress
 policy_refused	isolation	policy	unpriv	policy_refused	ok	a policy whose class ceiling is above the workload ceiling is refused
-init_denied	isolation	protection	unpriv	init_denied	deny:^resctl: unsupported: memory limits: no hierarchy carries the memory controller	creating the domains is refused where there is no hierarchy
-run_denied	isolation	protection	unpriv	run_denied	deny:^resctl: unsupported: .* does not exist	starting a workload is refused where there is no hierarchy
-enter_denied	isolation	protection	unpriv	enter_denied	deny:^resctl: unsupported: .* does not exist	entering the system domain is refused where there is no hierarchy
+init_denied	isolation	protection	unpriv	init_denied	deny:^resctl: unsupported: init: this machine has no cgroup hierarchy to hold it$	creating the domains is refused where there is no hierarchy, and no state directory is created
+run_denied	isolation	protection	unpriv	run_denied	deny:^resctl: unsupported: run: this machine has no cgroup hierarchy to hold it$	starting a workload is refused where there is no hierarchy, and nothing is started or created
+enter_denied	isolation	protection	unpriv	enter_denied	deny:^resctl: unsupported: enter: this machine has no cgroup hierarchy to hold it$	entering the system domain is refused where there is no hierarchy, and nothing is registered
+supervise_denied	isolation	protection	unpriv	supervise_denied	deny:^resctl: unsupported: supervise: this machine has no cgroup hierarchy to hold it$	supervising a workload is refused where there is no hierarchy, and nothing is started or recorded
+protect_denied	isolation	protection	unpriv	protect_denied	deny:^resctl: unsupported: protect: this machine has no cgroup hierarchy to hold it$	registering a critical process is refused where there is no hierarchy to protect it in
+mutating_denied	isolation	protection	unpriv	mutating_denied	ok	every other command that changes a workload, a domain or the registry is refused with 3 and creates no state
+read_only	isolation	lifecycle	unpriv	read_only	ok	the commands that only read work without a hierarchy and create nothing
+policy_protection	isolation	policy	unpriv	policy_protection	ok	a policy cannot grant protected status: every section and key that names it is refused, nothing is bound
 # ---- termination
 freeze_thaw	terminate	lifecycle	host,hostv1,guest	freeze_thaw	ok	a frozen workload gets no CPU time; thawed it runs again
 stop_graceful	terminate	lifecycle	host,hostv1,guest	stop_graceful	ok	stop sends TERM and the workload ends within the grace period
@@ -113,6 +121,51 @@ teardown_keeps_system	recover	protection	host,hostv1,guest	teardown_keeps_system
 teardown_clean	recover	lifecycle	host,hostv1,guest	teardown_clean	ok	teardown removes everything when the system domain is empty
 reinit_after_teardown	recover	lifecycle	host,hostv1,guest	reinit_after_teardown	ok	init and run work after a teardown
 system_canary_reinit	recover	protection	host,hostv1,guest	system_canary_reinit	ok	a process in the system domain survives a teardown and a re-init
+# ---- process lifecycle: supervision, restart, termination and recovery with explicit states
+proc_run	process	lifecycle	host,hostv1,guest	proc_run	ok	a supervised workload runs in its own domain under a live supervisor: phase running, generation 1, no restart
+proc_stop	process	lifecycle	host,hostv1,guest	proc_stop	ok	a requested stop is audited as intent, stop, exit and stopped in that order and ends requested:stop
+proc_exit_clean	process	lifecycle	host,hostv1,guest	proc_exit_clean	ok	a command that exits 0 ends finished (clean) without a restart and leaves no domain
+proc_exit_labels	process	lifecycle	host,hostv1,guest	proc_exit_labels	ok	an exit code, a signal nobody asked for and a clean exit get three different end labels
+proc_unexpected	process	lifecycle	host,hostv1,guest	proc_unexpected	ok	a signal from an outsider is crashed and restarted; the same signal after a stop is requested
+proc_crash_loop	process	lifecycle	host,hostv1,guest	proc_crash_loop	ok	a crash loop is paced by the back-off and stopped by the restart limit: failed, not restarted again
+proc_reset_recover	process	lifecycle	host,hostv1,guest	proc_reset_recover	ok	a failed workload is refused until an operator resets it, then runs again from generation 1
+proc_restart_always	process	lifecycle	host,hostv1,guest	proc_restart_always	ok	--restart always is bounded by the restart limit too
+proc_restart_total	process	lifecycle	host,hostv1,guest	proc_restart_total	ok	the total restart limit stops a slow crash loop the window never fills
+proc_start_rate	process	processes	host,hostv1,guest	proc_start_rate	ok	the start rate limit refuses the start that would exceed it, with no record and no domain
+proc_supervise_cap	process	processes	host,hostv1,guest	proc_supervise_cap	ok	the cap on supervised workloads refuses the next one, with no record and no domain
+proc_forced_kill	process	processes	host,hostv1,guest	proc_forced_kill	ok	a kill ends every process of the domain at once, setsid'd ones included, without a restart
+proc_stop_forced	process	processes	host,hostv1,guest	proc_stop_forced	ok	a stop that the workload ignores is forced after the grace period of the policy
+proc_grace_policy	process	policy	host,hostv1,guest	proc_grace_policy	ok	stop --grace is refused for a supervised workload: the grace period is the policy's
+proc_stop_backoff	process	lifecycle	host,hostv1,guest	proc_stop_backoff	ok	a stop during a restart back-off ends the workload at once
+proc_orphans	process	processes	host,hostv1,guest	proc_orphans	ok	background and setsid'd processes of an ended main process are swept, after a failure and after a clean exit
+proc_launch_failure	process	lifecycle	host,hostv1,guest	proc_launch_failure	ok	a command that cannot start leaves no domain and no record; supervised it is retried within the limit
+proc_lost_reaper	process	lifecycle	host,hostv1,guest	proc_lost_reaper	ok	a supervisor that was killed is replaced by its reaper, which sweeps the workload and records it lost
+proc_lost_recover	process	lifecycle	host,hostv1,guest	proc_lost_recover	ok	recover sweeps a workload whose supervisor and reaper are both gone
+proc_corrupt_record	process	lifecycle	host,hostv1,guest	proc_corrupt_record	ok	an unreadable lifecycle record is listed corrupt and quarantined, never trusted
+proc_isolation	process	protection	host,hostv1,guest	proc_isolation	ok	a kill and a crash loop of batch workloads leave an interactive workload running untouched
+proc_oom_crash	process	memory	host,hostv1,guest	proc_oom_crash	ok	an out-of-memory kill is told from an operator kill: crashed with oom=yes
+proc_cleanup	process	lifecycle	host,hostv1,guest	proc_cleanup	ok	after all of it no workload, domain, supervisor or process is left and every record is terminal
+proc_audit	process	lifecycle	host,hostv1,guest	proc_audit	ok	the audit trail has no gap, is well formed, in order, and every phase change is one the lifecycle allows
+proc_phases	process	lifecycle	host,hostv1,guest	proc_phases	ok	every lifecycle phase was entered and audited
+system_canary_process	process	protection	host,hostv1,guest	system_canary_process	ok	a process in the system domain survives every lifecycle scenario
+# ---- critical processes: placement, registry, protection and survival
+crit_register	critical	protection	host,hostv1,guest	crit_register	ok	a service entered into system is registered as a critical process: placed in system, listed live, audited
+crit_protect	critical	protection	host,hostv1,guest	crit_protect	ok	protect moves a process resctl did not start into system and registers it; a protect again keeps the name
+crit_terminate	critical	protection	host,hostv1,guest	crit_terminate	ok	stop, kill and remove of supervised and unmanaged workloads, forced stop included, leave critical processes alone
+crit_crash	critical	protection	host,hostv1,guest	crit_crash	ok	a crash loop, an outsider's SIGKILL, an out-of-memory kill and a fork bomb leave critical processes alone
+crit_misplaced	critical	protection	host,hostv1,guest	crit_misplaced	ok	a critical process found in a workload domain is moved back into system before that domain is ended
+crit_freeze	critical	protection	host,hostv1,guest	crit_freeze	ok	a freeze moves a critical process out of the domain first and never freezes it
+crit_no_request	critical	protection	host,hostv1,guest	crit_no_request	ok	every request that changes a workload or the registry is refused inside a workload and changes nothing
+crit_no_obtain	critical	protection	host,hostv1,guest	crit_no_obtain	ok	no process of a workload can become protected, not even by the operator's own request
+crit_policy	critical	policy	host,hostv1,guest	crit_policy	ok	a policy cannot grant protected status: the sections and keys that name it are refused
+crit_uid_drop	critical	protection	host,hostv1,guest	crit_uid_drop	ok	a workload that runs as nobody cannot reach the system domain, the registry or the state directory
+crit_registry	critical	protection	host,hostv1,guest	crit_registry	ok	an unreadable registry is quarantined and rebuilt before a kill, and its readable lines are kept
+crit_stale	critical	protection	host,hostv1,guest	crit_stale	ok	a registered process that is gone is listed stale and dropped by recover; unprotect only unregisters
+crit_recover	critical	protection	host,hostv1,guest	crit_recover	ok	recovery of a lost supervisor, a lost reaper and an unowned domain moves critical processes out first
+crit_teardown	critical	protection	host,hostv1,guest	crit_teardown	ok	teardown keeps critical processes in system, registered, and init finds them live
+crit_audit	critical	protection	host,hostv1,guest	crit_audit	ok	the trail records the rescues, refusals, intents and exits of all of it without a gap
+crit_survival	critical	protection	host,hostv1,guest	crit_survival	ok	the same critical processes, never restarted, in system, beat from the first scenario to the last
+system_canary_critical	critical	protection	host,hostv1,guest	system_canary_critical	ok	a process in the system domain survives every critical-process scenario
 # ---- lifecycle backends
 lifecycle_v2	lifecycle	lifecycle	host,hostv1,guest	lifecycle_v2	ok	--lifecycle v2 serves freeze, kill and pressure from cgroup v2
 lifecycle_v1_host	lifecycle	lifecycle	host,hostv1	lifecycle_v1	ok	--lifecycle v1 serves freeze and kill from the v1 freezer, and reports pressure unbound

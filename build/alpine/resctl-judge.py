@@ -13,9 +13,9 @@ checks.tsv has one row per behaviour, tab separated:  id  area  resource  envs  
 reads the fact "<prefix><fact>" of that environment's session:
     unpriv  u_  unprivileged session        host  h_  this host, lifecycle auto       bed  (no prefix) the test bed itself
     guest   g_  cgroup v2 guest             hostv1  v_  this host, v1 freezer lifecycle
-`area` is the part of the suite (build layout normal limits throttle pressure isolation terminate recover lifecycle bed) and
-`resource` the domain that is controlled (memory cpu processes io lifecycle protection policy platform). Expectations are
-those of tools-test/inventory.tsv: ok | =VALUE | ~REGEX | deny:REGEX (see tools-judge.py).
+`area` is the part of the suite (build layout normal limits throttle pressure isolation terminate recover process critical
+lifecycle bed) and `resource` the domain that is controlled (memory cpu processes io lifecycle protection policy
+platform). Expectations are those of tools-test/inventory.tsv: ok | =VALUE | ~REGEX | deny:REGEX (see tools-judge.py).
 
 Every row ends as PASS, DENIED (a deny: row: the refusal that must happen), LIMIT or FAIL. A failed row becomes a LIMIT
 only through limits.tsv (id class accepts cause proof requires explanation): the value matches `accepts`, every condition
@@ -53,20 +53,23 @@ ENVS = collections.OrderedDict([
     ("bed", ("guest", "", "the test bed session itself")),
 ])
 SESSIONS = ("unprivileged", "privileged", "guest")
-AREAS = ("build", "layout", "normal", "limits", "throttle", "pressure", "isolation", "terminate", "recover", "lifecycle", "bed")
+AREAS = ("build", "layout", "normal", "limits", "throttle", "pressure", "isolation", "terminate", "recover", "process", "critical",
+         "lifecycle", "bed")
 RESOURCES = ("memory", "cpu", "processes", "io", "lifecycle", "protection", "policy", "platform")
-FULL = ("layout", "normal", "limits", "throttle", "pressure", "isolation", "terminate", "recover", "lifecycle")
+FULL = ("layout", "normal", "limits", "throttle", "pressure", "isolation", "terminate", "recover", "process", "critical",
+        "lifecycle")
 MUST_AREAS = {
     "unpriv": ("build", "layout", "normal", "isolation"),
     "host": FULL,
-    "hostv1": ("layout", "normal", "isolation", "terminate", "recover", "lifecycle"),
+    "hostv1": ("layout", "normal", "isolation", "terminate", "recover", "process", "critical", "lifecycle"),
     "guest": FULL,
     "bed": ("bed",),
 }
 MUST_RESOURCES = {env: ("memory", "cpu", "processes", "io", "lifecycle", "protection") for env in ("host", "guest")}
 # the system domain stays outside every kill domain: these rows must exist, and pass, wherever a hierarchy exists
 SYSTEM_ROWS = ("system_unreachable", "system_canary", "system_canary_terminate", "system_canary_recover",
-               "system_canary_reinit", "system_canary_lifecycle", "teardown_keeps_system")
+               "system_canary_reinit", "system_canary_process", "system_canary_critical", "system_canary_lifecycle",
+               "teardown_keeps_system")
 LIMIT_ENVS = ("host", "hostv1")
 LIMIT_AREAS = ("normal", "limits", "throttle", "pressure")
 LIMIT_CLASSES = tuple(c for c in tj.CLASSES if c != "upstream")

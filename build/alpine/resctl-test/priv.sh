@@ -30,7 +30,7 @@ fi
 WANT="$*"
 rc_suite h_ auto $WANT
 vsec=
-for s in layout normal isolation terminate recover lifecycle; do
+for s in layout normal isolation terminate recover process critical lifecycle; do
 	case " $WANT " in *" $s "* | "  ") vsec="$vsec $s" ;; esac
 done
 if [ -z "$WANT" ] || [ -n "$vsec" ]; then rc_suite v_ v1 $vsec; fi

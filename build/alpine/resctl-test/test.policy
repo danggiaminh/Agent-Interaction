@@ -31,3 +31,20 @@ grace = 2s
 
 [recover]
 orphans = kill
+
+# ---- supervision: what the process and critical sections run under (the suite cuts its policy variants at this line)
+[restart]
+mode = on-failure
+max = 3
+window = 60s
+total = 10
+backoff = 100ms
+backoff.max = 400ms
+rate = 120
+
+[supervise]
+workloads = 8
+
+# the suite supervises its probes as root, as the operator would a service that is trusted as much as the system
+[run]
+allow.root = yes

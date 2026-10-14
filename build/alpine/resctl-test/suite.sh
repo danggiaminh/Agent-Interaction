@@ -5,9 +5,9 @@
 #   rc_suite PREFIX LIFECYCLE [SECTION...]
 #
 # LIFECYCLE is resctl's --lifecycle (auto | v1 | v2). Sections: layout normal limits throttle pressure isolation
-# terminate recover lifecycle (all of them when none is named). Every fact is "ok <evidence>", "fail:<what did not
-# behave>", "unsupported:<why this layout cannot do it>" or "denied:<the refusal>"; unsupported is never a pass, and it
-# carries a measured reason (an `unbound=` line of resctl, or the feature table of `resctl probe`).
+# terminate recover process critical lifecycle (all of them when none is named). Every fact is "ok <evidence>",
+# "fail:<what did not behave>", "unsupported:<why this layout cannot do it>" or "denied:<the refusal>"; unsupported is
+# never a pass, and it carries a measured reason (an `unbound=` line of resctl, or the feature table of `resctl probe`).
 #
 # Needs: RC_DIR (resctl, the *.policy files), CT (the static ctr-test binary), CG_BLKDEV (a whole block device).
 # Nothing here names a cgroup path: the hierarchy of each feature is read from `resctl probe`. Tolerances are wide
@@ -19,28 +19,28 @@ RC_LC=auto
 
 # rc ARGS...: resctl under the suite's policy and lifecycle. stdout in $T/rc.out, stderr in $T/rc.err, status in RS.
 rc() {
-	"$RC_BIN" --policy "$RC_POLICY" --lifecycle "$RC_LC" "$@" >"$T/rc.out" 2>"$T/rc.err"
+	"$RC_BIN" --policy "$RC_POLICY" --lifecycle "$RC_LC" --state-dir "$RC_STATE" "$@" >"$T/rc.out" 2>"$T/rc.err"
 	RS=$?
 }
 # rcx ARGS...: the same, attached to the caller's stdout and stderr (for `run` in the foreground).
-rcx() { "$RC_BIN" --policy "$RC_POLICY" --lifecycle "$RC_LC" "$@"; }
+rcx() { "$RC_BIN" --policy "$RC_POLICY" --lifecycle "$RC_LC" --state-dir "$RC_STATE" "$@"; }
 # rcbg ARGS...: only ever as `rcbg ... &`: the background job execs resctl, which execs the command, so that $! is the
 # process of the workload itself and not of a shell that waits for it.
-rcbg() { exec "$RC_BIN" --policy "$RC_POLICY" --lifecycle "$RC_LC" "$@"; }
+rcbg() { exec "$RC_BIN" --policy "$RC_POLICY" --lifecycle "$RC_LC" --state-dir "$RC_STATE" "$@"; }
 # rcerr: what resctl said on stderr, one line.
 rcerr() { tail -n 1 "$T/rc.err" | cut -c1-200; }
 # rcl LIFECYCLE ARGS...: one command under another lifecycle.
 rcl() {
 	l="$1"
 	shift
-	"$RC_BIN" --policy "$RC_POLICY" --lifecycle "$l" "$@" >"$T/rc.out" 2>"$T/rc.err"
+	"$RC_BIN" --policy "$RC_POLICY" --lifecycle "$l" --state-dir "$RC_STATE" "$@" >"$T/rc.out" 2>"$T/rc.err"
 	RS=$?
 }
 # rc_pol POLICYFILE ARGS...: one command under another policy.
 rc_pol() {
 	pf="$1"
 	shift
-	"$RC_BIN" --policy "$pf" --lifecycle "$RC_LC" "$@" >"$T/rc.out" 2>"$T/rc.err"
+	"$RC_BIN" --policy "$pf" --lifecycle "$RC_LC" --state-dir "$RC_STATE" "$@" >"$T/rc.out" 2>"$T/rc.err"
 	RS=$?
 }
 
@@ -126,7 +126,7 @@ rc_weight() {
 }
 
 # ---- the system canary: a process in the system domain that nothing resctl does to a workload may touch
-canary_ready() { [ "$(rc_procs system)" = 1 ]; }
+canary_ready() { [ "$(rc_procs system)" = "$((1 + ${CANARY_EXTRA:-0}))" ]; }
 canary_start() {
 	rcbg enter system -- sleep 600 >/dev/null 2>&1 &
 	CANARY=$!
@@ -142,7 +142,7 @@ canary_check() {
 	CANARY_WHY=
 	if ! rc_alive "$CANARY"; then CANARY_WHY="the canary is $(rc_state "$CANARY")"; return 1; fi
 	rc status system
-	if ! grep -q '^procs=1$' "$T/rc.out" || ! grep -q '^state=running$' "$T/rc.out"; then
+	if ! grep -q "^procs=$((1 + ${CANARY_EXTRA:-0}))\$" "$T/rc.out" || ! grep -q '^state=running$' "$T/rc.out"; then
 		CANARY_WHY="status system: $(grep -E '^(procs|state)=' "$T/rc.out" | tr '\n' ' ')"
 		return 1
 	fi
@@ -176,8 +176,10 @@ rc_suite() {
 	shift 2
 	SECTIONS="$*"
 	RC_POLICY="$RC_DIR/test.policy"
+	RC_STATE="$T/state.$RC_P"
 	CANARY=
 	CANARY_BAD=
+	CANARY_EXTRA=0
 	cg_detect
 	mkdir -p "$T"
 	if ! "$RC_BIN" --policy "$RC_POLICY" --lifecycle "$RC_LC" probe >"$T/probe.$RC_P" 2>"$T/probe.$RC_P.err"; then
@@ -202,6 +204,8 @@ rc_suite() {
 	rc_s_isolation
 	rc_s_terminate
 	rc_s_recover
+	rc_s_process
+	rc_s_critical
 	rc_s_lifecycle
 
 	# the epilogue: nothing of this suite stays behind
@@ -528,7 +532,7 @@ rc_s_pressure() {
 
 	# memory.high throttles a workload that goes over it instead of killing it
 	if [ "$(rc_api memory)" = v2 ]; then
-		timeout 120 "$RC_BIN" --policy "$RC_POLICY" --lifecycle "$RC_LC" run batch/mh --memory-high 24M --memory-max 96M -- "$CT" mem 40 >"$T/mh.out" 2>&1
+		timeout 120 "$RC_BIN" --policy "$RC_POLICY" --lifecycle "$RC_LC" --state-dir "$RC_STATE" run batch/mh --memory-high 24M --memory-max 96M -- "$CT" mem 40 >"$T/mh.out" 2>&1
 		rs=$?
 		d="$(rc_dir memory workload/batch/mh)"
 		high="$(sed -n 's/^high //p' "$d/memory.events")"
@@ -837,7 +841,7 @@ rc_s_terminate() {
 # ------------------------------------------------------------------------------------------------ recovery
 # rc_orphan WORKLOAD SLEEP: a supervisor starts a workload, then dies by SIGKILL; the sleep goes on, with nobody watching it.
 rc_orphan() {
-	sh -c "'$RC_BIN' --policy '$RC_POLICY' --lifecycle '$RC_LC' run $1 -- sleep $2 >/dev/null 2>&1; true" &
+	sh -c "'$RC_BIN' --policy '$RC_POLICY' --lifecycle '$RC_LC' --state-dir '$RC_STATE' run $1 -- sleep $2 >/dev/null 2>&1; true" &
 	SUP=$!
 	waitfor 10 rc_has "$1" 1 running
 	kill -9 "$SUP" 2>/dev/null
@@ -878,18 +882,16 @@ rc_s_recover() {
 	if [ "$rs $n" = "0 0" ]; then f recover_idempotent "ok recover on a clean system: rc 0 and no output"
 	else f recover_idempotent "fail:rc=$rs and $n lines of output: $(head -n 1 "$T/rc.out")"; fi
 
-	# a run that could not start leaves an empty domain, and recover removes it
-	printf '#!/nonexistent/interpreter\n' >"$T/${RC_P}bad.sh"
-	chmod +x "$T/${RC_P}bad.sh"
-	rc run batch/bad -- "$T/${RC_P}bad.sh"
+	# a domain that was created and never used is empty, and recover removes it
+	rc create batch/bad
 	rs=$RS
 	rc list
 	line="$(grep '^batch/bad ' "$T/rc.out")"
 	rc recover
 	got="$(grep -c '^removed=batch/bad$' "$T/rc.out")"
-	if [ "$rs" != 0 ] && [ "$line" = "batch/bad procs=0 state=empty" ] && [ "$got" = 1 ] && rc_gone batch/bad; then
-		f recover_empty "ok run failed with rc $rs and left '$line'; recover printed removed=batch/bad"
-	else f recover_empty "fail:run rc=$rs, list said '$line', removed-lines=$got (wanted non-zero, 'batch/bad procs=0 state=empty', 1)"; fi
+	if [ "$rs" = 0 ] && [ "$line" = "batch/bad procs=0 state=empty" ] && [ "$got" = 1 ] && rc_gone batch/bad; then
+		f recover_empty "ok create gave '$line'; recover printed removed=batch/bad"
+	else f recover_empty "fail:create rc=$rs, list said '$line', removed-lines=$got (wanted 0, 'batch/bad procs=0 state=empty', 1)"; fi
 
 	# a class the policy no longer names goes away when it is empty; the one it names stays
 	RC_POLICY="$RC_DIR/solo.policy"
@@ -948,6 +950,1743 @@ rc_s_recover() {
 	else f reinit_after_teardown "fail:init rc=$a run rc=$b directories=$(rc_domain_dirs) $(rcerr)"; fi
 	canary_start
 	canary_report system_canary_reinit
+}
+
+# ------------------------------------------------------------------------------------------------ process lifecycle
+# chk NAME GOT WANT: remember what differs from what was wanted (in BAD), for one fact. verdict FACT TEXT: the fact is ok
+# with TEXT when nothing differed, and fails with what did else.
+BAD=
+chk() { [ "$2" = "$3" ] || BAD="$BAD $1='$2' (wanted '$3')"; }
+verdict() {
+	if [ -z "$BAD" ]; then f "$1" "ok $2"; else f "$1" "fail:$BAD"; fi
+	BAD=
+}
+yn() { "$@" && echo yes || echo no; }
+# like STRING GLOB: the string matches the shell pattern.
+like() {
+	case "$1" in $2) return 0 ;; esac
+	return 1
+}
+# matches STRING ERE: the string matches the extended regular expression.
+matches() { printf '%s\n' "$1" | grep -qE "$2"; }
+# lines FILE: the number of lines of the file (one line per start of a workload that logs its starts).
+lines() { echo $(($(wc -l <"$1") + 0)); }
+# rc_out: what resctl said on stdout, on one line.
+rc_out() { tr '\n' ' ' <"$T/rc.out" | sed 's/ *$//'; }
+
+# rc_sf WORKLOAD KEY...: the named fields of `resctl state WORKLOAD`, space separated ("-" where the line has no such field).
+rc_sf() {
+	sfw="$1"
+	shift
+	rc state "$sfw"
+	awk -v keys="$*" 'BEGIN { m = split(keys, k, " ") }
+		NR == 1 {
+			out = ""
+			for (j = 1; j <= m; j++) {
+				v = "-"
+				for (i = 2; i <= NF; i++) if (index($i, k[j] "=") == 1) v = substr($i, length(k[j]) + 2)
+				if (j > 1) out = out " "
+				out = out v
+			}
+			print out
+		}' "$T/rc.out"
+}
+rc_phase_is() { [ "$(rc_sf "$1" phase)" = "$2" ]; }
+rc_at() { [ "$(rc_sf "$1" phase gen)" = "$2 $3" ]; }
+# rc_pid_ok PID: a number, and a live process.
+rc_pid_ok() {
+	case "$1" in '' | *[!0-9]*) return 1 ;; esac
+	rc_alive "$1"
+}
+# rc_in PID REL: the process is in the domain agent-interaction/REL of every serving hierarchy.
+rc_in() {
+	ri="$(grep -c "/agent-interaction/$2\$" "/proc/$1/cgroup" 2>/dev/null)"
+	[ "${ri:-0}" -eq "$(rc_roots | wc -l)" ]
+}
+
+# rc_phases WORKLOAD: the phases the audit trail records for the workload, in order; "|" marks a reset.
+rc_phases() {
+	rc audit 2048
+	awk -v who="$1" '
+		$5 == who && $4 == "reset" { s = s "| " }
+		$5 == who && $6 ~ /^phase=/ { s = s substr($6, 7) " " }
+		END { sub(/ +$/, "", s); print s }' "$T/rc.out"
+}
+# rc_edges: "ok", or the changes of phase in the audit trail that the lifecycle table does not allow.
+rc_edges() {
+	rc audit 2048
+	awk 'BEGIN {
+			m = split("created>starting created>recovering starting>running starting>sweeping starting>recovering running>stopping running>killing running>sweeping running>recovering stopping>killing stopping>sweeping stopping>recovering killing>sweeping killing>recovering sweeping>backoff sweeping>stopped sweeping>finished sweeping>failed sweeping>recovering backoff>starting backoff>stopped backoff>failed backoff>recovering recovering>stopped recovering>failed stopped>starting finished>starting", t, " ")
+			for (i = 1; i <= m; i++) allowed[t[i]] = 1
+			ep = 0
+		}
+		$4 == "reset" { delete last[ep "|" $5]; next }
+		$4 == "teardown" { ep++; next }
+		$6 ~ /^phase=/ {
+			key = ep "|" $5
+			ph = substr($6, 7)
+			if ((key in last) && !((last[key] ">" ph) in allowed)) bad = bad " " $5 ":" last[key] ">" ph "(seq " $1 ")"
+			last[key] = ph
+		}
+		END { if (bad == "") print "ok"; else print "bad" bad }' "$T/rc.out"
+}
+# rc_order WORKLOAD: "ok" when the audit trail has the operator's intent (from the command line), then the supervisor's
+# stop, exit and stopped phase, in that order.
+rc_order() {
+	rc audit 2048
+	awk -v who="$1" '
+		$5 != who { next }
+		$4 == "intent" && !hi { hi = 1; ni = $1; ai = $3 }
+		$4 == "stop" && !hs { hs = 1; ns = $1 }
+		$4 == "exit" && !he { he = 1; ne = $1; ae = $3 }
+		$4 == "phase" && $6 == "phase=stopped" && !hp { hp = 1; np = $1 }
+		END {
+			if (hi && hs && he && hp && ni + 0 < ns + 0 && ns + 0 < ne + 0 && ne + 0 < np + 0 && ai ~ /:cli$/ && ae ~ /:super$/) print "ok"
+			else print "intent " ni " (" ai ") stop " ns " exit " ne " (" ae ") stopped " np
+		}' "$T/rc.out"
+}
+# rc_ev WORKLOAD EVENT [DETAIL-ERE]: how many audit lines the event has for the workload; the detail is matched from its start.
+rc_ev() {
+	rc audit 2048
+	if [ -n "${3:-}" ]; then grep -cE "^[0-9]+ [0-9]+ [0-9]+:[a-z]+ $2 $1 $3" "$T/rc.out"
+	else grep -cE "^[0-9]+ [0-9]+ [0-9]+:[a-z]+ $2 $1( |\$)" "$T/rc.out"; fi
+}
+
+# rc_restart FILE MODE MAX WINDOW TOTAL BACKOFF BACKOFFMAX [RATE [WORKLOADS]]: a variant of the suite policy with other
+# restart limits (its own part of the policy starts at the line that test.policy marks).
+rc_restart() {
+	sed '/^# ---- supervision/,$d' "$RC_DIR/test.policy" >"$1"
+	printf '%s\n' '[restart]' "mode = $2" "max = $3" "window = $4" "total = $5" "backoff = $6" "backoff.max = $7" "rate = ${8:-120}" '' '[supervise]' "workloads = ${9:-8}" '' '[run]' 'allow.root = yes' >>"$1"
+}
+# rcs STATEDIR POLICY ARGS...: one command with another state directory and policy (a throwaway store).
+rcs() {
+	sd="$1"
+	pf="$2"
+	shift 2
+	"$RC_BIN" --policy "$pf" --lifecycle "$RC_LC" --state-dir "$sd" "$@" >"$T/rc.out" 2>"$T/rc.err"
+	RS=$?
+}
+# rcbgs STATEDIR POLICY ARGS...: only ever as `rcbgs ... &`, like rcbg.
+rcbgs() {
+	sd="$1"
+	pf="$2"
+	shift 2
+	exec "$RC_BIN" --policy "$pf" --lifecycle "$RC_LC" --state-dir "$sd" "$@"
+}
+# sup_bg POLICY WORKLOAD ARGS...: `resctl supervise` in the background. Its pid is SUPPID, its output goes to
+# $T/<prefix><id>.out and .err.
+sup_bg() {
+	spf="$1"
+	sw="$2"
+	shift 2
+	sbo="$T/$RC_P${sw#*/}"
+	rcbgs "$RC_STATE" "$spf" supervise "$sw" "$@" >"$sbo.out" 2>"$sbo.err" &
+	SUPPID=$!
+}
+rc_dead() { ! rc_alive "$1"; }
+# rc_reap PID [SECONDS]: wait for a background supervisor to be done (kill it when it hangs); its status is SPRC, SPHUNG says
+# whether it had to be killed.
+rc_reap() {
+	waitfor "${2:-15}" rc_dead "$1"
+	if rc_alive "$1"; then
+		kill -9 "$1" 2>/dev/null
+		SPHUNG=yes
+		# a process that does not die (frozen with its domain, say) cannot be waited for: the fact fails and the cleanup that
+		# follows ends it, instead of the suite waiting for ever
+		if ! waitfor 5 rc_dead "$1"; then
+			SPRC=137
+			return 0
+		fi
+	else SPHUNG=no; fi
+	wait "$1" 2>/dev/null
+	SPRC=$?
+}
+# rc_pol_b SECONDS POLICYFILE ARGS...: rc_pol for a supervisor that must end by itself. A restart loop that nothing bounds would
+# never end, so after SECONDS it is killed (SPHUNG=yes, RS=137) and its workload is left to the reaper and to the cleanup.
+rc_pol_b() {
+	rbs="$1"
+	pf="$2"
+	shift 2
+	"$RC_BIN" --policy "$pf" --lifecycle "$RC_LC" --state-dir "$RC_STATE" "$@" >"$T/rc.out" 2>"$T/rc.err" &
+	rbp=$!
+	rc_reap "$rbp" "$rbs"
+	RS=$SPRC
+}
+# rc_pid_of WORDS: the pids of the processes whose command line contains WORDS.
+rc_pid_of() {
+	for cf in /proc/[0-9]*/cmdline; do
+		c="$(tr '\0' ' ' <"$cf" 2>/dev/null)"
+		case "$c" in
+		*"$1"*)
+			pp="${cf#/proc/}"
+			echo "${pp%/cmdline}"
+			;;
+		esac
+	done
+}
+rc_reapers() { rc_pid_of ' __reap ' | wc -l; }
+rc_no_reapers() { [ "$(rc_reapers)" -eq 0 ]; }
+# rc_scrub: whatever a scenario that failed left behind, so that the next one starts clean (done after the facts are in).
+rc_scrub() {
+	for sp in $(rc_pid_of ' --state-dir '); do kill -9 "$sp" 2>/dev/null; done
+	for sp in $(rc_pid_of 'sleep 48'); do kill -9 "$sp" 2>/dev/null; done
+	rc list
+	for sw in $(grep -E '^(batch|interactive)/' "$T/rc.out" | sed 's/ .*//'); do rc remove "$sw"; done
+	rc state
+	for sw in $(grep -E '^[a-z]+/[A-Za-z0-9_-]+ phase=failed ' "$T/rc.out" | sed 's/ .*//'); do rc reset "$sw"; done
+}
+
+rc_s_process() {
+	section process || return 0
+	pdirs="$(rc_domain_dirs)"
+	seen=
+
+	# a supervised workload goes from starting to running; the process that supervises it is the one that was started, its
+	# main process is in the domain of the workload (of every hierarchy)
+	sup_bg "$RC_POLICY" batch/pl -- sleep 4801
+	pl=$SUPPID
+	waitfor 20 rc_phase_is batch/pl running
+	waitfor 20 rc_find_is 'sleep 4801 ' 1
+	st="$(rc_sf batch/pl phase gen restarts supervisor domain)"
+	mp="$(rc_sf batch/pl main)"
+	sp="$(rc_sf batch/pl sup)"
+	inw=no
+	if rc_pid_ok "$mp" && rc_in "$mp" workload/batch/pl; then inw=yes; fi
+	chk state "$st" "running 1 0 alive present"
+	chk supervisor_pid "$sp" "$pl"
+	chk main_in_domain "$inw" yes
+	chk sleeps "$(rc_find 'sleep 4801 ')" 1
+	verdict proc_run "phase=running gen=1 restarts=0 with the supervisor pid $sp alive; the main process $mp is in agent-interaction/workload/batch/pl of every hierarchy"
+	canary_note proc_run
+
+	# an operator's stop: the intent is recorded first, then stopping -> sweeping -> stopped, the end is labelled as requested
+	rc stop batch/pl
+	rs=$RS
+	ou="$(rc_out)"
+	rc_reap "$pl"
+	sv="$(cat "$T/${RC_P}pl.out" 2>/dev/null)"
+	st="$(rc_sf batch/pl phase ended status supervisor domain main)"
+	ph="$(rc_phases batch/pl)"
+	seen="$seen $ph"
+	pl_order="$(rc_order batch/pl)"
+	waitfor 5 rc_find_is 'sleep 4801 ' 0
+	chk rc "$rs" 0
+	chk stdout "$ou" "stop=graceful phase=stopped"
+	chk supervisor_rc "$SPRC" 0
+	chk supervisor_hung "$SPHUNG" no
+	chk supervisor_said "$sv" "phase=stopped gen=1 restarts=0 reason=stopped on request"
+	chk state "$st" "stopped requested:stop signal:15 none absent -"
+	chk phases "$ph" "starting running stopping sweeping stopped"
+	chk sleeps "$(rc_find 'sleep 4801 ')" 0
+	chk domain_gone "$(yn rc_gone batch/pl)" yes
+	chk audit_order "$pl_order" ok
+	verdict proc_stop "stop=graceful: intent (command line), stop, exit and stopped phase in that order in the audit trail; phases $ph; ended=requested:stop status=signal:15; the domain is gone"
+	canary_note proc_stop
+
+	# a command that ends by itself and cleanly is finished, and is not restarted
+	rc supervise batch/pc -- true
+	rs=$RS
+	ou="$(rc_out)"
+	st="$(rc_sf batch/pc phase gen restarts ended status supervisor domain)"
+	ph="$(rc_phases batch/pc)"
+	seen="$seen $ph"
+	chk rc "$rs" 0
+	chk stdout "$ou" "phase=finished gen=1 restarts=0 reason=the workload ended cleanly"
+	chk state "$st" "finished 1 0 clean exit:0 none absent"
+	chk phases "$ph" "starting running sweeping finished"
+	chk domain_gone "$(yn rc_gone batch/pc)" yes
+	verdict proc_exit_clean "a command that exits 0 ends finished (ended=clean status=exit:0), without a restart; phases $ph; the domain is gone"
+	canary_note proc_exit_clean
+
+	# the ways a run ends are told apart: an exit code, a signal that nobody asked for, and (above) an operator's request
+	rc supervise batch/px --restart never -- sh -c 'exit 3'
+	rs=$RS
+	st="$(rc_sf batch/px phase ended status restarts reason)"
+	rc reset batch/px
+	rr=$RS
+	ro="$(rc_out)"
+	rc supervise batch/px --restart never -- sh -c 'kill -9 $$'
+	r2=$RS
+	st2="$(rc_sf batch/px phase ended status restarts reason)"
+	ph="$(rc_phases batch/px)"
+	seen="$seen $ph"
+	rc reset batch/px
+	chk exit_rc "$rs" 1
+	chk exit_state "$st" "failed failed:3 exit:3 0 the_restart_mode_is_never"
+	chk reset "$rr $ro" "0 reset=batch/px was=failed"
+	chk signal_rc "$r2" 1
+	chk signal_state "$st2" "failed crashed:9 signal:9 0 the_restart_mode_is_never"
+	chk phases "$ph" "starting running sweeping failed | starting running sweeping failed"
+	verdict proc_exit_labels "exit 3 is failed:3 (exit:3), an unrequested SIGKILL is crashed:9 (signal:9); with --restart never both end failed without a restart, and reset clears them"
+	canary_note proc_exit_labels
+
+	# an unexpected exit (somebody else kills the main process) is a crash that is restarted, and its label differs from the
+	# label of an operator's stop although the signal is the same
+	sup_bg "$RC_POLICY" batch/pu -- sleep 4802
+	pu=$SUPPID
+	waitfor 20 rc_at batch/pu running 1
+	waitfor 20 rc_find_is 'sleep 4802 ' 1
+	mp="$(rc_sf batch/pu main)"
+	kill -TERM "$mp" 2>/dev/null
+	waitfor 20 rc_at batch/pu running 2
+	waitfor 20 rc_find_is 'sleep 4802 ' 1
+	st="$(rc_sf batch/pu phase gen restarts supervisor)"
+	mp2="$(rc_sf batch/pu main)"
+	x1="$(rc_ev batch/pu exit 'gen=1 ended=crashed:15 status=signal:15 oom=no')"
+	x2="$(rc_ev batch/pu restart 'phase=backoff gen=1 crashed:15; restart 1 in ')"
+	fresh=no
+	if [ "$mp2" != "$mp" ] && rc_pid_ok "$mp2" && rc_in "$mp2" workload/batch/pu; then fresh=yes; fi
+	rc stop batch/pu
+	rs=$RS
+	rc_reap "$pu"
+	x3="$(rc_ev batch/pu exit 'gen=2 ended=requested:stop status=signal:15 oom=no')"
+	x4="$(rc_ev batch/pu start)"
+	fin="$(rc_sf batch/pu phase restarts ended)"
+	ph="$(rc_phases batch/pu)"
+	seen="$seen $ph"
+	chk after_kill "$st" "running 2 1 alive"
+	chk new_main "$fresh" yes
+	chk crash_exit_event "$x1" 1
+	chk crash_restart_event "$x2" 1
+	chk stop_rc "$rs $SPRC" "0 0"
+	chk stop_exit_event "$x3" 1
+	chk start_events "$x4" 2
+	chk final "$fin" "stopped 1 requested:stop"
+	chk phases "$ph" "starting running sweeping backoff starting running stopping sweeping stopped"
+	verdict proc_unexpected "SIGTERM by an outsider: exit gen=1 ended=crashed:15 and one restart (main $mp -> $mp2); the same signal after the operator's stop is ended=requested:stop; phases $ph"
+	canary_note proc_unexpected
+
+	# a crash loop is bounded: max restarts, paced by the back-off, then failed, and nothing restarts it any more
+	loopf="$T/${RC_P}loop.policy"
+	rc_restart "$loopf" on-failure 2 60s 6 100ms 200ms
+	: >"$T/${RC_P}cl.starts"
+	t0="$(cg_uptime)"
+	rc_pol_b 60 "$loopf" supervise batch/cl -- sh -c 'echo s >>"$0"; exit 1' "$T/${RC_P}cl.starts"
+	t1="$(cg_uptime)"
+	rs=$RS
+	ou="$(rc_out)"
+	er="$(rcerr)"
+	el="$(rc_secs "$t0" "$t1")"
+	ns="$(lines "$T/${RC_P}cl.starts")"
+	st="$(rc_sf batch/cl phase gen restarts supervisor domain ended status)"
+	e1="$(rc_ev batch/cl start)"
+	e2="$(rc_ev batch/cl restart)"
+	e3="$(rc_ev batch/cl exit 'gen=[0-9]+ ended=failed:1 status=exit:1 oom=no')"
+	sleep 1
+	ns2="$(lines "$T/${RC_P}cl.starts")"
+	chk rc "$rs" 1
+	chk stdout "$ou" "phase=failed gen=3 restarts=2 reason=2 restarts within 60s are used up"
+	chk stderr "$er" "resctl: lifecycle: batch/cl failed: 2 restarts within 60s are used up"
+	chk starts "$ns" 3
+	chk starts_a_second_later "$ns2" 3
+	chk state "$st" "failed 3 2 none absent failed:1 exit:1"
+	chk audit_events "$e1 $e2 $e3" "3 2 3"
+	chk paced "$(yn cg_between "$el" 0.25 10)" yes
+	chk domain_gone "$(yn rc_gone batch/cl)" yes
+	verdict proc_crash_loop "max=2: 3 starts, 2 restarts paced by the back-off ($el s for 100 ms + 200 ms), then phase=failed, rc 1; no start in the second after"
+	canary_note proc_crash_loop
+
+	# a failed workload stays failed until an operator resets it, then it can be supervised again
+	rc supervise batch/cl -- true
+	rs=$RS
+	er="$(rcerr)"
+	rc reset batch/cl
+	rr=$RS
+	ro="$(rc_out)"
+	rc supervise batch/cl -- true
+	r3=$RS
+	o3="$(rc_out)"
+	ph="$(rc_phases batch/cl)"
+	seen="$seen $ph"
+	rv="$(rc_ev batch/cl reset 'was failed')"
+	chk refused_rc "$rs" 2
+	chk refused_says "$(yn like "$er" '*reset batch/cl*first*')" yes
+	chk reset "$rr $ro" "0 reset=batch/cl was=failed"
+	chk reset_event "$rv" 1
+	chk again "$r3 $o3" "0 phase=finished gen=1 restarts=0 reason=the workload ended cleanly"
+	chk phases "$ph" "starting running sweeping backoff starting running sweeping backoff starting running sweeping failed | starting running sweeping finished"
+	verdict proc_reset_recover "a failed workload is refused (rc 2) until reset; after reset it runs again from gen=1 and finishes; phases $ph"
+	canary_note proc_reset_recover
+
+	# mode always counts clean exits as restarts, and a restart loop of clean exits is bounded too
+	: >"$T/${RC_P}ca.starts"
+	rc_pol_b 60 "$RC_POLICY" supervise batch/ca --restart always -- sh -c 'echo s >>"$0"; exit 0' "$T/${RC_P}ca.starts"
+	rs=$RS
+	ou="$(rc_out)"
+	ns="$(lines "$T/${RC_P}ca.starts")"
+	st="$(rc_sf batch/ca phase gen restarts ended status domain)"
+	chk rc "$rs" 1
+	chk stdout "$ou" "phase=failed gen=4 restarts=3 reason=3 restarts within 60s are used up"
+	chk starts "$ns" 4
+	chk state "$st" "failed 4 3 clean exit:0 absent"
+	verdict proc_restart_always "--restart always: a command that exits 0 is started 4 times (max=3 restarts), then phase=failed"
+	canary_note proc_restart_always
+	rc reset batch/ca
+
+	# the cap on all restarts of a run holds for a crasher that is too slow for the window to count it
+	totf="$T/${RC_P}total.policy"
+	rc_restart "$totf" on-failure 2 1s 3 100ms 100ms
+	: >"$T/${RC_P}rt.starts"
+	t0="$(cg_uptime)"
+	rc_pol_b 120 "$totf" supervise batch/rt -- sh -c 'echo s >>"$0"; sleep 1.2; exit 1' "$T/${RC_P}rt.starts"
+	t1="$(cg_uptime)"
+	rs=$RS
+	ou="$(rc_out)"
+	el="$(rc_secs "$t0" "$t1")"
+	ns="$(lines "$T/${RC_P}rt.starts")"
+	st="$(rc_sf batch/rt phase gen restarts domain)"
+	chk rc "$rs" 1
+	chk stdout "$ou" "phase=failed gen=4 restarts=3 reason=3 restarts since the supervisor started are used up"
+	chk starts "$ns" 4
+	chk state "$st" "failed 4 3 absent"
+	chk lived "$(yn cg_between "$el" 4.8 30)" yes
+	verdict proc_restart_total "window 1s, total 3: a crasher that lives 1.2 s per run never fills the window, the total stops it after 4 starts ($el s)"
+	canary_note proc_restart_total
+	rc reset batch/rt
+
+	# the start rate is limited: the first start over the limit is refused, leaves no record and no domain
+	rsd="$T/${RC_P}ratestate"
+	rm -rf "$rsd"
+	ratef="$T/${RC_P}rate.policy"
+	rc_restart "$ratef" on-failure 3 60s 10 100ms 400ms 3 8
+	done3=0
+	for k in 1 2 3; do
+		rcs "$rsd" "$ratef" supervise "batch/r$k" -- true
+		[ "$RS" != 0 ] || done3=$((done3 + 1))
+	done
+	rcs "$rsd" "$ratef" supervise batch/r4 -- true
+	rs=$RS
+	er="$(rcerr)"
+	rcs "$rsd" "$ratef" state batch/r4
+	rsr=$RS
+	chk first_three "$done3" 3
+	chk fourth_rc "$rs" 2
+	chk fourth_says "$(yn matches "$er" '3 starts within the last minute: try again in [0-9]+s')" yes
+	chk no_record "$rsr" 2
+	chk domain_gone "$(yn rc_gone batch/r4)" yes
+	verdict proc_start_rate "rate=3: three starts ran, the fourth was refused ($er), with no record and no domain"
+	canary_note proc_start_rate
+	waitfor 10 rc_no_reapers
+	rm -rf "$rsd"
+
+	# the number of workloads that are supervised at a time is limited, and a finished supervisor frees its place
+	capf="$T/${RC_P}cap.policy"
+	rc_restart "$capf" on-failure 3 60s 10 100ms 400ms 120 2
+	sup_bg "$capf" batch/k1 -- sleep 4851
+	k1=$SUPPID
+	sup_bg "$capf" batch/k2 -- sleep 4852
+	k2=$SUPPID
+	waitfor 20 rc_phase_is batch/k1 running
+	waitfor 20 rc_phase_is batch/k2 running
+	rc_pol "$capf" supervise batch/k3 -- true
+	rs=$RS
+	er="$(rcerr)"
+	rc state batch/k3
+	rsr=$RS
+	gone3="$(yn rc_gone batch/k3)"
+	rc stop batch/k1
+	rc stop batch/k2
+	rc_reap "$k1"
+	q1=$SPRC
+	rc_reap "$k2"
+	q2=$SPRC
+	rc_pol "$capf" supervise batch/k3 -- true
+	r3=$RS
+	chk third_rc "$rs" 2
+	chk third_says "$(yn like "$er" '*2 workloads are supervised already*')" yes
+	chk no_record "$rsr" 2
+	chk domain_gone "$gone3" yes
+	chk supervisors "$q1 $q2" "0 0"
+	chk after_stop "$r3" 0
+	verdict proc_supervise_cap "workloads=2: with two supervised the third was refused ($er), with no record and no domain; after both stopped a third ran"
+	canary_note proc_supervise_cap
+
+	# kill: everything in the domain ends, whatever it did to escape; a supervised workload is killed by its supervisor, as the
+	# killing phase, and is not restarted
+	sup_bg "$RC_POLICY" batch/fk -- sh -c 'for i in 1 2 3 4; do setsid sleep 4821 & done; sleep 4822 & wait'
+	fk=$SUPPID
+	waitfor 20 rc_find_is 'sleep 482' 5
+	before="$(rc_find 'sleep 482')"
+	rc kill batch/fk
+	rs=$RS
+	ou="$(rc_out)"
+	rc_reap "$fk"
+	waitfor 5 rc_find_is 'sleep 482' 0
+	after="$(rc_find 'sleep 482')"
+	st="$(rc_sf batch/fk phase ended status supervisor domain)"
+	ph="$(rc_phases batch/fk)"
+	seen="$seen $ph"
+	kk="$(rc_ev batch/fk kill 'phase=killing gen=1 an operator asked for it')"
+	chk sleeps_before "$before" 5
+	chk rc "$rs" 0
+	chk stdout "$ou" "phase=stopped"
+	chk supervisor "$SPRC $SPHUNG" "0 no"
+	chk sleeps_after "$after" 0
+	chk state "$st" "stopped requested:kill signal:9 none absent"
+	chk phases "$ph" "starting running killing sweeping stopped"
+	chk kill_event "$kk" 1
+	verdict proc_forced_kill "kill ended 5 processes (4 of them setsid'd) at once: phases $ph, ended=requested:kill status=signal:9, not restarted"
+	canary_note proc_forced_kill
+
+	# stop of a workload that ignores SIGTERM: the kill follows when the grace period is over
+	rm -f "$T/${RC_P}fs.ready"
+	sup_bg "$RC_POLICY" batch/fs -- sh -c 'trap "" TERM; : >"$0"; while :; do sleep 1; done' "$T/${RC_P}fs.ready"
+	fs=$SUPPID
+	waitfor 20 rc_ready "$T/${RC_P}fs.ready"
+	t0="$(cg_uptime)"
+	rc stop batch/fs
+	rs=$RS
+	t1="$(cg_uptime)"
+	ou="$(rc_out)"
+	el="$(rc_secs "$t0" "$t1")"
+	rc_reap "$fs"
+	st="$(rc_sf batch/fs phase ended status supervisor domain)"
+	left="$(rc_pid_of "${RC_P}fs.ready" | wc -l)"
+	chk rc "$rs" 0
+	chk stdout_ends "$(yn like "$ou" 'stop=killed:[1-9]* phase=stopped')" yes
+	chk grace "$(yn cg_between "$el" 2 10)" yes
+	chk supervisor "$SPRC $SPHUNG" "0 no"
+	chk state "$st" "stopped requested:stop signal:9 none absent"
+	chk left "$left" 0
+	verdict proc_stop_forced "SIGTERM was ignored: $ou after ${el}s (grace 2 s), ended=requested:stop status=signal:9; nothing is left"
+	canary_note proc_stop_forced
+
+	# the grace period of a supervised workload is the one of the policy
+	sup_bg "$RC_POLICY" batch/gp -- sleep 4803
+	gp=$SUPPID
+	waitfor 20 rc_at batch/gp running 1
+	rc stop batch/gp --grace 1s
+	rs=$RS
+	er="$(rcerr)"
+	st="$(rc_sf batch/gp phase gen)"
+	rc stop batch/gp
+	r2=$RS
+	rc_reap "$gp"
+	chk refused_rc "$rs" 2
+	chk refused_says "$(yn like "$er" '*is supervised: it is stopped with the grace period of the policy, not with --grace*')" yes
+	chk still_running "$st" "running 1"
+	chk stop "$r2 $SPRC" "0 0"
+	verdict proc_grace_policy "stop --grace of a supervised workload is refused (rc 2: $er) and changes nothing; a plain stop ends it"
+	canary_note proc_grace_policy
+
+	# a stop during the back-off ends the workload at once, without another start
+	slowf="$T/${RC_P}slow.policy"
+	rc_restart "$slowf" on-failure 3 60s 10 5s 5s
+	: >"$T/${RC_P}sb.starts"
+	sup_bg "$slowf" batch/sb -- sh -c 'echo s >>"$0"; exit 1' "$T/${RC_P}sb.starts"
+	sb=$SUPPID
+	waitfor 20 rc_phase_is batch/sb backoff
+	t0="$(cg_uptime)"
+	rc stop batch/sb
+	rs=$RS
+	t1="$(cg_uptime)"
+	ou="$(rc_out)"
+	el="$(rc_secs "$t0" "$t1")"
+	rc_reap "$sb"
+	st="$(rc_sf batch/sb phase ended reason supervisor domain)"
+	ns="$(lines "$T/${RC_P}sb.starts")"
+	ph="$(rc_phases batch/sb)"
+	seen="$seen $ph"
+	chk rc "$rs" 0
+	chk stdout_ends "$(yn like "$ou" '*phase=stopped')" yes
+	chk prompt "$(yn cg_between "$el" 0 3)" yes
+	chk supervisor "$SPRC $SPHUNG" "0 no"
+	chk state "$st" "stopped failed:1 stopped_during_back-off none absent"
+	chk starts "$ns" 1
+	chk phases "$ph" "starting running sweeping backoff stopped"
+	verdict proc_stop_backoff "a stop 5 s into a back-off ended it in ${el}s: phases $ph, one start only"
+	canary_note proc_stop_backoff
+
+	# orphans: what the main process leaves behind in the domain is swept when the run ends, whichever way it got away
+	rm -f "$T/${RC_P}og.ready" "$T/${RC_P}oh.ready"
+	rc supervise batch/og --restart never -- sh -c '(: >"$0"; exec sleep 4831) & while [ ! -e "$0" ]; do sleep 0.1; done; exit 3' "$T/${RC_P}og.ready"
+	rs=$RS
+	st="$(rc_sf batch/og phase ended domain)"
+	waitfor 5 rc_find_is 'sleep 4831 ' 0
+	lg="$(rc_find 'sleep 4831 ')"
+	gg="$(yn rc_gone batch/og)"
+	rc reset batch/og
+	rc supervise batch/oh -- sh -c '(: >"$0"; exec setsid sleep 4832) & while [ ! -e "$0" ]; do sleep 0.1; done; exit 0' "$T/${RC_P}oh.ready"
+	r2=$RS
+	st2="$(rc_sf batch/oh phase ended domain)"
+	waitfor 5 rc_find_is 'sleep 4832 ' 0
+	lh="$(rc_find 'sleep 4832 ')"
+	gh="$(yn rc_gone batch/oh)"
+	chk crashed_rc "$rs" 1
+	chk crashed_state "$st" "failed failed:3 absent"
+	chk orphan_started "$(yn test -e "$T/${RC_P}og.ready")" yes
+	chk orphan_left "$lg" 0
+	chk domain_gone "$gg" yes
+	chk clean_rc "$r2" 0
+	chk clean_state "$st2" "finished clean absent"
+	chk setsid_orphan_started "$(yn test -e "$T/${RC_P}oh.ready")" yes
+	chk setsid_orphan_left "$lh" 0
+	chk setsid_domain_gone "$gh" yes
+	verdict proc_orphans "a background sleep started by the main process was swept when the main ended, after a failure and after a clean exit, also one in its own session; the domains are gone"
+	canary_note proc_orphans
+
+	# a command that cannot start: no process, no stale domain, no unrecoverable state
+	printf '#!/nonexistent/interpreter\n' >"$T/${RC_P}bad.sh"
+	chmod 755 "$T/${RC_P}bad.sh"
+	dirs0="$(rc_domain_dirs)"
+	rc run batch/lf -- "$T/${RC_P}bad.sh"
+	rs=$RS
+	er="$(rcerr)"
+	gl="$(yn rc_gone batch/lf)"
+	dirs1="$(rc_domain_dirs)"
+	rc state batch/lf
+	rsr=$RS
+	lf="$(rc_ev batch/lf run 'failed: the command did not start')"
+	rc supervise batch/lg -- "$T/${RC_P}bad.sh"
+	r2=$RS
+	st="$(rc_sf batch/lg phase gen restarts ended status supervisor domain)"
+	g2="$(yn rc_gone batch/lg)"
+	s4="$(rc_ev batch/lg start)"
+	dirs2="$(rc_domain_dirs)"
+	rc reset batch/lg
+	chk run_rc "$rs" 1
+	chk run_says "$(yn like "$er" '*cannot run*')" yes
+	chk run_domain_gone "$gl" yes
+	chk run_dirs "$dirs1" "$dirs0"
+	chk run_no_record "$rsr" 2
+	chk run_audit "$lf" 1
+	chk supervise_rc "$r2" 1
+	chk supervise_state "$st" "failed 4 3 failed:127 exit:127 none absent"
+	chk supervise_domain_gone "$g2" yes
+	chk supervise_starts "$s4" 4
+	chk supervise_dirs "$dirs2" "$dirs0"
+	verdict proc_launch_failure "run of a command that cannot start: rc 1 ($er), no domain, no record, audited; supervised: 4 starts (3 restarts) ended failed:127, no domain left"
+	canary_note proc_launch_failure
+
+	# a supervisor that is killed: its reaper sweeps the workload and records that the supervisor was lost
+	sup_bg "$RC_POLICY" batch/lo -- sleep 4841
+	lo=$SUPPID
+	waitfor 20 rc_at batch/lo running 1
+	waitfor 20 rc_find_is 'sleep 4841 ' 1
+	kill -9 "$lo" 2>/dev/null
+	wait "$lo" 2>/dev/null
+	waitfor 30 rc_phase_is batch/lo failed
+	st="$(rc_sf batch/lo phase ended supervisor domain main reason)"
+	waitfor 5 rc_find_is 'sleep 4841 ' 0
+	left="$(rc_find 'sleep 4841 ')"
+	rc supervise batch/lo -- true
+	rs=$RS
+	er="$(rcerr)"
+	rc reset batch/lo
+	rr=$RS
+	ro="$(rc_out)"
+	ph="$(rc_phases batch/lo)"
+	seen="$seen $ph"
+	chk state "$st" "failed lost none absent - supervisor_lost:_the_workload_was_cleaned_up"
+	chk sleeps "$left" 0
+	chk refused_rc "$rs" 2
+	chk refused_says "$(yn like "$er" '*reset batch/lo*first*')" yes
+	chk reset "$rr $ro" "0 reset=batch/lo was=failed"
+	verdict proc_lost_reaper "kill -9 of the supervisor: the reaper swept the workload and recorded phase=failed ended=lost (phases $ph); it is refused until reset"
+	canary_note proc_lost_reaper
+
+	# a supervisor and its reaper both killed: recover finds the workload, sweeps it and records the same
+	sup_bg "$RC_POLICY" batch/lp -- sleep 4842
+	lp=$SUPPID
+	waitfor 20 rc_at batch/lp running 1
+	waitfor 20 rc_find_is 'sleep 4842 ' 1
+	reapers="$(rc_pid_of '__reap batch/lp ')"
+	for rp in $reapers; do kill -9 "$rp" 2>/dev/null; done
+	kill -9 "$lp" 2>/dev/null
+	wait "$lp" 2>/dev/null
+	sa="$(rc_sf batch/lp phase supervisor)"
+	rc list
+	listed="$(grep -c '^batch/lp procs=1 state=running$' "$T/rc.out")"
+	rc recover
+	rs=$RS
+	swept="$(grep -c '^swept=batch/lp phase=failed$' "$T/rc.out")"
+	st="$(rc_sf batch/lp phase ended supervisor domain)"
+	left="$(rc_find 'sleep 4842 ')"
+	rc supervise batch/lp -- true
+	r2=$RS
+	rc reset batch/lp
+	ph="$(rc_phases batch/lp)"
+	seen="$seen $ph"
+	chk reaper_found "$(yn test -n "$reapers")" yes
+	chk before_recover "$sa $listed" "running lost 1"
+	chk recover_rc "$rs" 0
+	chk swept "$swept" 1
+	chk state "$st" "failed lost none absent"
+	chk sleeps "$left" 0
+	chk refused_rc "$r2" 2
+	verdict proc_lost_recover "supervisor and reaper killed: the workload was still running (supervisor=lost), recover swept it (swept=batch/lp phase=failed); phases $ph"
+	canary_note proc_lost_recover
+
+	# a lifecycle record that cannot be read is quarantined, never trusted and never an obstacle
+	printf 'garbage\n' >"$RC_STATE/records/batch.cr"
+	rc state
+	rs=$RS
+	listed="$(grep -c '^batch.cr corrupt=' "$T/rc.out")"
+	rc supervise batch/cr -- true
+	r2=$RS
+	o2="$(rc_out)"
+	qe="$(rc_ev batch.cr quarantine)"
+	qf="$(ls "$RC_STATE/quarantine" 2>/dev/null | grep -c '^batch\.cr\.')"
+	st="$(rc_sf batch/cr phase gen)"
+	printf 'garbage\n' >"$RC_STATE/records/batch.cq"
+	rc recover
+	r3=$RS
+	qd="$(grep -c '^quarantined=batch.cq$' "$T/rc.out")"
+	qg="$(ls "$RC_STATE/quarantine" 2>/dev/null | grep -c '^batch\.cq\.')"
+	rc supervise batch/cq -- true
+	r4=$RS
+	printf 'garbage\n' >"$RC_STATE/records/batch.cx"
+	rc create batch/cx
+	r5=$RS
+	er="$(rcerr)"
+	rc reset batch/cx
+	r6=$RS
+	o6="$(rc_out)"
+	rc create batch/cx
+	r7=$RS
+	rc remove batch/cx
+	r8=$RS
+	chk listed "$rs $listed" "0 1"
+	chk supervise "$r2 $o2" "0 phase=finished gen=1 restarts=0 reason=the workload ended cleanly"
+	chk quarantine_event "$qe" 1
+	chk quarantine_file "$qf" 1
+	chk new_record "$st" "finished 1"
+	chk recover "$r3 $qd $qg" "0 1 1"
+	chk after_recover "$r4" 0
+	chk create_refused "$r5" 2
+	chk create_says "$(yn like "$er" '*unreadable lifecycle record*')" yes
+	chk reset "$r6 $o6" "0 reset=batch/cx was=unrecorded"
+	chk create_after_reset "$r7 $r8" "0 0"
+	verdict proc_corrupt_record "an unreadable record is listed as corrupt, supervise quarantines it and starts clean, recover quarantines another, create is refused over a third until reset removes it"
+	canary_note proc_corrupt_record
+
+	# isolation: the end of one workload (a kill, a crash loop) is of no concern to another one
+	sup_bg "$RC_POLICY" interactive/ib -- sleep 4861
+	ib=$SUPPID
+	sup_bg "$RC_POLICY" batch/ia -- sleep 4862
+	ia=$SUPPID
+	waitfor 20 rc_at interactive/ib running 1
+	waitfor 20 rc_at batch/ia running 1
+	waitfor 20 rc_find_is 'sleep 4861 ' 1
+	waitfor 20 rc_find_is 'sleep 4862 ' 1
+	ibm="$(rc_sf interactive/ib main)"
+	rc kill batch/ia
+	r1=$RS
+	rc_reap "$ia"
+	rc supervise batch/ic -- sh -c 'exit 1'
+	r2=$RS
+	sti="$(rc_sf interactive/ib phase gen restarts supervisor main)"
+	sta="$(rc_sf batch/ia phase ended)"
+	stc="$(rc_sf batch/ic phase ended domain)"
+	ibd="$(yn rc_pid_ok "$ibm")"
+	rc stop interactive/ib
+	r3=$RS
+	rc_reap "$ib"
+	rc reset batch/ic
+	chk kill_rc "$r1" 0
+	chk crash_loop_rc "$r2" 1
+	chk neighbour "$sti" "running 1 0 alive $ibm"
+	chk neighbour_alive "$ibd" yes
+	chk killed "$sta" "stopped requested:kill"
+	chk crashed "$stc" "failed failed:1 absent"
+	chk neighbour_stop "$r3 $SPRC" "0 0"
+	verdict proc_isolation "interactive/ib (main $ibm) kept running, gen=1 restarts=0, while batch/ia was killed and batch/ic crash-looped to failed"
+	canary_note proc_isolation
+
+	# a workload killed for exceeding its memory limit is a crash that the record says was out of memory
+	rc supervise batch/oo --memory-max 32M --restart never -- "$CT" mem 200
+	rs=$RS
+	st="$(rc_sf batch/oo phase ended status oom restarts)"
+	rc reset batch/oo
+	chk rc "$rs" 1
+	chk state "$st" "failed crashed:9 signal:9 yes 0"
+	verdict proc_oom_crash "a 200 MiB allocation under --memory-max 32M: ended=crashed:9 status=signal:9 oom=yes, distinct from ended=requested:kill"
+	canary_note proc_oom_crash
+
+	# nothing is left: no workload, no domain, no lifecycle that is not terminal, no process of resctl
+	waitfor 10 rc_no_reapers
+	rc list
+	listed="$(grep -cE '^(batch|interactive)/' "$T/rc.out")"
+	dirs="$(rc_domain_dirs)"
+	rc state
+	nonterm="$(awk '$2 !~ /^phase=(stopped|finished|failed)$/ || $0 !~ / supervisor=none / { n++ } END { print n + 0 }' "$T/rc.out")"
+	nstate="$(wc -l <"$T/rc.out" | tr -d ' ')"
+	procs="$(rc_pid_of ' --state-dir ' | wc -l)"
+	sleeps="$(rc_find 'sleep 48')"
+	chk workloads "$listed" 0
+	chk domain_dirs "$dirs" "$pdirs"
+	chk not_terminal "$nonterm" 0
+	chk resctl_processes "$procs" 0
+	chk sleeps "$sleeps" 0
+	verdict proc_cleanup "after $nstate lifecycle records: no workload is listed, the $dirs agent-interaction directories are the ones from before, every record is terminal with no supervisor, no resctl process and no workload process is left"
+	canary_note proc_cleanup
+
+	# the audit trail: complete, ordered, and its phase changes follow the table
+	rc audit 2048
+	gaps="$(awk 'NR > 1 && $1 != prev + 1 { n++ } { prev = $1 } END { print n + 0 }' "$T/rc.out")"
+	odd="$(grep -vcE '^[0-9]+ [0-9]+ [0-9]+:[a-z]+ [a-z]+ [^ ]+' "$T/rc.out")"
+	missing="$(awk 'BEGIN { m = split("supervise start intent stop kill exit restart phase reset recover quarantine", w, " ") } { have[$4] = 1 } END { for (i = 1; i <= m; i++) if (!(w[i] in have)) out = out " " w[i]; print out }' "$T/rc.out")"
+	nlines="$(wc -l <"$T/rc.out" | tr -d ' ')"
+	edges="$(rc_edges)"
+	chk sequence_gaps "$gaps" 0
+	chk malformed_lines "$odd" 0
+	chk events_missing "$missing" ""
+	chk order "$pl_order" ok
+	chk phase_changes "$edges" ok
+	verdict proc_audit "$nlines audit lines: sequence numbers without a gap, every line well formed, supervise/start/intent/stop/kill/exit/restart/phase/reset/recover/quarantine all present, the stop of batch/pl in the order intent -> stop -> exit -> stopped, every change of phase allowed by the lifecycle table"
+	canary_note proc_audit
+
+	# every phase of the lifecycle was entered and audited
+	lack=
+	for w in starting running stopping killing sweeping backoff recovering stopped finished failed; do
+		case " $seen " in *" $w "*) ;; *) lack="$lack $w" ;; esac
+	done
+	chk phases_not_seen "$lack" ""
+	verdict proc_phases "starting running stopping killing sweeping backoff recovering stopped finished failed were all entered and audited in the scenarios above"
+	rc_scrub
+	canary_report system_canary_process
+}
+
+# ------------------------------------------------------------------------------------------------ critical processes
+# A service entered into system (or registered with protect) is a critical process: it has to stay out of every workload kill
+# domain whatever happens to a workload. The service of this section is a shell script that appends the uptime to a file about
+# once a second; its pid and start time, its place in system of every hierarchy and its entry in the registry are checked
+# after every scenario. A keeper process that resctl did not start stands for a service that was registered with protect.
+
+crit_write_service() {
+	cat >"$T/critd" <<'EOF'
+#!/bin/sh
+beat="$1"
+[ -p "$beat.fifo" ] || exit 4
+exec 3<>"$beat.fifo"
+while :; do
+	read up rest </proc/uptime
+	echo "$up" >>"$beat"
+	read -t 1 x <&3
+	[ $? -le 1 ] || exit 3
+done
+EOF
+	chmod 755 "$T/critd"
+}
+crit_start_time() { sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | awk '{ print $20 }'; }
+crit_beats() { [ -r "$T/critd.beat" ] || { echo 0; return 0; }; echo $(($(wc -l <"$T/critd.beat") + 0)); }
+crit_beat_gt() { [ "$(crit_beats)" -gt "$1" ]; }
+crit_filled() { [ -s "$1" ]; }
+crit_outsider() { exec sleep "$1"; }
+crit_extra() { CANARY_EXTRA=$((${CRITD_UP:-0} + ${KEEPER_UP:-0})); }
+# rcq: resctl, with its own output files (the ones of rc are clobbered by every helper)
+rcq() { "$RC_BIN" --policy "$RC_POLICY" --lifecycle "$RC_LC" --state-dir "$RC_STATE" "$@" >"$T/rcq.out" 2>"$T/rcq.err"; QS=$?; }
+
+# crit_start: the service, entered into system by resctl (which registers it under its file name)
+crit_start() {
+	crit_write_service
+	rm -f "$T/critd.beat" "$T/critd.beat.fifo"
+	: >"$T/critd.beat"
+	mkfifo "$T/critd.beat.fifo"
+	rcbg enter system -- "$T/critd" "$T/critd.beat" >/dev/null 2>&1 &
+	CRITD=$!
+	CRITD_UP=1
+	crit_extra
+	waitfor 10 crit_beat_gt 0
+	CRITD_START="$(crit_start_time "$CRITD")"
+}
+# crit_keeper: a process that resctl did not start; the caller registers it with protect
+crit_keeper() {
+	crit_outsider 4900 &
+	KEEPER=$!
+	KEEPER_START="$(crit_start_time "$KEEPER")"
+}
+
+# crit_check_one NAME PID START: alive, the same process as before, in system of every hierarchy, listed live and placed in
+# system (in $T/rcq.out); the problems are added to cr_bad
+crit_check_one() {
+	co_st="$(rc_state "$2")"
+	case "$co_st" in
+	gone | Z | X)
+		cr_bad="$cr_bad $1:$co_st"
+		return 0
+		;;
+	esac
+	[ "$(crit_start_time "$2")" = "$3" ] || cr_bad="$cr_bad $1:restarted"
+	rc_in "$2" system || cr_bad="$cr_bad $1:not-in-system"
+	grep -qE "^[A-Za-z0-9_-]+ pid=$2 state=live placed=system start=$3\$" "$T/rcq.out" || cr_bad="$cr_bad $1:not-listed-live"
+	return 0
+}
+# crit_state: ok, or what is wrong with the services (use it in $(...))
+crit_state() {
+	cr_bad=
+	rcq critical
+	[ "$QS" = 0 ] || cr_bad=" critical_rc=$QS"
+	crit_check_one critd "$CRITD" "$CRITD_START"
+	if [ "${KEEPER_UP:-0}" = 1 ]; then crit_check_one keeper "$KEEPER" "$KEEPER_START"; fi
+	echo "${cr_bad:-ok}"
+}
+# crit_mv PID REL: put a process into agent-interaction/REL of every hierarchy, the way a mistake would
+crit_mv() {
+	for cr_r in $(rc_roots); do
+		{ echo "$1" >"$cr_r/agent-interaction/$2/cgroup.procs"; } 2>/dev/null
+	done
+}
+# crit_misplace REL [critd]: put the services (only critd with the argument) into the kill domain agent-interaction/REL and
+# check that the registry sees them there; prints ok, or the problems (use it in $(...))
+crit_misplace() {
+	cm_bad=
+	crit_mv "$CRITD" "$1"
+	rc_in "$CRITD" "$1" || cm_bad="$cm_bad critd-not-moved"
+	if [ "${2:-}" != critd ] && [ "${KEEPER_UP:-0}" = 1 ]; then
+		crit_mv "$KEEPER" "$1"
+		rc_in "$KEEPER" "$1" || cm_bad="$cm_bad keeper-not-moved"
+	fi
+	rcq critical
+	grep -qE "^critd pid=$CRITD state=live placed=workload:${1#workload/} " "$T/rcq.out" || cm_bad="$cm_bad critd-not-listed-in-the-workload"
+	echo "${cm_bad:-ok}"
+}
+# crit_sup WORKLOAD SECONDS [--restart never]: a supervised `sleep SECONDS`, running; its supervisor is CS_PID
+crit_sup() {
+	cs_w="$1"
+	cs_n="$2"
+	shift 2
+	sup_bg "$RC_POLICY" "$cs_w" "$@" -- sleep "$cs_n"
+	CS_PID=$SUPPID
+	waitfor 20 rc_phase_is "$cs_w" running
+	waitfor 20 rc_find_is "sleep $cs_n " 1
+}
+# crit_unmanaged WORKLOAD SECONDS: `sleep SECONDS` run by `resctl run` (it is CRIT_PJ), the domain has it
+crit_unmanaged() {
+	rcbg run "$1" -- sleep "$2" >/dev/null 2>&1 &
+	CRIT_PJ=$!
+	waitfor 10 rc_has "$1" 1 running
+}
+# crit_drop WORKLOAD [PID]: remove the workload, with what is left in it, and reap the job that ran in it (bounded)
+crit_drop() {
+	rc remove "$1"
+	CD_RS=$RS
+	[ -z "${2:-}" ] || rc_reap "$2" 10
+}
+# crit_rescues PID REL [ACTOR]: how often the audit trail says that the process was moved out of agent-interaction/REL
+crit_rescues() {
+	rc audit 2048
+	grep -cE "^[0-9]+ [0-9]+ [0-9]+:${3:-[a-z]+} rescue pid$1 found in agent-interaction/$2 moved=true\$" "$T/rc.out"
+}
+# crit_rescued REL [ACTOR]: "N N", the rescues of critd and of the keeper
+crit_rescued() { echo "$(crit_rescues "$CRITD" "$1" "${2:-}") $(crit_rescues "$KEEPER" "$1" "${2:-}")"; }
+# crit_try_protect PID: the operator's protect of a process that runs in a workload, by name and without, is refused
+crit_try_protect() {
+	rc protect "$1"
+	chk "plain_$1" "$RS $(yn like "$(rcerr)" '*runs in the workload*a workload process is never protected*')" "2 yes"
+	rc protect "$1" --name evil
+	chk "named_$1" "$RS $(yn like "$(rcerr)" '*runs in the workload*a workload process is never protected*')" "2 yes"
+}
+# crit_chk LABEL: the services are as they were; when they are not, they are put back so that the next scenario is its own
+crit_chk() {
+	cr_st="$(crit_state)"
+	chk "$1" "$cr_st" ok
+	[ "$cr_st" = ok ] || crit_heal
+}
+crit_heal() {
+	CRIT_RESTARTS=$((CRIT_RESTARTS + 1))
+	if rc_alive "$CRITD"; then
+		crit_mv "$CRITD" system
+		rc protect "$CRITD" --name critd
+	else
+		rc_reap "$CRITD" 10
+		crit_start
+		CRIT_BEAT=0
+	fi
+	if [ "${KEEPER_UP:-0}" = 1 ]; then
+		if rc_alive "$KEEPER"; then
+			crit_mv "$KEEPER" system
+			rc protect "$KEEPER" --name keeper
+		else
+			rc_reap "$KEEPER" 10
+			crit_keeper
+			rc protect "$KEEPER" --name keeper
+		fi
+	fi
+}
+# crit_snap: add the audit lines since the last snapshot to $T/crit.audit (never use it in $(...))
+crit_snap() {
+	rcq audit 2048
+	awk -v last="$CRIT_SEQ" '$1 + 0 > last + 0' "$T/rcq.out" >>"$T/crit.audit"
+	CRIT_SEQ="$(awk -v last="$CRIT_SEQ" '{ if ($1 + 0 > s) s = $1 + 0 } END { if (s < last + 0) s = last + 0; print s + 0 }' "$T/crit.audit")"
+}
+# crit_count EVENT SUBJECT [DETAIL-ERE]: lines of the snapshot
+crit_count() {
+	if [ -n "${3:-}" ]; then
+		grep -cE "^[0-9]+ [0-9]+ [0-9]+:[a-z]+ $1 $2 $3" "$T/crit.audit"
+	else
+		grep -cE "^[0-9]+ [0-9]+ [0-9]+:[a-z]+ $1 $2( |\$)" "$T/crit.audit"
+	fi
+}
+# crit_verdict FACT TEXT: the services are as they were (and beat since the last fact), the fact is ok with TEXT when nothing
+# differed, and the canary of the system domain is still where it was
+crit_verdict() {
+	waitfor 10 crit_beat_gt "$CRIT_BEAT"
+	cr_st="$(crit_state)"
+	chk critical_services "$cr_st" ok
+	[ "$cr_st" = ok ] || crit_heal
+	chk heartbeat "$(yn crit_beat_gt "$CRIT_BEAT")" yes
+	verdict "$1" "$2"
+	CRIT_BEAT="$(crit_beats)"
+	crit_snap
+	canary_note "$1"
+}
+# crit_refusals FILE WORKLOAD: the lines "LABEL rc=N message" of the requests a workload made (crit_write_inside): each must
+# be refused with rc 2 by the guard that names the request and the workload; prints "requests refused problems"
+crit_refusals() {
+	awk -v w="$2" '
+		/^ro:/ { next }
+		{
+			cmd = $1
+			sub(/-.*$/, "", cmd)
+			n++
+			if ($2 == "rc=2" && index($0, "resctl: refused: " cmd " is refused inside the workload " w ": a workload does not control workloads or protected processes") > 0) {
+				ok++
+			} else {
+				bad = bad " " $1
+			}
+		}
+		END {
+			if (bad == "") bad = "-"
+			print n + 0, ok + 0, bad
+		}
+	' "$1"
+}
+# crit_write_inside: the script a workload runs to ask for what it must not get; one line per request in its output file
+crit_write_inside() {
+	cat >"$T/crit_inside.sh" <<'EOF'
+out="$1"; bin="$2"; pol="$3"; lc="$4"; st="$5"; crit="$6"; other="$7"
+: >"$out"
+try() {
+	l="$1"; shift
+	"$bin" --policy "$pol" --lifecycle "$lc" --state-dir "$st" "$@" >"$out.o" 2>"$out.e"
+	r=$?
+	echo "$l rc=$r $(head -n 1 "$out.e" | cut -c1-240)" >>"$out"
+}
+try protect-self protect $$
+try protect-critd protect "$crit"
+try protect-name protect "$crit" --name evil
+try unprotect-critd unprotect "$crit"
+try enter-system enter system -- true
+try kill-other kill "$other"
+try stop-other stop "$other"
+try remove-other remove "$other"
+try freeze-other freeze "$other"
+try thaw-other thaw "$other"
+try reset-other reset "$other"
+try supervise-new supervise batch/kss -- true
+try recover recover
+try teardown teardown
+try init init
+try create-new create batch/kcr
+try run-new run batch/krn -- true
+try ro:critical critical
+try ro:list list
+try ro:state state
+try ro:audit audit 3
+try ro:status status "$other"
+exit 0
+EOF
+}
+# crit_write_ud: the script of a workload that runs as nobody (policy uid/gid): what can it do to system and the registry
+crit_write_ud() {
+	cat >"$T/crit_ud.sh" <<'EOF'
+out="$1"; bin="$2"; pol="$3"; st="$4"; crit="$5"; shift 5
+: >"$out"
+echo "ids uid=$(id -u) gid=$(id -g)" >>"$out"
+before="$(cat /proc/self/cgroup)"
+for r in "$@"; do
+	if { echo "$$" >"$r/agent-interaction/system/cgroup.procs"; } 2>/dev/null; then
+		echo "system-write-ok $r" >>"$out"
+	else
+		echo "system-write-denied $r" >>"$out"
+	fi
+done
+after="$(cat /proc/self/cgroup)"
+if [ "$before" = "$after" ]; then echo cgroup-unchanged >>"$out"; else echo cgroup-CHANGED >>"$out"; fi
+if [ -w "$st/critical" ]; then echo registry-write-ok >>"$out"; else echo registry-write-denied >>"$out"; fi
+if ls "$st" >/dev/null 2>&1; then echo state-list-ok >>"$out"; else echo state-list-denied >>"$out"; fi
+"$bin" --policy "$pol" --state-dir "$st" protect "$crit" >"$out.p" 2>&1
+rcp=$?
+echo "protect rc=$rcp $(head -n 1 "$out.p" | cut -c1-240)" >>"$out"
+"$bin" --policy "$pol" --state-dir "$st" critical >"$out.p" 2>&1
+rcp=$?
+echo "critical rc=$rcp $(head -n 1 "$out.p" | cut -c1-240)" >>"$out"
+{ kill -9 "$crit"; } 2>/dev/null
+rcp=$?
+echo "kill-critical rc=$rcp" >>"$out"
+exit 0
+EOF
+}
+# cr_scrub: nothing of this section is left (the services are ended before)
+cr_scrub() {
+	for cr_p in $(rc_pid_of ' --state-dir '); do kill -9 "$cr_p" 2>/dev/null; done
+	for cr_g in 491 492 493 494 495 496 497; do
+		for cr_p in $(rc_pid_of "sleep $cr_g"); do kill -9 "$cr_p" 2>/dev/null; done
+	done
+	rc_scrub
+}
+
+rc_s_critical() {
+	section critical || return 0
+	CRIT_RESTARTS=0
+	CRIT_BEAT=0
+	KEEPER_UP=0
+	KEEPER=
+	CRITD_UP=0
+	CANARY_EXTRA=0
+	cr_pes='process\(es\)'
+	rc recover
+	cr_dirs="$(rc_domain_dirs)"
+	rc audit 1
+	cr_seq0="$(awk '{ s = $1 } END { print s + 0 }' "$T/rc.out")"
+	CRIT_SEQ=$cr_seq0
+	: >"$T/crit.audit"
+	CANARY_START="$(crit_start_time "$CANARY")"
+	crit_start
+	CRIT_FIRST="$CRITD $CRITD_START"
+	CRIT_T0="$(cg_uptime)"
+
+	# a service entered into system is a critical process: placed in system, listed live in the registry, audited
+	rcq critical
+	chk critical_rc "$QS" 0
+	chk critd_line "$(grep -cE "^critd pid=$CRITD state=live placed=system start=$CRITD_START\$" "$T/rcq.out")" 1
+	chk canary_line "$(grep -cE "^sleep pid=$CANARY state=live placed=system start=$CANARY_START\$" "$T/rcq.out")" 1
+	chk live "$(grep -c ' state=live ' "$T/rcq.out")" 2
+	chk stale "$(grep -c ' state=stale ' "$T/rcq.out")" 0
+	chk critd_in_system "$(yn rc_in "$CRITD" system)" yes
+	chk enter_audited "$(rc_ev system enter "cmd=$T/critd")" 1
+	chk protect_audited "$(rc_ev critd protect "pid=$CRITD( |\$)")" 1
+	crit_verdict crit_register "enter system registered the service under its file name (critd pid $CRITD, start $CRITD_START): live and placed=system in the registry, in system of every hierarchy, enter and protect audited, heartbeat running"
+
+	# protect registers a process that resctl did not start: it is moved into system; a protect again keeps the name
+	crit_keeper
+	cr_out="$(yn rc_in "$KEEPER" system)"
+	rc protect "$KEEPER"
+	cr_r1="$RS $(rc_out)"
+	if [ "$RS" = 0 ]; then
+		KEEPER_UP=1
+		crit_extra
+	fi
+	rc protect "$KEEPER" --name keeper
+	cr_r2="$RS $(rc_out)"
+	rc protect "$KEEPER"
+	cr_r3="$RS $(rc_out)"
+	rcq critical
+	chk outsider_outside "$cr_out" no
+	chk protect_new "$cr_r1" "0 protected=pid$KEEPER pid=$KEEPER placed=system moved=yes"
+	chk protect_name "$cr_r2" "0 protected=keeper pid=$KEEPER placed=system moved=no"
+	chk protect_again "$cr_r3" "0 protected=keeper pid=$KEEPER placed=system moved=no"
+	chk keeper_line "$(grep -cE "^keeper pid=$KEEPER state=live placed=system start=$KEEPER_START\$" "$T/rcq.out")" 1
+	chk live "$(grep -c ' state=live ' "$T/rcq.out")" 3
+	chk stale "$(grep -c ' state=stale ' "$T/rcq.out")" 0
+	chk keeper_in_system "$(yn rc_in "$KEEPER" system)" yes
+	chk protect_audit "$(rc_ev "pid$KEEPER" protect "pid=$KEEPER( |\$)") $(rc_ev keeper protect "pid=$KEEPER( |\$)")" "1 2"
+	KEEPER_FIRST="$KEEPER $KEEPER_START"
+	crit_verdict crit_protect "protect moved the outsider $KEEPER into system and registered it (pid$KEEPER, then keeper); a protect again kept the name; the registry lists 3 live and 0 stale processes, three protects audited"
+
+	# every way to end a workload leaves the critical processes alone
+	crit_sup batch/ks1 4911
+	cr_sp=$CS_PID
+	rc stop batch/ks1
+	rs=$RS
+	ou="$(rc_out)"
+	rc_reap "$cr_sp" 20
+	st="$(rc_sf batch/ks1 phase ended status)"
+	ph="$(rc_phases batch/ks1)"
+	chk ks1_stop "$rs $ou" "0 stop=graceful phase=stopped"
+	chk ks1_supervisor "$SPRC $SPHUNG" "0 no"
+	chk ks1_state "$st" "stopped requested:stop signal:15"
+	chk ks1_phases "$ph" "starting running stopping sweeping stopped"
+	crit_chk after_supervised_stop
+
+	crit_sup batch/ks2 4912
+	cr_sp=$CS_PID
+	rc kill batch/ks2
+	rs=$RS
+	ou="$(rc_out)"
+	rc_reap "$cr_sp" 20
+	st="$(rc_sf batch/ks2 phase ended status)"
+	ph="$(rc_phases batch/ks2)"
+	chk ks2_kill "$rs $ou" "0 phase=stopped"
+	chk ks2_supervisor "$SPRC $SPHUNG" "0 no"
+	chk ks2_state "$st" "stopped requested:kill signal:9"
+	chk ks2_phases "$ph" "starting running killing sweeping stopped"
+	crit_chk after_supervised_kill
+
+	crit_unmanaged batch/ku1 4913
+	cr_pj=$CRIT_PJ
+	rc kill batch/ku1
+	rs=$RS
+	rc_reap "$cr_pj" 10
+	chk ku1_kill "$rs $SPHUNG" "0 no"
+	crit_drop batch/ku1
+	crit_chk after_unmanaged_kill
+
+	crit_unmanaged batch/ku2 4914
+	cr_pj=$CRIT_PJ
+	rc stop batch/ku2
+	rs=$RS
+	ou="$(rc_out)"
+	rc_reap "$cr_pj" 10
+	chk ku2_stop "$rs $ou $SPHUNG" "0 stop=graceful no"
+	crit_drop batch/ku2
+	crit_chk after_unmanaged_stop
+
+	crit_unmanaged batch/ku3 4915
+	cr_pj=$CRIT_PJ
+	rc remove batch/ku3
+	rs=$RS
+	rc_reap "$cr_pj" 10
+	chk ku3_remove "$rs $SPHUNG" "0 no"
+	chk ku3_domain_gone "$(yn rc_gone batch/ku3)" yes
+	crit_chk after_remove
+
+	rm -f "$T/${RC_P}ku4.ready"
+	rcbg run batch/ku4 -- sh -c 'trap "" TERM; : >"$0"; while :; do sleep 1; done' "$T/${RC_P}ku4.ready" >/dev/null 2>&1 &
+	cr_pj=$!
+	waitfor 10 rc_ready "$T/${RC_P}ku4.ready"
+	rc stop batch/ku4 --grace 2s
+	rs=$RS
+	ou="$(rc_out)"
+	rc_reap "$cr_pj" 10
+	chk ku4_stop "$rs $(yn like "$ou" 'stop=killed:[1-9]*') $SPHUNG" "0 yes no"
+	crit_drop batch/ku4
+	crit_chk after_forced_stop
+
+	chk sleeps_left "$(rc_find 'sleep 491')" 0
+	chk domains "$(rc_domain_dirs)" "$cr_dirs"
+	crit_verdict crit_terminate "supervised stop and kill, unmanaged kill, stop, remove and a stop that had to be forced (SIGTERM ignored): every workload ended, critd $CRITD and the keeper $KEEPER kept their pid and start time, stayed in system and listed live; no domain is left"
+
+	# a workload that crashes, is killed by someone else, runs out of memory or forks without end leaves them alone
+	rc_pol_b 60 "$RC_POLICY" supervise batch/kc1 -- sh -c 'exit 1'
+	rs=$RS
+	ou="$(rc_out)"
+	rc reset batch/kc1
+	chk kc1_loop "$rs $ou" "1 phase=failed gen=4 restarts=3 reason=3 restarts within 60s are used up"
+	crit_chk after_crash_loop
+
+	crit_sup batch/kc2 4917 --restart never
+	cr_sp=$CS_PID
+	cr_m="$(rc_sf batch/kc2 main)"
+	kill -9 "$cr_m" 2>/dev/null
+	rc_reap "$cr_sp" 20
+	cr_hung=$SPHUNG
+	st="$(rc_sf batch/kc2 phase ended status restarts)"
+	rc reset batch/kc2
+	chk kc2_state "$st" "failed crashed:9 signal:9 0"
+	chk kc2_supervisor "$cr_hung" no
+	crit_chk after_outside_sigkill
+
+	rc supervise batch/kc3 --memory-max 32M --restart never -- "$CT" mem 200
+	rs=$RS
+	st="$(rc_sf batch/kc3 phase ended status oom restarts)"
+	rc reset batch/kc3
+	chk kc3_rc "$rs" 1
+	chk kc3_state "$st" "failed crashed:9 signal:9 yes 0"
+	crit_chk after_oom
+
+	rcbg run batch/kc4 --pids-max 32 -- "$CT" fork 500 >"$T/${RC_P}kc4.out" 2>&1 &
+	cr_pj=$!
+	rc_reap "$cr_pj" 30
+	cr_hung=$SPHUNG
+	cr_n="$(sed -n 's/^forked=\([0-9]*\) of 500 (refused)$/\1/p' "$T/${RC_P}kc4.out")"
+	cr_ref="$(rc_val batch/kc4 pids.refused)"
+	cr_pk=bad
+	if [ -n "$cr_n" ] && [ "$cr_n" -le 32 ] && [ "${cr_ref:-0}" -ge 1 ]; then cr_pk=ok; fi
+	rc kill batch/kc4
+	crit_drop batch/kc4
+	chk kc4_parent "$cr_hung" no
+	chk kc4_contained "$cr_pk" ok
+	crit_chk after_fork_bomb
+	chk domains "$(rc_domain_dirs)" "$cr_dirs"
+	crit_verdict crit_crash "a crash loop (3 restarts, then failed), an outsider's SIGKILL (crashed:9), an out-of-memory kill (oom=yes) and a fork bomb stopped by the pids limit (${cr_n:-?} of 500 forked, ${cr_ref:-?} refused): the services were never touched"
+
+	# a critical process that was put into a workload domain by mistake is moved back into system before anything in that
+	# domain is ended, whoever ends it: the unmanaged kill, stop and remove, a supervised stop, and the sweep a supervisor makes
+	# when its workload ends by itself
+	crit_unmanaged batch/kmm1 4921
+	cr_pj=$CRIT_PJ
+	cr_mp="$(crit_misplace workload/batch/kmm1)"
+	rc kill batch/kmm1
+	rs=$RS
+	rc_reap "$cr_pj" 10
+	cr_hung=$SPHUNG
+	cr_rs="$(crit_rescued workload/batch/kmm1)"
+	chk kmm1_placed "$cr_mp" ok
+	chk kmm1_kill "$rs $cr_hung" "0 no"
+	chk kmm1_rescues "$cr_rs" "1 1"
+	crit_chk after_misplaced_kill
+	crit_drop batch/kmm1
+
+	crit_unmanaged batch/kmm2 4922
+	cr_pj=$CRIT_PJ
+	cr_mp="$(crit_misplace workload/batch/kmm2)"
+	rc stop batch/kmm2
+	rs=$RS
+	ou="$(rc_out)"
+	rc_reap "$cr_pj" 10
+	cr_hung=$SPHUNG
+	cr_rs="$(crit_rescued workload/batch/kmm2)"
+	chk kmm2_placed "$cr_mp" ok
+	chk kmm2_stop "$rs $ou $cr_hung" "0 stop=graceful no"
+	chk kmm2_rescues "$cr_rs" "1 1"
+	crit_chk after_misplaced_stop
+	crit_drop batch/kmm2
+
+	crit_unmanaged batch/kmm3 4923
+	cr_pj=$CRIT_PJ
+	cr_mp="$(crit_misplace workload/batch/kmm3)"
+	rc remove batch/kmm3
+	rs=$RS
+	rc_reap "$cr_pj" 10
+	cr_hung=$SPHUNG
+	cr_rs="$(crit_rescued workload/batch/kmm3)"
+	chk kmm3_placed "$cr_mp" ok
+	chk kmm3_remove "$rs $cr_hung" "0 no"
+	chk kmm3_rescues "$cr_rs" "1 1"
+	chk kmm3_domain_gone "$(yn rc_gone batch/kmm3)" yes
+	crit_chk after_misplaced_remove
+
+	crit_sup batch/kmm4 4924 --restart never
+	cr_sp=$CS_PID
+	cr_mp="$(crit_misplace workload/batch/kmm4)"
+	rc stop batch/kmm4
+	rs=$RS
+	ou="$(rc_out)"
+	rc_reap "$cr_sp" 20
+	cr_hung=$SPHUNG
+	cr_rc=$SPRC
+	st="$(rc_sf batch/kmm4 phase ended)"
+	cr_rs="$(crit_rescued workload/batch/kmm4)"
+	chk kmm4_placed "$cr_mp" ok
+	chk kmm4_stop "$rs $ou" "0 stop=graceful phase=stopped"
+	chk kmm4_supervisor "$cr_rc $cr_hung" "0 no"
+	chk kmm4_state "$st" "stopped requested:stop"
+	chk kmm4_rescues "$cr_rs" "1 1"
+	crit_chk after_misplaced_supervised_stop
+
+	rm -f "$T/${RC_P}m5.go" "$T/${RC_P}m5.child"
+	sup_bg "$RC_POLICY" batch/kmm5 --restart never -- sh -c 'sleep 4925 & echo $! >"$1"; while [ ! -f "$0" ]; do sleep 0.2; done' "$T/${RC_P}m5.go" "$T/${RC_P}m5.child"
+	cr_sp=$SUPPID
+	waitfor 20 rc_phase_is batch/kmm5 running
+	waitfor 10 crit_filled "$T/${RC_P}m5.child"
+	cr_mp="$(crit_misplace workload/batch/kmm5)"
+	: >"$T/${RC_P}m5.go"
+	rc_reap "$cr_sp" 60
+	cr_hung=$SPHUNG
+	cr_rc=$SPRC
+	st="$(rc_sf batch/kmm5 phase ended status)"
+	cr_child="$(cat "$T/${RC_P}m5.child")"
+	cr_rs="$(crit_rescued workload/batch/kmm5 super)"
+	chk kmm5_placed "$cr_mp" ok
+	chk kmm5_supervisor "$cr_rc $cr_hung" "0 no"
+	chk kmm5_state "$st" "finished clean exit:0"
+	chk kmm5_neighbour "$(yn rc_alive "$cr_child")" no
+	chk kmm5_rescues "$cr_rs" "1 1"
+	crit_chk after_misplaced_sweep
+	chk sleeps_left "$(rc_find 'sleep 492')" 0
+	chk domains "$(rc_domain_dirs)" "$cr_dirs"
+	crit_verdict crit_misplaced "critd and the keeper were put into the domain of the workload: a kill, a stop, a remove, a supervised stop and the supervisor's own sweep at the end of a run each moved them back into system first (one rescue audited per process and scenario) and killed only the neighbour"
+
+	# a freeze of a domain that holds a critical process does not freeze it
+	crit_unmanaged batch/kfz 4926
+	cr_pj=$CRIT_PJ
+	cr_mp="$(crit_misplace workload/batch/kfz)"
+	cr_b0="$(crit_beats)"
+	rc freeze batch/kfz
+	rs=$RS
+	cr_fs="$(rc_val batch/kfz state) $(rc_val batch/kfz procs)"
+	waitfor 10 crit_beat_gt "$cr_b0"
+	cr_hb="$(yn crit_beat_gt "$cr_b0")"
+	cr_fz="$(crit_state)"
+	rc thaw batch/kfz
+	r2=$RS
+	rc kill batch/kfz
+	rc_reap "$cr_pj" 10
+	cr_hung=$SPHUNG
+	cr_rs="$(crit_rescued workload/batch/kfz)"
+	chk kfz_placed "$cr_mp" ok
+	chk kfz_freeze "$rs" 0
+	chk kfz_frozen "$cr_fs" "frozen 1"
+	chk kfz_services_while_frozen "$cr_fz" ok
+	chk kfz_heartbeat_while_frozen "$cr_hb" yes
+	chk kfz_thaw "$r2" 0
+	chk kfz_neighbour "$cr_hung" no
+	chk kfz_rescues "$cr_rs" "1 1"
+	crit_chk after_freeze
+	crit_drop batch/kfz
+	crit_verdict crit_freeze "freeze of a domain with critd and the keeper in it moved them into system first: the domain was frozen with the neighbour only (state=frozen procs=1) and the heartbeat went on while it was frozen"
+
+	# a workload cannot ask for any of it: every request that changes a workload or the registry is refused inside a workload
+	# (an unmanaged one and a supervised one), audited, and changes nothing; the requests that only read work
+	crit_write_inside
+	crit_unmanaged batch/kother 4931
+	cr_po=$CRIT_PJ
+	rcq critical
+	cp "$T/rcq.out" "$T/crit.before"
+	rm -f "$T/${RC_P}cin1.out" "$T/${RC_P}cin2.out"
+	rcbg run batch/kin1 -- sh "$T/crit_inside.sh" "$T/${RC_P}cin1.out" "$RC_BIN" "$RC_POLICY" "$RC_LC" "$RC_STATE" "$CRITD" batch/kother >/dev/null 2>&1 &
+	cr_pi=$!
+	rc_reap "$cr_pi" 60
+	chk in1_script "$SPHUNG" no
+	sup_bg "$RC_POLICY" batch/kin2 --restart never -- sh "$T/crit_inside.sh" "$T/${RC_P}cin2.out" "$RC_BIN" "$RC_POLICY" "$RC_LC" "$RC_STATE" "$CRITD" batch/kother
+	cr_sp=$SUPPID
+	rc_reap "$cr_sp" 60
+	chk in2_supervisor "$SPHUNG" no
+	chk in1_refused "$(crit_refusals "$T/${RC_P}cin1.out" batch/kin1)" "17 17 -"
+	chk in2_refused "$(crit_refusals "$T/${RC_P}cin2.out" batch/kin2)" "17 17 -"
+	chk in1_reads "$(grep -cE '^ro:[a-z]+ rc=0( |$)' "$T/${RC_P}cin1.out")" 5
+	chk in2_reads "$(grep -cE '^ro:[a-z]+ rc=0( |$)' "$T/${RC_P}cin2.out")" 5
+	rcq critical
+	chk registry_unchanged "$(yn cmp -s "$T/crit.before" "$T/rcq.out")" yes
+	chk no_evil "$(grep -c '^evil ' "$T/rcq.out")" 0
+	chk other_workload "$(rc_val batch/kother procs) $(rc_val batch/kother state)" "1 running"
+	chk other_process "$(rc_find 'sleep 4931 ')" 1
+	rc list
+	chk nothing_created "$(grep -cE '^batch/(kss|kcr|krn) ' "$T/rc.out")" 0
+	rc kill batch/kother
+	crit_drop batch/kother "$cr_po"
+	chk kother_gone "$SPHUNG" no
+	rc remove batch/kin1
+	crit_verdict crit_no_request "17 requests to protect, unprotect, enter system, stop, kill, remove, freeze, thaw, reset, supervise, recover, teardown, init, create and run, made from inside an unmanaged and a supervised workload, were all refused (rc 2, naming the request and the workload) and the 5 read-only requests worked; the registry, the other workload and the domains are unchanged"
+
+	# nothing a workload runs can become protected, not even when the operator asks: by name or without, its main process, a
+	# child, the process of an unmanaged workload
+	rm -f "$T/${RC_P}kp1.child"
+	sup_bg "$RC_POLICY" batch/kp1 --restart never -- sh -c 'sleep 4941 & echo $! >"$0"; wait' "$T/${RC_P}kp1.child"
+	cr_sp=$SUPPID
+	waitfor 20 rc_phase_is batch/kp1 running
+	waitfor 10 crit_filled "$T/${RC_P}kp1.child"
+	cr_m="$(rc_sf batch/kp1 main)"
+	cr_c="$(cat "$T/${RC_P}kp1.child")"
+	crit_unmanaged batch/kp2 4943
+	cr_pj=$CRIT_PJ
+	rcq critical
+	cp "$T/rcq.out" "$T/crit.before"
+	crit_try_protect "$cr_m"
+	crit_try_protect "$cr_c"
+	crit_try_protect "$cr_pj"
+	cr_au=
+	for cr_x in "$cr_m" "$cr_c" "$cr_pj"; do
+		cr_au="$cr_au $(rc_ev protect refuse "(refused: )?process $cr_x runs in the workload")"
+	done
+	cr_au="${cr_au# }"
+	rcq critical
+	chk registry_unchanged "$(yn cmp -s "$T/crit.before" "$T/rcq.out")" yes
+	chk refusals_audited "$cr_au" "2 2 2"
+	chk processes_stay "$(yn rc_in "$cr_m" workload/batch/kp1) $(yn rc_in "$cr_c" workload/batch/kp1) $(yn rc_in "$cr_pj" workload/batch/kp2)" "yes yes yes"
+	chk no_pid_listed "$(grep -cE "pid=($cr_m|$cr_c|$cr_pj) |^evil " "$T/rcq.out")" 0
+	rc stop batch/kp1
+	rc_reap "$cr_sp" 20
+	chk kp1_stop "$SPHUNG" no
+	rc kill batch/kp2
+	crit_drop batch/kp2 "$cr_pj"
+	chk kp2_gone "$SPHUNG" no
+	crit_verdict crit_no_obtain "protect, with a name and without, of the main process ($cr_m), a child ($cr_c) and the process of an unmanaged workload ($cr_pj) was refused 6 times (rc 2, a workload process is never protected) and audited; none of them is in the registry, all stay in their domains"
+
+	# a policy cannot grant protected status: sections and keys that name it are refused wherever they are, and nothing is
+	# started, created or registered under such a policy
+	cr_pb="$T/${RC_P}pol"
+	{ cat "$RC_POLICY"; printf '\n[protect]\npid = 1\n'; } >"$cr_pb.protect"
+	{ cat "$RC_POLICY"; printf '\n[protected]\npid = 1\n'; } >"$cr_pb.protected"
+	{ cat "$RC_POLICY"; printf '\n[critical.workloads]\nname = x\n'; } >"$cr_pb.critical"
+	{ cat "$RC_POLICY"; printf '\n[class.extra]\ncpu.weight = 50\nprotected = yes\n\n[limits.extra]\nmemory.max = 64M\npids.max = 32\n'; } >"$cr_pb.classx"
+	{ cat "$RC_POLICY"; printf '\n[class.extra]\ncpu.weight = 50\n\n[limits.extra]\nmemory.max = 64M\npids.max = 32\nprotect = yes\n'; } >"$cr_pb.limx"
+	{ cat "$RC_POLICY"; printf '\n[class.extra]\ncpu.weight = 50\n\n[limits.extra]\nmemory.max = 64M\npids.max = 32\n'; } >"$cr_pb.ctl"
+	awk '{ print } /^\[class\.batch\]$/ { print "protected = yes" }' "$RC_POLICY" >"$cr_pb.ins1"
+	awk '{ print } /^\[system\]$/ { print "critical = yes" }' "$RC_POLICY" >"$cr_pb.ins2"
+	awk '{ print } /^\[workload\]$/ { print "protect = yes" }' "$RC_POLICY" >"$cr_pb.ins3"
+	cr_pbad=
+	for cr_v in protect protected critical classx limx ins1 ins2 ins3; do
+		rc_pol "$cr_pb.$cr_v" policy
+		if [ "$RS" != 2 ] || ! grep -q 'a policy cannot grant protected status' "$T/rc.err"; then cr_pbad="$cr_pbad $cr_v:rc=$RS"; fi
+	done
+	chk variants_refused "${cr_pbad:-ok}" ok
+	rc_pol "$cr_pb.ctl" policy
+	chk control_policy "$RS" 0
+	rc_pol "$RC_POLICY" policy
+	chk base_policy "$RS" 0
+	cr_d0="$(rc_domain_dirs)"
+	rcq critical
+	cp "$T/rcq.out" "$T/crit.before"
+	rc_pol "$cr_pb.ins3" init
+	chk init_refused "$RS $(yn grep -q 'a policy cannot grant protected status' "$T/rc.err")" "2 yes"
+	rc_pol "$cr_pb.protect" supervise batch/kpl --restart never -- true
+	chk supervise_refused "$RS $(yn grep -q 'a policy cannot grant protected status' "$T/rc.err")" "2 yes"
+	rc_pol "$cr_pb.critical" run batch/kpl2 -- true
+	chk run_refused "$RS $(yn grep -q 'a policy cannot grant protected status' "$T/rc.err")" "2 yes"
+	rc list
+	chk nothing_started "$(grep -cE '^batch/(kpl|kpl2) ' "$T/rc.out")" 0
+	rcq critical
+	chk registry_unchanged "$(yn cmp -s "$T/crit.before" "$T/rcq.out")" yes
+	chk domains "$(rc_domain_dirs)" "$cr_d0"
+	rm -f "$cr_pb.protect" "$cr_pb.protected" "$cr_pb.critical" "$cr_pb.classx" "$cr_pb.limx" "$cr_pb.ctl" "$cr_pb.ins1" "$cr_pb.ins2" "$cr_pb.ins3"
+	crit_verdict crit_policy "8 policies that name protected status (the sections protect, protected and critical.workloads; the keys protected, protect and critical in class, limits, system and workload) are refused with rc 2 and 'a policy cannot grant protected status', the valid control is not; init, supervise and run under them changed nothing"
+
+	# a workload that runs as nobody (the policy's uid and gid) cannot reach system, the registry or the state directory
+	cr_udir="$T/${RC_P}ud"
+	rm -rf "$cr_udir"
+	mkdir -p "$cr_udir"
+	chmod 777 "$cr_udir"
+	cp "$RC_BIN" "$cr_udir/resctl"
+	chmod 755 "$cr_udir/resctl"
+	cp "$RC_POLICY" "$cr_udir/policy"
+	chmod 644 "$cr_udir/policy"
+	crit_write_ud
+	rc_restart "$cr_udir/ud.base" on-failure 3 60s 10 100ms 400ms
+	{ grep -v '^allow.root' "$cr_udir/ud.base"; printf 'uid = 65534\ngid = 65534\n'; } >"$T/${RC_P}ud.policy"
+	rc_pol "$T/${RC_P}ud.policy" supervise batch/kud --restart never -- sh "$T/crit_ud.sh" "$cr_udir/out" "$cr_udir/resctl" "$cr_udir/policy" "$RC_STATE" "$CRITD" $(rc_roots)
+	rs=$RS
+	ou="$(rc_out)"
+	chk ud_rc "$rs" 0
+	chk ud_finished "$(yn like "$ou" 'phase=finished*')" yes
+	chk ud_ids "$(grep -c '^ids uid=65534 gid=65534$' "$cr_udir/out")" 1
+	chk ud_system_denied "$(grep -c '^system-write-denied ' "$cr_udir/out")" "$(rc_roots | wc -l)"
+	chk ud_system_written "$(grep -c '^system-write-ok ' "$cr_udir/out")" 0
+	chk ud_cgroup "$(grep -c '^cgroup-unchanged$' "$cr_udir/out")" 1
+	chk ud_registry "$(grep -c '^registry-write-denied$' "$cr_udir/out")" 1
+	chk ud_state_listing "$(grep -c '^state-list-denied$' "$cr_udir/out")" 1
+	chk ud_protect "$(yn like "$(grep '^protect rc=' "$cr_udir/out")" 'protect rc=2 resctl: refused: protect is refused inside the workload batch/kud:*')" yes
+	chk ud_critical "$(yn like "$(grep '^critical rc=' "$cr_udir/out")" 'critical rc=1 *belongs to user 0, not to user 65534*')" yes
+	chk ud_kill "$(yn like "$(grep '^kill-critical rc=' "$cr_udir/out")" 'kill-critical rc=[1-9]*')" yes
+	cr_ud="$(grep '^system-write' "$cr_udir/out" | sort | uniq -c | tr '\n' ';' | cut -c1-120)"
+	rm -rf "$cr_udir"
+	rm -f "$T/${RC_P}ud.policy"
+	crit_verdict crit_uid_drop "a workload that ran as uid 65534 could not write the cgroup of system in any of the $(rc_roots | wc -l) hierarchies (its cgroup did not change), could not write the registry or list the state directory, was refused protect and could not signal critd"
+
+	# a registry that cannot be read is healed by the next command that ends a workload: kill-type commands never kill what
+	# they cannot tell is critical. All of it unreadable: rebuilt from system, the names are lost
+	crit_unmanaged batch/hl 4951
+	cr_pj=$CRIT_PJ
+	crit_snap
+	cr_rb="registry rebuilt from $((1 + CANARY_EXTRA)) $cr_pes of system\$"
+	cr_q0="$(crit_count quarantine critical)"
+	cr_r0="$(crit_count recover critical "$cr_rb")"
+	printf 'garbage\n' >"$RC_STATE/critical"
+	rcq critical
+	chk garbage_listing "$QS $(head -n 1 "$T/rcq.out")" "0 registry corrupt=it does not start with v=1"
+	rc kill batch/hl
+	rs=$RS
+	rc_reap "$cr_pj" 10
+	cr_hung=$SPHUNG
+	crit_snap
+	cr_q1="$(crit_count quarantine critical)"
+	cr_r1="$(crit_count recover critical "$cr_rb")"
+	chk garbage_kill "$rs $cr_hung" "0 no"
+	chk garbage_quarantined "$((cr_q1 - cr_q0))" 1
+	chk garbage_rebuilt "$((cr_r1 - cr_r0))" 1
+	crit_chk after_garbage
+	rc protect "$CRITD" --name critd
+	chk rename_critd "$RS $(rc_out)" "0 protected=critd pid=$CRITD placed=system moved=no"
+	rc protect "$KEEPER" --name keeper
+	chk rename_keeper "$RS $(rc_out)" "0 protected=keeper pid=$KEEPER placed=system moved=no"
+	rc protect "$CANARY" --name sleep
+	chk rename_canary "$RS $(rc_out)" "0 protected=sleep pid=$CANARY placed=system moved=no"
+	crit_drop batch/hl
+	# one readable line left, and critd in a workload at the moment of the heal: the line is kept, critd is not killed
+	crit_unmanaged batch/hl2 4952
+	cr_pj=$CRIT_PJ
+	cr_mp="$(crit_misplace workload/batch/hl2 critd)"
+	printf 'v=1\n%s %s critd\nthis line is damaged\n' "$CRITD" "$CRITD_START" >"$RC_STATE/critical"
+	crit_snap
+	cr_sv="registry rebuilt from $((1 + KEEPER_UP)) $cr_pes of system and 1 salvaged entry\\(ies\\)\$"
+	cr_s0="$(crit_count recover critical "$cr_sv")"
+	rcq critical
+	chk damaged_listing "$QS $(head -n 1 "$T/rcq.out" | cut -c1-16)" "0 registry corrupt"
+	rc kill batch/hl2
+	rs=$RS
+	rc_reap "$cr_pj" 10
+	cr_hung=$SPHUNG
+	cr_rs="$(crit_rescues "$CRITD" workload/batch/hl2)"
+	crit_snap
+	cr_s1="$(crit_count recover critical "$cr_sv")"
+	chk damaged_placed "$cr_mp" ok
+	chk damaged_kill "$rs $cr_hung" "0 no"
+	chk damaged_salvaged "$((cr_s1 - cr_s0))" 1
+	chk damaged_rescue "$cr_rs" 1
+	rcq critical
+	chk damaged_name_kept "$(grep -cE "^critd pid=$CRITD state=live placed=system " "$T/rcq.out")" 1
+	crit_chk after_damaged
+	rc protect "$KEEPER" --name keeper
+	rc protect "$CANARY" --name sleep
+	crit_drop batch/hl2
+	crit_verdict crit_registry "an unreadable registry was quarantined and rebuilt from the processes of system by the kill that found it; a registry with one readable line kept that line (critd, which was in the workload at that moment) and was not allowed to kill it; the names were registered again"
+
+	# a registered process that is gone is stale: listed so, never signalled, dropped by recover; unprotect only unregisters
+	crit_outsider 4953 &
+	cr_st1=$!
+	rc protect "$cr_st1" --name stale1
+	chk stale_protect "$RS $(rc_out)" "0 protected=stale1 pid=$cr_st1 placed=system moved=yes"
+	kill -9 "$cr_st1" 2>/dev/null
+	rc_reap "$cr_st1" 10
+	rcq critical
+	chk stale_listed "$(grep -cE "^stale1 pid=$cr_st1 state=stale placed=- start=[0-9]+\$" "$T/rcq.out")" 1
+	rc recover
+	chk stale_recover "$RS $(yn matches "$(rc_out)" '(^| )pruned=1( |$)')" "0 yes"
+	chk stale_dropped "$(rc_ev critical recover "dropped stale1=$cr_st1")" 1
+	crit_outsider 4954 &
+	cr_up=$!
+	rc protect "$cr_up" --name tmp
+	rc unprotect "$cr_up"
+	chk unprotect "$RS $(rc_out)" "0 unprotected=$cr_up"
+	rc unprotect "$cr_up"
+	chk unprotect_again "$RS $(rc_out)" "0 not-protected=$cr_up"
+	chk unprotect_stays "$(yn rc_in "$cr_up" system)" yes
+	rcq critical
+	chk unprotect_listed "$(grep -c "pid=$cr_up " "$T/rcq.out")" 0
+	chk unprotect_audit "$(rc_ev tmp unprotect "pid=$cr_up( |\$)")" 1
+	kill -9 "$cr_up" 2>/dev/null
+	rc_reap "$cr_up" 10
+	crit_verdict crit_stale "a protected process that died is listed state=stale (stale1, pid $cr_st1), recover dropped it (pruned=1, audited), unprotect unregistered another one that stayed in system; neither is ever signalled"
+
+	# recovery after a failure of the supervisor: the reaper, or recover, sweeps the workload, and a critical process that was in
+	# its domain is moved out first
+	crit_sup batch/krc1 4961
+	cr_sp=$CS_PID
+	cr_mp="$(crit_misplace workload/batch/krc1)"
+	kill -9 "$cr_sp" 2>/dev/null
+	rc_reap "$cr_sp" 10
+	waitfor 30 rc_phase_is batch/krc1 failed
+	st="$(rc_sf batch/krc1 phase ended domain)"
+	waitfor 5 rc_find_is 'sleep 4961 ' 0
+	cr_left="$(rc_find 'sleep 4961 ')"
+	cr_rs="$(crit_rescued workload/batch/krc1)"
+	cr_ra="$(crit_rescued workload/batch/krc1 reap)"
+	rc reset batch/krc1
+	chk krc1_placed "$cr_mp" ok
+	chk krc1_state "$st" "failed lost absent"
+	chk krc1_neighbour "$cr_left" 0
+	chk krc1_rescues "$cr_rs" "1 1"
+	chk krc1_rescued_by_the_reaper "$cr_ra" "1 1"
+	crit_chk after_lost_supervisor
+
+	crit_sup batch/krc2 4962
+	cr_sp=$CS_PID
+	for cr_p in $(rc_pid_of '__reap batch/krc2 '); do kill -9 "$cr_p" 2>/dev/null; done
+	kill -9 "$cr_sp" 2>/dev/null
+	rc_reap "$cr_sp" 10
+	cr_mp="$(crit_misplace workload/batch/krc2)"
+	rc recover
+	rs=$RS
+	cr_sw="$(grep -c '^swept=batch/krc2 phase=failed$' "$T/rc.out")"
+	st="$(rc_sf batch/krc2 phase ended domain)"
+	cr_left="$(rc_find 'sleep 4962 ')"
+	cr_rs="$(crit_rescued workload/batch/krc2)"
+	rc reset batch/krc2
+	chk krc2_placed "$cr_mp" ok
+	chk krc2_recover "$rs $cr_sw" "0 1"
+	chk krc2_state "$st" "failed lost absent"
+	chk krc2_neighbour "$cr_left" 0
+	chk krc2_rescues "$cr_rs" "1 1"
+	crit_chk after_recover_of_a_workload
+
+	rc create batch/krc3
+	cr_rs3=$RS
+	crit_outsider 4963 &
+	cr_nb=$!
+	crit_mv "$cr_nb" workload/batch/krc3
+	cr_mp="$(crit_misplace workload/batch/krc3)"
+	rc recover
+	rs=$RS
+	ou="$(rc_out)"
+	rc_reap "$cr_nb" 10
+	cr_hung=$SPHUNG
+	cr_rs="$(crit_rescued workload/batch/krc3)"
+	chk krc3_create "$cr_rs3" 0
+	chk krc3_placed "$cr_mp" ok
+	chk krc3_recover "$rs $(yn matches "$ou" '(^| )killed=batch/krc3( |$)') $cr_hung" "0 yes no"
+	chk krc3_rescues "$cr_rs" "1 1"
+	crit_chk after_recover_of_a_domain
+	rc remove batch/krc3
+	chk sleeps_left "$(rc_find 'sleep 496')" 0
+	chk domains "$(rc_domain_dirs)" "$cr_dirs"
+	crit_verdict crit_recover "a supervisor killed with critd and the keeper in its workload (the reaper swept it and moved them out), the same with the reaper killed too (recover swept it) and a domain nobody owns (recover killed its neighbour): the services survived all three, no domain is left"
+
+	# a teardown keeps them: they stay in system, registered
+	crit_unmanaged batch/ktd 4971
+	cr_pj=$CRIT_PJ
+	cr_mp="$(crit_misplace workload/batch/ktd)"
+	cr_td0="$(rc_ev all teardown 'forgotten=[0-9]+ kept=[0-9]+ stuck=0')"
+	rc teardown
+	rs=$RS
+	cr_kept="$(grep -cE "^kept=system: $((1 + CANARY_EXTRA)) $cr_pes stay in their domain\$" "$T/rc.out")"
+	cr_done="$(grep -c '^teardown=done$' "$T/rc.out")"
+	rc_reap "$cr_pj" 10
+	cr_hung=$SPHUNG
+	chk ktd_placed "$cr_mp" ok
+	chk ktd_teardown "$rs $cr_kept $cr_done $cr_hung" "0 1 1 no"
+	chk ktd_audit "$(($(rc_ev all teardown 'forgotten=[0-9]+ kept=[0-9]+ stuck=0') - cr_td0))" 1
+	crit_chk after_teardown
+	rc init
+	chk ktd_init "$RS" 0
+	crit_chk after_init
+	chk domains "$(rc_domain_dirs)" "$cr_dirs"
+	crit_verdict crit_teardown "teardown with critd and the keeper in a workload kept them: kept=system: $((1 + CANARY_EXTRA)) process(es) stay in their domain, the registry survived and init found them live in system"
+
+	# the trail of all of it
+	crit_snap
+	cr_nl="$(wc -l <"$T/crit.audit" | tr -d ' ')"
+	chk trail_size "$(yn [ "$cr_nl" -ge 100 ])" yes
+	chk trail_wellformed "$(grep -cvE '^[0-9]+ [0-9]+ [0-9]+:[a-z]+ [a-z]+ [^ ]+( .*)?$' "$T/crit.audit")" 0
+	chk trail_roles "$(grep -cvE '^[0-9]+ [0-9]+ [0-9]+:(cli|super|main|reap) ' "$T/crit.audit")" 0
+	chk trail_sequence "$(awk '{ print $1 }' "$T/crit.audit" | sort -n | awk -v first="$cr_seq0" 'BEGIN { want = first + 1 } { if ($1 + 0 != want) bad++; want = $1 + 1 } END { print bad + 0 }')" 0
+	cr_nr="$(grep -cE '^[0-9]+ [0-9]+ [0-9]+:[a-z]+ rescue ' "$T/crit.audit")"
+	cr_nrw="$(grep -cE '^[0-9]+ [0-9]+ [0-9]+:(cli|reap|super) rescue pid[0-9]+ found in agent-interaction/workload/[a-z]+/[A-Za-z0-9_-]+ moved=true$' "$T/crit.audit")"
+	chk rescue_lines "$(yn [ "$cr_nr" -ge 20 ]) $cr_nrw" "yes $cr_nr"
+	cr_ev=
+	for cr_e in protect unprotect refuse rescue quarantine recover enter intent exit start restart; do
+		[ "$(grep -cE "^[0-9]+ [0-9]+ [0-9]+:[a-z]+ $cr_e " "$T/crit.audit")" -ge 1 ] || cr_ev="$cr_ev $cr_e"
+	done
+	chk event_kinds "${cr_ev:-ok}" ok
+	cr_ac=
+	for cr_a in cli reap super; do
+		[ "$(grep -cE "^[0-9]+ [0-9]+ [0-9]+:$cr_a rescue " "$T/crit.audit")" -ge 1 ] || cr_ac="$cr_ac $cr_a"
+	done
+	chk rescue_actors "${cr_ac:-ok}" ok
+	chk intent_stop "$(crit_count intent batch/ks1 'stop asked')" 1
+	chk intent_kill "$(crit_count intent batch/ks2 'kill asked')" 1
+	chk exit_stop "$(crit_count exit batch/ks1 'gen=1 ended=requested:stop status=signal:15')" 1
+	chk exit_kill "$(crit_count exit batch/ks2 'gen=1 ended=requested:kill status=signal:9')" 1
+	chk exit_crash "$(crit_count exit batch/kc2 'gen=1 ended=crashed:9 status=signal:9')" 1
+	chk crash_loop_starts "$(crit_count start batch/kc1)" 4
+	chk refused_in1 "$(crit_count refuse '[a-z]+' 'from workload batch/kin1')" 17
+	chk refused_in2 "$(crit_count refuse '[a-z]+' 'from workload batch/kin2')" 17
+	chk refused_protect "$(crit_count refuse protect '(refused: )?process [0-9]+ runs in the workload')" 6
+	chk refused_protect_inside "$(crit_count refuse protect 'from workload batch/kin[12]')" 6
+	crit_verdict crit_audit "$cr_nl audit lines from #$((cr_seq0 + 1)) without a gap, all well formed; $cr_nr rescues by cli, reap and super; the stop, the kill, the crash and the crash loop of the scenarios each have their intent, exit and start lines; 34 refusals from inside workloads (6 of them protects) and 6 refused protects of workload processes"
+
+	# all through it: the same processes, in system, beating
+	cr_now="$(cg_uptime)"
+	cr_el="$(awk -v a="$CRIT_T0" -v b="$cr_now" 'BEGIN { print b - a }')"
+	cr_nb="$(crit_beats)"
+	cr_gap="$(awk '{ if (NR > 1 && $1 - prev > g) g = $1 - prev; prev = $1 } END { print g + 0 }' "$T/critd.beat")"
+	chk same_critd "$CRITD $CRITD_START" "$CRIT_FIRST"
+	chk same_keeper "$KEEPER $KEEPER_START" "$KEEPER_FIRST"
+	chk restarts "$CRIT_RESTARTS" 0
+	chk beats "$(awk -v n="$cr_nb" -v el="$cr_el" 'BEGIN { if (n + 0 >= el / 2) print "ok"; else print n " beats in " el " s" }')" ok
+	chk beat_gap "$(awk -v g="$cr_gap" 'BEGIN { if (g + 0 < 5) print "ok"; else print g " s" }')" ok
+	chk final_state "$(crit_state)" ok
+	canary_note crit_survival
+	kill -9 "$CRITD" 2>/dev/null
+	rc_reap "$CRITD" 10
+	CRITD_UP=0
+	if [ -n "$KEEPER" ]; then
+		kill -9 "$KEEPER" 2>/dev/null
+		rc_reap "$KEEPER" 10
+	fi
+	KEEPER_UP=0
+	crit_extra
+	rc recover
+	chk services_pruned "$RS $(yn matches "$(rc_out)" '(^| )pruned=2( |$)')" "0 yes"
+	rcq critical
+	chk registry_after "$(grep -c ' state=live ' "$T/rcq.out") $(grep -c ' state=stale ' "$T/rcq.out")" "1 0"
+	verdict crit_survival "critd (pid $CRITD) and the keeper (pid $KEEPER) were the same processes from the first scenario to the last, never restarted, never out of system, in the registry, and beat for ${cr_el}s ($cr_nb beats, longest gap ${cr_gap}s)"
+	rm -f "$T/critd" "$T/critd.beat" "$T/critd.beat.fifo" "$T/crit_inside.sh" "$T/crit_ud.sh" "$T/crit.audit" "$T/crit.before" "$T/rcq.out" "$T/rcq.err"
+	rm -f "$T/${RC_P}cin1.out" "$T/${RC_P}cin1.out.o" "$T/${RC_P}cin1.out.e" "$T/${RC_P}cin2.out" "$T/${RC_P}cin2.out.o" "$T/${RC_P}cin2.out.e"
+	rm -f "$T/${RC_P}kc4.out" "$T/${RC_P}kp1.child" "$T/${RC_P}m5.go" "$T/${RC_P}m5.child" "$T/${RC_P}ku4.ready"
+	cr_scrub
+	canary_report system_canary_critical
 }
 
 # ------------------------------------------------------------------------------------------------ lifecycle layers
