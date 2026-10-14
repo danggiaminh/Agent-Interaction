@@ -1537,7 +1537,7 @@ rc_s_process() {
 	rc state batch/lf
 	rsr=$RS
 	lf="$(rc_ev batch/lf run 'failed: the command did not start')"
-	rc supervise batch/lg -- "$T/${RC_P}bad.sh"
+	rc_pol_b 60 "$RC_POLICY" supervise batch/lg -- "$T/${RC_P}bad.sh"
 	r2=$RS
 	st="$(rc_sf batch/lg phase gen restarts ended status supervisor domain)"
 	g2="$(yn rc_gone batch/lg)"
@@ -1673,7 +1673,7 @@ rc_s_process() {
 	rc kill batch/ia
 	r1=$RS
 	rc_reap "$ia"
-	rc supervise batch/ic -- sh -c 'exit 1'
+	rc_pol_b 60 "$RC_POLICY" supervise batch/ic -- sh -c 'exit 1'
 	r2=$RS
 	sti="$(rc_sf interactive/ib phase gen restarts supervisor main)"
 	sta="$(rc_sf batch/ia phase ended)"
