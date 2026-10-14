@@ -253,44 +253,75 @@ limits; the facts come back as `g_*` and are judged like every other row.
   and reads its serial output (PASS), `virsh domcapabilities --virttype kvm`, a `<domain type='kvm'>` and `virt-host-validate`'s hardware
   check fail (LIMIT), while `virt-host-validate`'s cgroup checks pass. None of the KVM rows is ever reported as working here.
 
-## Resource control (`runtime/resctl`)
-`resctl` (see `runtime/resctl/README.md`) gives AI workloads explicit resource domains and a lifecycle, on the cgroup layout of the
-machine it runs on: `agent-interaction/system` (critical services: limits and protection, never killed, frozen or stopped by
-resctl), `agent-interaction/workload` (the aggregate ceiling), `.../workload/<class>` (class ceiling and CPU weight) and
+## Resource control and process lifecycle (`runtime/resctl`)
+`resctl` (see `runtime/resctl/README.md`) gives AI workloads explicit resource domains and an explicit lifecycle, on the cgroup
+layout of the machine it runs on: `agent-interaction/system` (critical services: limits and protection, never killed, frozen or
+stopped by resctl), `agent-interaction/workload` (the aggregate ceiling), `.../workload/<class>` (class ceiling and CPU weight) and
 `.../workload/<class>/<id>` (one workload and its own kill domain). A policy file bounds memory, CPU, process count, I/O and
-swap per workload, per class and in aggregate; a start can raise a default only up to the class ceiling, and a policy that cannot
-mean what it says is refused. The commands are `probe policy init create run enter freeze thaw kill remove stop list status
-recover teardown`. The crate has no dependency (`Cargo.lock` lists itself alone) and is built, formatted, linted and tested inside
-the tools image.
+swap per workload, per class and in aggregate, and bounds the restarts of a supervised workload (`[restart]`: at most 10 in a window,
+100 in all, a doubling back-off, at most 120 starts a minute, at most 64 workloads supervised); a start can raise a default only up to
+the class ceiling, and a policy that cannot mean what it says (or that names protected status) is refused. A supervised workload has
+explicit phases (`created starting running stopping killing sweeping backoff recovering` and the finals `stopped finished failed`), tells
+an unexpected exit from a requested one (`clean`, `failed:N`, `crashed:S`, `requested:stop|kill`, `lost`, `launch-failed`), is swept
+(no process, no domain) whenever a run ends, and is quarantined as `failed` when its restart budget is used up. The critical services
+of the machine sit in `system`, are registered in a registry that a workload (another uid) cannot reach, and are rescued out of any
+workload domain before it is killed. The commands are `probe policy init create run supervise enter freeze thaw kill remove stop list
+status state audit protect unprotect critical reset recover teardown`. The crate has no dependency (`Cargo.lock` lists itself alone),
+no `unsafe` code (`#![forbid(unsafe_code)]` in both crate roots, checked by `u_no_unsafe`) and is built, formatted, linted and tested
+inside the tools image.
 
 `check-resctl.sh` validates it in three sessions, like `tools-test.sh`, and `resctl-judge.py` judges every fact against
-`resctl-test/checks.tsv` (103 rows: id, area, resource, environments, fact, expectation, description):
-- **unprivileged** (`resctl-test/unpriv.sh`, prefix `u_`): `cargo fmt --check`, `clippy -D warnings`, the 53 unit tests, the release
-  build (the binary the other sessions run), then what resctl does with no hierarchy at all: `probe` and `policy` work, and `init`,
-  `run` and `enter` are refused with the "unsupported" code (`deny:` rows, DENIED) and create nothing.
+`resctl-test/checks.tsv` (154 rows: id, area, resource, environments, fact, expectation, description):
+- **unprivileged** (`resctl-test/unpriv.sh`, prefix `u_`): `cargo fmt --check`, `clippy -D warnings`, the 267 unit tests (lifecycle
+  rules, restart arithmetic, store, supervisor and registry against fakes), the release build (the binary the other sessions run), the
+  proof that the crate holds no `unsafe` and no dependency, then what resctl does with no hierarchy at all: `probe`, `policy`, `list`,
+  `state`, `audit` and `critical` work (and report nothing), and `init`, `run`, `supervise`, `enter` and `protect` are refused with the
+  "unsupported" code (`deny:` rows, DENIED) together with ten more commands that change something, none of them creating anything, not even
+  the state directory. The grammar is checked here too: 12 restart values beyond a cap or below a floor are refused with rc 2 and bind
+  nothing while the 6 at a cap are accepted, a workload user needs uid and gid together and root needs `allow.root`, and 6 policies
+  that grant protected status are refused.
 - **privileged** (`resctl-test/priv.sh`, prefix `h_`, and `v_`): real root on this host's hybrid hierarchy. Normal operation (domains,
   policy refusals, `run`, `list`, `status`); the limits by effect (memory OOM kill with exit 137 and `oom_kill`, `pids.max` refusing
   forks, cpuset, no swap, CPU quota 0.51 for 0.50, CPU weights 800:100 measured 7.9:1, `io.max` throttling 4 MiB in 4 s against 0.02 s,
   PSI after CPU contention); isolation (a system canary survives every kill and every attempt to reach `system`; a sibling workload,
   the class ceiling, the aggregate ceiling and a fork bomb each stay inside their own domain); termination (graceful and forced
   `stop`, `setsid` escapees, a workload at its process limit, frozen workloads, `remove` of a running one); recovery (orphans, empty
-  domains, dropped classes, `teardown`, re-init). `v_` repeats the sections that depend on the lifecycle backend with the v1 freezer
-  forced (`--lifecycle v1`): the limits, throttle and pressure rows read the same v1 resource hierarchies as `h_`, and pressure has no
-  v1 source at all, so those rows have no `hostv1` environment.
+  domains, dropped classes, `teardown`, re-init). The `process` section (25 facts and a canary) drives a supervised workload through
+  its lifecycle: run and requested stop with the audited order intent, stop, exit, stopped; the three kinds of exit and a signal from an
+  outsider against the same signal after a stop; a crash loop paced by the back-off and stopped by the window limit, `failed` until
+  `reset`; `--restart always`, the total limit, the start-rate and supervision caps; a kill that ends `setsid`'d processes, a stop the
+  workload ignores, a stop during a back-off; orphans swept after a failure and after a clean exit; a command that cannot start; a
+  killed supervisor (its reaper sweeps and records it lost) and a killed reaper (`recover`); a corrupt record; an OOM kill told from an
+  operator kill; and at the end no workload, domain, supervisor or process left, every record terminal, an audit trail without a gap
+  in which every phase was entered. The `critical` section (16 facts and a canary) registers a service (`enter system`) and a process resctl
+  did not start (`protect`), then runs a set of critical processes through stop, kill and remove of supervised and unmanaged workloads, a
+  crash loop, an outsider's SIGKILL, an OOM kill and a fork bomb; a critical process misplaced in a workload domain is moved out before
+  a stop, a kill, a remove, a freeze, a supervisor's sweep and a recovery; 34 requests from inside workloads and 6 protects of workload
+  processes are refused; 8 policies that grant protection are refused; a workload running as nobody cannot reach `system`, the registry
+  or the state directory; a corrupt registry is quarantined and rebuilt with its readable lines kept; stale entries, `unprotect` and
+  `teardown`; and the same critical processes, never restarted, still beat without a gap from the first scenario to the last.
+  `v_` repeats the sections that depend on the lifecycle backend with the v1 freezer forced (`--lifecycle v1`): the limits, throttle and
+  pressure rows read the same v1 resource hierarchies as `h_`, and pressure has no v1 source at all, so those rows have no `hostv1`
+  environment.
 - **guest** (`resctl-test/guest.sh`, prefix `g_`): the whole suite on the pure cgroup v2 hierarchy of the test bed (QEMU, TCG on this
-  host): v2 memory, `memory.high`, `memory.oom.group`, the system memory protection, and the v1 freezer refused as unsupported.
+  host), the lifecycle and critical-process sections included: v2 memory, `memory.high`, `memory.oom.group`, the system memory protection,
+  and the v1 freezer refused as unsupported.
 
-Every row ends as PASS, DENIED, LIMIT or FAIL. Four rows are LIMIT on this host (`resctl-test/limits.tsv`, class `host-config`):
-the memory protection of the system domain (`memory.low`), `memory.oom.group` and `memory.high`, all v2-only memory files, and the
-same system-protection row of the v1-freezer pass. Each is accepted only while resctl reports the matching
-`unbound=<setting>: needs the cgroup v2 memory controller`, the host's memory controller is measured to be v1 (`h_feature_memory`,
-`h_cgroup_v2_controllers`), and the same row passes in the guest. A host with a v2 memory controller turns the failure back into
-FAIL. The kill domains, the system domain, the lifecycle, isolation and recovery rows cannot be limited at all.
-After the judge, `resctl-judge-selftest.py` runs 49 cases that damage the facts and the tables (a missing, extra, duplicated or
+Every row ends as PASS, DENIED, LIMIT or FAIL; the last run on this host gave 336 PASS, 6 DENIED, 4 LIMIT and 0 FAIL. Four rows are
+LIMIT on this host (`resctl-test/limits.tsv`, class `host-config`): the memory protection of the system domain (`memory.low`),
+`memory.oom.group` and `memory.high`, all v2-only memory files, and the same system-protection row of the v1-freezer pass. Each is accepted
+only while resctl reports the matching `unbound=<setting>: needs the cgroup v2 memory controller`, the host's memory controller is
+measured to be v1 (`h_feature_memory`, `h_cgroup_v2_controllers`), and the same row passes in the guest. A host with a v2 memory
+controller turns the failure back into FAIL. The kill domains, the system domain, the lifecycle, the process lifecycle, the critical-process
+protection, isolation and recovery rows cannot be limited at all.
+After the judge, `resctl-judge-selftest.py` runs 79 cases that damage the facts and the tables (a missing, extra, duplicated or
 misplaced fact, a refusal that was a success, a killed system canary, a leftover domain, a guest that did not boot, a limit with a
-wrong or unmeasured cause, without a guest proof or on an isolation, termination, recovery or deny row, a vacuous expectation) and
-requires the judge to reject each one; then the host is compared with its state before the sessions (sandboxes, mounts, loop devices, cgroup directories,
-resctl domains, nftables tables, daemons) and `vendor/alpine-aports` is checked for changes.
+wrong or unmeasured cause, without a guest proof or on an isolation, termination, recovery, process, critical or deny row, a vacuous
+expectation, a crash loop that is not stopped, an orphan or a stale domain left behind, an unexpected exit taken for a requested stop,
+an audit trail with a gap, a restart storm, a critical process killed, frozen or left in a workload domain, a workload that obtained
+protected status or changed the registry, a policy that grants protection, an unbounded restart policy, unsafe code) and requires the
+judge to reject each one; then the host is compared with its state before the sessions (sandboxes, mounts, loop devices, cgroup
+directories, resctl domains, nftables tables, daemons) and `vendor/alpine-aports` is checked for changes.
 
 ## Isolation
 - Own mount/PID/IPC/UTS namespaces, chroot into `.build/rootfs`, environment rebuilt with `env -i` (no host variables or tokens;
