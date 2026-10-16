@@ -4,12 +4,13 @@
     resctl-mutants.py list                       the names of the defects, one per line
     resctl-mutants.py show NAME                  what the defect is, the areas it concerns and the rows it must break
     resctl-mutants.py areas NAME                 the areas of the suite that check-resctl.sh runs for it
+    resctl-mutants.py guest NAME                 yes if the defect can only be shown in the guest too (the test bed)
     resctl-mutants.py apply NAME CRATE_DIR       puts the defect into a copy of the crate (never into runtime/resctl)
     resctl-mutants.py verify NAME STATUS_FILE    PASS if the judge failed every row the defect must break
 
 `check-resctl.sh --mutant NAME` runs the whole cycle on a copy of the crate: apply, build and unit-test it (unprivileged
-session), run the areas of the defect on this host (privileged session), judge the facts (resctl-judge.py --partial
---status) and verify. A row named BASE must FAIL in every environment where it ran; BASE.ENV names one environment only.
+session), run the areas of the defect on this host (privileged session) and, where the table says so, in the guest,
+judge the facts (resctl-judge.py --partial --status) and verify. A row named BASE must FAIL in every environment where it ran; BASE.ENV names one environment only.
 A row that did not run does not count as caught. A defect whose text is no longer in the sources is an error, not a pass:
 the table must follow the code.
 """
@@ -72,6 +73,17 @@ MUTANTS = {
         "breaks": ["unit", "proc_crash_loop", "proc_reset_recover", "proc_restart_always", "proc_restart_total"],
         "edits": [("src/life.rs", "    if h.total >= r.total {", "    if false && h.total >= r.total {"),
                   ("src/life.rs", "    if recent >= r.max {", "    if false && recent >= r.max {")],
+    },
+    "no-oom-bias": {
+        "what": "a process put into a workload is not made the first choice of the OOM killer (no oom_score_adj)",
+        "areas": ["stress"],
+        "guest": True,
+        "breaks": ["unit", "oom_bias", "global_oom"],
+        "edits": [("src/domain.rs",
+                   "        if matches!(t, Target::Workload(_)) {\n"
+                   "            // before the move: no process is ever inside a workload without the bias",
+                   "        if false {\n"
+                   "            // before the move: no process is ever inside a workload without the bias")],
     },
     "no-memory-limit": {
         "what": "the memory limit of a single workload is not written (the class ceilings and the aggregate ceiling still are)",
@@ -144,7 +156,11 @@ def main(argv):
         return 0
     if argv[:1] == ["show"] and len(argv) == 2:
         m = mutant(argv[1])
-        print("%s: %s\n  areas: %s\n  breaks: %s" % (argv[1], m["what"], " ".join(m["areas"]), " ".join(m["breaks"])))
+        print("%s: %s\n  areas: %s%s\n  breaks: %s" % (argv[1], m["what"], " ".join(m["areas"]),
+                                                     " (and in the guest)" if m.get("guest") else "", " ".join(m["breaks"])))
+        return 0
+    if argv[:1] == ["guest"] and len(argv) == 2:
+        print("yes" if mutant(argv[1]).get("guest") else "no")
         return 0
     if argv[:1] == ["areas"] and len(argv) == 2:
         print(" ".join(mutant(argv[1])["areas"]))

@@ -6,8 +6,9 @@
 The three files are the facts of a real run that the judge accepts. Each case below damages a copy of them, or of
 resctl-test/checks.tsv and limits.tsv, the way a broken resource control or a dishonest report would, runs the judge on the
 copy, and requires it to FAIL with a message that names the row concerned. Three cases go the other way: the unmodified
-facts must be accepted, and so must a host whose unified hierarchy has the memory controller (synthetic: the guest's results
-stand in for the host's), where the four limits of the host disappear, and a partial run (judge --partial) that reports
+facts must be accepted, and so must a host whose unified hierarchy has the memory controller and whose root holds
+CAP_SYS_RESOURCE (synthetic: the guest's results stand in for the host's), where the five limits of the host disappear,
+and a partial run (judge --partial) that reports
 what it ran. The partial cases also require that a partial run judges whatever ran as strictly as a full run, and that it
 can neither prove a limitation without the guest nor pass for a full verdict. Prints one PASS or FAIL line per case; exit
 status 1 if any case FAILs.
@@ -124,9 +125,11 @@ def judge(case):
 
 
 def memory_v2_host(c):
-    """A host whose unified hierarchy carries the memory controller (synthetic, built from the guest's facts)."""
+    """A host whose unified hierarchy carries the memory controller and whose root holds CAP_SYS_RESOURCE (synthetic,
+    built from the guest's facts)."""
     p, g = c.s["privileged"], c.s["guest"]
-    for env, facts in (("h_", ("feature_memory", "cgroup_v2_controllers", "system_protection", "oom_group", "memory_high")),
+    for env, facts in (("h_", ("feature_memory", "cgroup_v2_controllers", "system_protection", "oom_group", "memory_high",
+                               "cap_sys_resource", "oom_bias_locked")),
                        ("v_", ("feature_memory", "cgroup_v2_controllers", "system_protection"))):
         for fact in facts:
             p.set(env + fact, g.get("g_" + fact))
@@ -238,7 +241,7 @@ def limit_cause_is_a_fiction(c):
 
 # name, mutation, expected rc, text that must appear in the output (in a FAIL line when rc is 1)
 CASES = (
-    ("the unmodified facts are accepted", lambda c: None, 0, "4 limited by the host, 0 failed"),
+    ("the unmodified facts are accepted", lambda c: None, 0, "5 limited by the host, 0 failed"),
     ("a partial run is judged on what ran and says that it is not a full verdict",
      partial("process,critical", then=drop_area_facts("throttle")), 0, "== partial run: not a full verdict"),
     ("a failure in an area of a partial run fails it",
@@ -254,7 +257,8 @@ CASES = (
      "did not run (partial run)"),
     ("a run of some areas that does not say it is partial is refused",
      lambda c: c.args.extend(["--areas", "process"]), 1, "needs --partial"),
-    ("a host with the memory controller in the unified hierarchy is accepted with no limit", memory_v2_host, 0,
+    ("a host with the memory controller in the unified hierarchy and CAP_SYS_RESOURCE is accepted with no limit",
+     memory_v2_host, 0,
      "0 limited by the host, 0 failed"),
     ("a refused init that worked is a failure, not a pass", set_fact("unprivileged", "u_init_denied", "leaked:resctl created the domains"),
      1, "init_denied.unpriv"),
@@ -370,6 +374,13 @@ CASES = (
     ("an OOM kill in the system domain fails a system-domain row",
      set_fact("privileged", "v_stress_system", "fail:boom"), 1, "the system-domain row stress_system.hostv1"),
     ("a control plane that was not timed is a failure", drop_fact("privileged", "h_stress_control"), 1, "h_stress_control"),
+    ("a workload that can lower its OOM bias is a failure",
+     set_fact("guest", "g_oom_bias_locked", "fail:rc=0 '65534 lowered 0' with CAP_SYS_RESOURCE yes"),
+     1, "oom_bias_locked.guest"),
+    ("a lowered OOM bias where resctl holds CAP_SYS_RESOURCE is a failure, not a limit",
+     set_fact("privileged", "h_cap_sys_resource", "yes CapEff=000001ffffffffff"), 1, "oom_bias_locked.host"),
+    ("a machine-wide OOM that took a critical service is a failure",
+     set_fact("guest", "g_global_oom", "fail: critical_alive='no 0' (wanted 'yes 1')"), 1, "global_oom.guest"),
     ("supervising where it must be refused is a failure",
      set_fact("unprivileged", "u_supervise_denied", "leaked:the workload ran"), 1, "supervise_denied.unpriv"),
     ("registering a critical process where it must be refused is a failure",

@@ -459,6 +459,22 @@ rc_s_limits() {
 		if [ "$rs" = 0 ] && [ -n "$line" ]; then f oom_group "unsupported:$line"
 		else f oom_group "fail:rc=$rs and no unbound=memory.oom.group line on a $(rc_api memory) memory hierarchy"; fi
 	fi
+	# the bias of a workload toward the OOM killer is its floor: a workload that runs as another user cannot lower it. The
+	# kernel keeps a value as the minimum only when the writer holds CAP_SYS_RESOURCE, which is measured here too.
+	capeff="$(sed -n 's/^CapEff:[[:space:]]*//p' /proc/self/status)"
+	if [ $((0x${capeff:-0} >> 24 & 1)) = 1 ]; then capres=yes; else capres=no; fi
+	f cap_sys_resource "$capres CapEff=$capeff"
+	lk_dir="$T/${RC_P}lk"
+	mkdir -p "$lk_dir"
+	chmod 777 "$lk_dir"
+	{ grep -v '^allow.root' "$RC_POLICY"; printf 'uid = 65534\ngid = 65534\n'; } >"$lk_dir/policy"
+	rc_pol "$lk_dir/policy" supervise batch/lk --restart never -- sh -c 'if echo 0 >/proc/self/oom_score_adj; then b=lowered; else b=kept; fi; echo "$(id -u) $b $(cat /proc/self/oom_score_adj)" >"$0"' "$lk_dir/out"
+	lk_rc=$RS
+	lk="$(cat "$lk_dir/out" 2>/dev/null)"
+	rc reset batch/lk
+	if [ "$lk_rc $lk" = "0 65534 kept 1000" ]; then f oom_bias_locked "ok a workload running as uid 65534 could not lower its oom_score_adj from 1000 (CAP_SYS_RESOURCE: $capres)"
+	elif [ "$lk_rc $lk" = "0 65534 lowered 0" ] && [ "$capres" = no ]; then f oom_bias_locked "unsupported:CAP_SYS_RESOURCE is not in the capability set: the kernel does not keep the bias as a minimum, and a workload running as uid 65534 lowered it to 0"
+	else f oom_bias_locked "fail:rc=$lk_rc '$lk' with CAP_SYS_RESOURCE $capres (wanted 0 '65534 kept 1000')"; fi
 	canary_note limits
 }
 
@@ -2832,6 +2848,68 @@ rc_s_stress() {
 	chk loop_starts "$so_starts" 4
 	verdict stress_oom_loop "an OOM kill on every start: 4 starts, ended crashed:9 oom=yes, failed after ${so_el}s"
 	canary_note stress_oom_loop
+
+	# every process resctl puts into a workload is the first choice of the OOM killer of the whole machine, a supervised one
+	# too after it changed its user, and the system domain is not biased (the floor of the bias is a row of limits)
+	rc run batch/ob -- sh -c 'cat /proc/self/oom_score_adj; sh -c "cat /proc/self/oom_score_adj"'
+	ob_run="$(rc_out)"
+	rc_drop batch/ob
+	ob_dir="$T/${RC_P}ob"
+	mkdir -p "$ob_dir"
+	chmod 777 "$ob_dir"
+	{ grep -v '^allow.root' "$RC_POLICY"; printf 'uid = 65534\ngid = 65534\n'; } >"$ob_dir/policy"
+	rc_pol "$ob_dir/policy" supervise batch/oc --restart never -- sh -c 'echo "$(id -u) $(cat /proc/self/oom_score_adj)" >"$0"' "$ob_dir/out"
+	ob_rc=$RS
+	ob_sup="$(cat "$ob_dir/out" 2>/dev/null)"
+	rc reset batch/oc
+	ob_sys="$(cat "/proc/$CANARY/oom_score_adj" 2>/dev/null) $(cat "/proc/$beat/oom_score_adj" 2>/dev/null)"
+	chk run_and_child "$ob_run" "1000 1000"
+	chk supervised "$ob_rc $ob_sup" "0 65534 1000"
+	chk system "$ob_sys" "0 0"
+	verdict oom_bias "a run workload and its child have oom_score_adj 1000, a supervised workload running as uid 65534 has 1000, the canary and the beat in system keep 0"
+	canary_note oom_bias
+
+	# the whole machine out of memory (in the guest only, where it is safe): the OOM killer takes the workload, not the
+	# larger critical service of the system domain
+	if [ "${RC_GLOBAL_OOM:-no}" = yes ]; then
+		avail=$(($(sed -n 's/^MemAvailable: *\([0-9]*\) kB$/\1/p' /proc/meminfo) / 1024))
+		# the critical service holds more than half of what is available, so that it would be the largest process when
+		# the machine runs out; the workload fits its class ceiling (256M) with room to spare; and the allocation outside
+		# every domain asks for the whole of the memory, so the machine does run out whatever the estimate was worth, but
+		# stops as soon as the workload is gone: what is left fits, and no second OOM follows
+		big=$((avail * 55 / 100))
+		wl=$((avail * 20 / 100))
+		[ "$wl" -le 200 ] || wl=200
+		out=$(($(sed -n 's/^MemTotal: *\([0-9]*\) kB$/\1/p' /proc/meminfo) / 1024))
+		vm0="$(sed -n 's/^oom_kill //p' /proc/vmstat)"
+		rcbg enter system -- "$CT" mem "$big" 120 >"$T/${RC_P}gbig.out" 2>&1 &
+		gbig=$!
+		CANARY_EXTRA=2
+		waitfor 60 grep -q mem-ok "$T/${RC_P}gbig.out"
+		rcbg run interactive/gw --memory-max "$((wl + 32))M" -- "$CT" mem "$wl" 120 >"$T/${RC_P}gw.out" 2>&1 &
+		gwp=$!
+		waitfor 60 grep -q mem-ok "$T/${RC_P}gw.out"
+		"$CT" mem-until "$out" "$gwp" >"$T/${RC_P}gout.out" 2>&1
+		out_rc=$?
+		rc_reap "$gwp" 30
+		gw_rc="$SPRC $SPHUNG"
+		vm1="$(sed -n 's/^oom_kill //p' /proc/vmstat)"
+		gw_kill="$(rc_kmem workload/interactive/gw oom_kill)"
+		gw_peak="$(rc_kmem workload/interactive/gw peak)"
+		big_ok="$(yn rc_alive "$gbig") $(grep -c '/agent-interaction/system$' "/proc/$gbig/cgroup" 2>/dev/null)"
+		kill -9 "$gbig" 2>/dev/null
+		wait "$gbig" 2>/dev/null
+		CANARY_EXTRA=1
+		rc_drop interactive/gw
+		chk sizes "$([ "$avail" -ge 400 ] && echo enough || echo "only ${avail} MiB available")" enough
+		chk workload_killed "$gw_rc $([ "${gw_kill:-0}" -ge 1 ] && echo counted || echo "oom_kill=${gw_kill:-none}")" "137 no counted"
+		chk not_its_own_limit "$([ -n "$gw_peak" ] && [ "$gw_peak" -lt $(((wl + 32) << 20)) ] && echo below || echo "${gw_peak:-none}")" below
+		chk machine_oom "$([ "$((${vm1:-0} - ${vm0:-0}))" -ge 1 ] && echo yes || echo no)" yes
+		chk critical_alive "$big_ok" "yes $(rc_roots | wc -l)"
+		chk outside_stopped "$out_rc $(grep -c 'process is gone' "$T/${RC_P}gout.out")" "0 1"
+		verdict global_oom "${avail} MiB available: a critical service in system held ${big} MiB, a workload ${wl} MiB (limit $((wl + 32))M), and an allocation outside every domain asked for all ${out} MiB: the OOM killer took the workload (rc 137, oom_kill counted in its memory cgroup, its own limit not reached), the allocation stopped at $(sed -n 's/^mem-until=\([0-9]*\) .*/\1/p' "$T/${RC_P}gout.out") MiB, and the critical service kept running in system ($((${vm1:-0} - ${vm0:-0})) OOM kill)"
+		canary_note global_oom
+	fi
 
 	# the measurements, and the system domain the OOM killer never touched
 	: >"$stop"

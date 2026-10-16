@@ -19,14 +19,18 @@
 # domains, nftables tables, daemons; and the vendored tree for changes.
 #   check-resctl.sh [--image FILE.rootfs.tar.gz] [--facts DIR] [--areas LIST] [--no-guest] [--mutant NAME]
 #     --facts DIR    keeps the raw output of the sessions and the status of every row
-#     --areas LIST   runs only these areas of the suite (resctl-judge.py --list-areas) in the privileged and guest sessions;
-#                    the unprivileged session always runs in full, it builds and tests the binary the others run
+#     --areas LIST   runs only these areas of the suite (resctl-judge.py --list-areas) in the privileged and guest sessions,
+#                    and layout, which measures what the causes of the host's limits name; the unprivileged session always
+#                    runs in full, it builds and tests the binary the others run
 #     --no-guest     does not boot the test bed guest
 #     --mutant NAME  negative control: the crate is built with the deliberate defect NAME of resctl-mutants.py, the areas
-#                    that the defect concerns (or --areas) run on this host, never in the guest, and the run passes only
-#                    if the judge fails every row the defect must break
+#                    that the defect concerns (or --areas) run on this host, and in the guest only for a defect that only
+#                    the guest can show, and the run passes only if the judge fails every row the defect must break
 # A run with --areas, --no-guest or --mutant is partial: the judge reports what ran (resctl-judge.py --partial), the
 # self-test of the judge, which needs the facts of a full run, does not run, and the result is never a full verdict.
+# The whole script is one compound command, so bash has read all of it before it runs any of it: an edit of this file
+# during a run (a run takes minutes) cannot change what that run does.
+{
 # shellcheck source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require_root
@@ -50,13 +54,15 @@ mutants=(python3 "$ALPINE_BUILD_DIR/resctl-mutants.py")
 if [ -n "$mutant" ]; then
 	"${mutants[@]}" show "$mutant" >/dev/null || exit 1
 	[ -n "$areas" ] || areas="$("${mutants[@]}" areas "$mutant")"
-	guest=no
+	[ "$("${mutants[@]}" guest "$mutant")" = yes ] || guest=no
 fi
 known="$(python3 "$ALPINE_BUILD_DIR/resctl-judge.py" --list-areas)"
 areas="$(echo "$areas" | tr ',' ' ' | xargs)"
 for a in $areas; do
 	case " $known " in *" $a "*) ;; *) die "--areas: $a is not an area of the suite ($known)" ;; esac
 done
+# layout always runs with other areas: it measures the facts that the causes of the host's limits name
+case " $areas " in "  " | *" layout "*) ;; *) areas="layout $areas" ;; esac
 partial=no
 if [ -n "$areas" ] || [ "$guest" = no ]; then partial=yes; fi
 
@@ -173,3 +179,4 @@ if [ -n "$keep" ]; then
 	cp "$work"/*.facts "$work"/*.err "$work/status.tsv" "$keep/"
 fi
 exit "$fail"
+}

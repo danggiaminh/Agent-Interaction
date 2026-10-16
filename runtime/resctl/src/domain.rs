@@ -24,6 +24,10 @@ use std::io;
 pub const BASE: &str = "agent-interaction";
 pub const SYSTEM: &str = "agent-interaction/system";
 pub const WORKLOAD: &str = "agent-interaction/workload";
+/// The `oom_score_adj` of every process that resctl puts into a workload: the first choice of the OOM killer when the
+/// whole machine runs out of memory (an OOM inside a domain chooses among the processes of that domain anyway). Children
+/// inherit it, and when resctl runs as root a workload cannot lower it again: the kernel keeps it as the minimum.
+pub const OOM_BIAS: i32 = 1000;
 
 const FREEZE_MS: u64 = 5_000;
 const KILL_MS: u64 = 10_000;
@@ -885,7 +889,21 @@ impl<'a> Controller<'a> {
                 "process {pid} is critical: it is never moved into a workload"
             )));
         }
-        for path in self.procs_paths(t)? {
+        let paths = self.procs_paths(t)?;
+        if matches!(t, Target::Workload(_)) {
+            // before the move: no process is ever inside a workload without the bias
+            let path = format!("/proc/{pid}/oom_score_adj");
+            self.host.write(&path, &OOM_BIAS.to_string()).map_err(|e| {
+                let what =
+                    format!("make process {pid} the first choice of the OOM killer ({path})");
+                if e.raw_os_error() == Some(2) {
+                    Error::Io(format!("{what}: no such process"))
+                } else {
+                    io_err(&what, &e)
+                }
+            })?;
+        }
+        for path in paths {
             self.host
                 .write(&path, &pid.to_string())
                 .map_err(|e| io_err(&format!("attach {pid} to {path}"), &e))?;
@@ -2478,6 +2496,31 @@ grace = 1500ms
             assert!(!c.is_frozen(&a.rel()), "the domain is not frozen");
             assert!(h.alive(10) && h.alive(11) && h.alive(12));
         }
+    }
+
+    #[test]
+    fn a_process_put_into_a_workload_is_the_first_choice_of_the_oom_killer() {
+        let h = v2_host();
+        let l = Layout::detect(&h, Lifecycle::Auto);
+        let c = setup(&h, &l);
+        c.init().unwrap();
+        let a = running(&c, &h, "a", &[10]);
+        h.proc_in(11, &[]);
+        c.attach(&Target::Workload(a.clone()), 11).unwrap();
+        assert_eq!(h.value("/proc/11/oom_score_adj"), OOM_BIAS.to_string());
+        // the system domain is not biased
+        h.proc_in(12, &[]);
+        c.attach(&Target::System, 12).unwrap();
+        assert!(h.writes_to("/proc/12/oom_score_adj").is_empty());
+        // without the bias a process does not enter at all
+        h.deny_writes_to("/13/oom_score_adj");
+        h.proc_in(13, &[]);
+        let err = c.attach(&Target::Workload(a), 13).unwrap_err();
+        assert!(
+            err.to_string().contains("first choice of the OOM killer"),
+            "{err}"
+        );
+        assert_eq!(c.placement(13).unwrap(), Placement::Elsewhere);
     }
 
     #[test]

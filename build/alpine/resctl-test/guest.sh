@@ -14,6 +14,8 @@ CT=/work/ctr/ctr-test
 CG_BLKDEV=/dev/vda
 # software emulation: the timing rows of the stress section are not measured here
 RC_TIMING=no
+# a guest of its own: the only place where the whole machine may run out of memory
+RC_GLOBAL_OOM=yes
 
 # the sections: the arguments, else those of /work/areas (check-resctl.sh --areas), else all of them
 if [ $# -eq 0 ] && [ -s /work/areas ]; then set -- $(cat /work/areas); fi

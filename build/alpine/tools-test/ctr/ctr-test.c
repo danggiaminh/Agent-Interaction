@@ -24,6 +24,22 @@ static void slurp(const char *path) {
 	close(fd);
 }
 
+/* The process exists and is not a zombie (its parent may not have reaped it yet). */
+static int alive(const char *pid) {
+	char path[64], buf[512];
+	snprintf(path, sizeof path, "/proc/%s/stat", pid);
+	int fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return 0;
+	ssize_t n = read(fd, buf, sizeof buf - 1);
+	close(fd);
+	if (n <= 0)
+		return 0;
+	buf[n] = 0;
+	char *r = strrchr(buf, ')');
+	return r && r[1] == ' ' && r[2] != 'Z' && r[2] != 'X';
+}
+
 static double now(clockid_t c) {
 	struct timespec t;
 	clock_gettime(c, &t);
@@ -48,6 +64,19 @@ int main(int argc, char **argv) {
 		}
 		puts("mem-ok");
 		sleep(argc > 3 ? (unsigned)atoi(argv[3]) : 2);
+	} else if (!strcmp(mode, "mem-until")) { /* mem-until MiB PID: allocate and touch up to MiB, but stop as soon as process
+		 * PID is gone; report how much it took and hold it for 2 s */
+		size_t mb = (size_t)atol(argv[2]), i = 0;
+		for (; i < mb && alive(argv[3]); i++) {
+			char *p = malloc(1 << 20);
+			if (!p) {
+				puts("mem-failed");
+				return 1;
+			}
+			memset(p, 1, 1 << 20);
+		}
+		printf("mem-until=%zu of %zu%s\n", i, mb, i < mb ? " (the process is gone)" : "");
+		sleep(2);
 	} else if (!strcmp(mode, "fork")) { /* fork N children that sleep; report how many succeeded */
 		int n = atoi(argv[2]), made = 0;
 		for (int i = 0; i < n; i++) {

@@ -846,6 +846,22 @@ pub mod fake {
             if self.deny.iter().any(|d| path.ends_with(d.as_str())) {
                 return Err(errno(EACCES));
             }
+            if let Some(pid) = path
+                .strip_prefix("/proc/")
+                .and_then(|p| p.strip_suffix("/oom_score_adj"))
+                .and_then(|p| p.parse::<i32>().ok())
+            {
+                // the kernel's file of a live process: -1000 to 1000
+                if !self.procs.contains_key(&pid) {
+                    return Err(errno(ENOENT));
+                }
+                let v: i32 = data.trim().parse().map_err(|_| errno(EINVAL))?;
+                if !(-1000..=1000).contains(&v) {
+                    return Err(errno(EINVAL));
+                }
+                self.files.insert(path.to_string(), v.to_string());
+                return Ok(());
+            }
             if !self.files.contains_key(path) {
                 return Err(errno(ENOENT));
             }
