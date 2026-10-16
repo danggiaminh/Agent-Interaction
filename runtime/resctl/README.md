@@ -113,6 +113,10 @@ process (so that a reused pid is not mistaken for the service) and a name. The p
    runs inside a workload domain; `protect` refuses a process that runs in a workload domain; a policy cannot name
    protected status; the registry lives in the state directory a workload (another uid) cannot open; and a request is
    decided by where the process is, not by what the caller says.
+4. **The OOM killer of the whole machine takes workloads first.** Every process resctl puts into a workload (`run`,
+   `enter`, the main process of `supervise`) is given `oom_score_adj` 1000 before it enters, and its children inherit it;
+   when resctl holds CAP_SYS_RESOURCE the kernel keeps 1000 as the process's minimum, so a workload that runs as another
+   user cannot lower it. An OOM inside a domain still chooses among the processes of that domain.
 
 A damaged registry is not believed: kill-type commands fail closed until it is healed. The heal (done by the prelude of
 most mutating commands, and by `recover`) keeps every readable line that still names a live process of the same start
@@ -238,17 +242,19 @@ What resctl does not do, so that nobody relies on it:
   workload gets a fresh in-memory budget (bounded globally by the persisted start rate, and by `failed` needing `reset`);
   a first start is refused rather than delayed when the per-minute rate is exceeded; failed creates do not use the rate.
 - **Signalling** uses the system's `kill` tool (batches of 256, signals 0, 9 and 15 only); without it a graceful stop
-  falls back to the kill and the v1 kill is unsupported. `NoNewPrivs` and an `oom_score_adj` bias are not applied.
+  falls back to the kill and the v1 kill is unsupported. `NoNewPrivs` is not applied.
   Supervised workloads inherit the supervisor's environment and stdio (stdin is null). Non-UTF-8 arguments are refused.
 - **Memory exhaustion: the boundary.** What holds is measured (the `stress` rows): a workload, a class or all workloads
   together are held to their ceilings by the kernel's OOM killer inside their own memory cgroups, and meanwhile a periodic
   task in `system` and the control plane stay responsive (on the host, with real timing: the longest stall and the
-  slowest `state` are bounded). What resctl does not provide: protection against memory pressure of the whole machine that
-  comes from outside the workload tree (the global OOM killer picks its victim by its own score, and workloads get no
-  `oom_score_adj` bias, so a large critical process can be chosen first), against exhaustion of kernel memory, or against
-  stalls caused by I/O (`system` has no I/O protection, and `io.max` needs a whole disk). Where the memory controller is
-  cgroup v1, `system` has no reclaim protection (`memory.low`), only the ceiling on `workload`. No userspace tool can
-  prevent every kernel failure or every OOM of the whole machine.
+  slowest `state` are bounded); when the whole machine runs out of memory, the OOM killer takes a workload before a larger
+  critical service (shown in the guest only: it is not done to a shared host). What resctl does not provide: a bias that a
+  root workload cannot undo (`allow.root`, or `run` by root: such a workload holds the capability to lower it), or that a
+  workload of another user cannot undo when resctl lacks CAP_SYS_RESOURCE (when it is not root, or in a container that
+  drops the capability, as the sandbox of the test host does: a LIMIT row there), protection once no workload is left
+  to kill, against exhaustion of kernel memory, or against stalls caused by I/O (`system` has no I/O protection, and
+  `io.max` needs a whole disk). Where the memory controller is cgroup v1, `system` has no reclaim protection (`memory.low`), only the ceiling on
+  `workload`. No userspace tool can prevent every kernel failure or every OOM of the whole machine.
 - **Tests.** Failed domain creation with an unforeseen I/O error and restart delays caused by the start rate are covered
   by unit tests only (an end-to-end check would take about a minute). The timing oracles of the `stress` rows (the stall
   of the periodic task, the latency of the control plane) have no negative control: a defect that stalls `system` cannot
