@@ -36,7 +36,7 @@ int main(int argc, char **argv) {
 	if (!strcmp(mode, "echo")) {
 		for (int i = 2; i < argc; i++)
 			printf("%s%s", argv[i], i + 1 < argc ? " " : "\n");
-	} else if (!strcmp(mode, "mem")) { /* mem MiB: allocate, touch, hold */
+	} else if (!strcmp(mode, "mem")) { /* mem MiB [SECONDS]: allocate, touch, hold (2 s unless told otherwise) */
 		size_t mb = (size_t)atol(argv[2]);
 		for (size_t i = 0; i < mb; i++) {
 			char *p = malloc(1 << 20);
@@ -47,7 +47,7 @@ int main(int argc, char **argv) {
 			memset(p, 1, 1 << 20);
 		}
 		puts("mem-ok");
-		sleep(2);
+		sleep(argc > 3 ? (unsigned)atoi(argv[3]) : 2);
 	} else if (!strcmp(mode, "fork")) { /* fork N children that sleep; report how many succeeded */
 		int n = atoi(argv[2]), made = 0;
 		for (int i = 0; i < n; i++) {
@@ -126,6 +126,28 @@ int main(int argc, char **argv) {
 		ssize_t n = read(s, buf, sizeof buf - 1);
 		buf[n > 0 ? n : 0] = 0;
 		printf("dial got %s", buf);
+	} else if (!strcmp(mode, "beat")) {
+		/* beat PERIOD_MS SECONDS STOPFILE: a periodic task, the stand-in for a service. It wakes up every PERIOD_MS and
+		 * allocates and touches 256 KiB, until STOPFILE exists or SECONDS have passed, then reports how often it woke up
+		 * and its longest stall: how much longer than PERIOD_MS its slowest round took. */
+		long period = atol(argv[2]), beats = 0;
+		double w0 = now(CLOCK_MONOTONIC), last = w0, worst = 0, secs = atof(argv[3]);
+		struct timespec d = { period / 1000, (period % 1000) * 1000000L };
+		puts("beat-ready");
+		while (access(argv[4], F_OK) != 0 && last - w0 < secs) {
+			nanosleep(&d, NULL);
+			char *p = malloc(256 << 10);
+			if (p) {
+				memset(p, 1, 256 << 10);
+				free(p);
+			}
+			double t = now(CLOCK_MONOTONIC), stall = t - last - (double)period / 1000;
+			if (stall > worst)
+				worst = stall;
+			last = t;
+			beats++;
+		}
+		printf("beats=%ld max_stall_ms=%ld\n", beats, (long)(worst * 1000));
 	} else if (!strcmp(mode, "cpu")) { /* cpu SECONDS: burn, report cpu time / wall time */
 		double w0 = now(CLOCK_MONOTONIC), c0 = now(CLOCK_PROCESS_CPUTIME_ID), secs = atof(argv[2]);
 		volatile unsigned long x = 0;

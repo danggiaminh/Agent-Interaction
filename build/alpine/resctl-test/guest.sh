@@ -12,5 +12,9 @@ cd /work || exit 1
 RC_DIR=/work
 CT=/work/ctr/ctr-test
 CG_BLKDEV=/dev/vda
+# software emulation: the timing rows of the stress section are not measured here
+RC_TIMING=no
 
+# the sections: the arguments, else those of /work/areas (check-resctl.sh --areas), else all of them
+if [ $# -eq 0 ] && [ -s /work/areas ]; then set -- $(cat /work/areas); fi
 rc_suite g_ auto $*

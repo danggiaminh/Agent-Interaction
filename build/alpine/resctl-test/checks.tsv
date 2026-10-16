@@ -5,7 +5,7 @@
 #   unpriv  u_  the unprivileged session (a user namespace: no cgroup hierarchy, builds and tests the crate)
 #   host    h_  the real root of this host, lifecycle auto (limits through the hierarchy that has the controller)
 #   hostv1  v_  the same host with the cgroup v1 freezer forced as the lifecycle backend; it runs only the sections that
-#               depend on that backend (layout normal isolation terminate recover process critical lifecycle): the limits,
+#               depend on that backend (layout normal isolation terminate recover process critical stress lifecycle): the limits,
 #               throttle and pressure rows read the same v1 resource hierarchies as host, and pressure has no v1 source at all
 #   guest   g_  the cgroup v2 test bed guest (cgroup_no_v1=all): the layout the host cannot offer
 #   bed         the facts of the guest session itself (QEMU, boot): no prefix
@@ -166,6 +166,17 @@ crit_teardown	critical	protection	host,hostv1,guest	crit_teardown	ok	teardown ke
 crit_audit	critical	protection	host,hostv1,guest	crit_audit	ok	the trail records the rescues, refusals, intents and exits of all of it without a gap
 crit_survival	critical	protection	host,hostv1,guest	crit_survival	ok	the same critical processes, never restarted, in system, beat from the first scenario to the last
 system_canary_critical	critical	protection	host,hostv1,guest	system_canary_critical	ok	a process in the system domain survives every critical-process scenario
+# ---- exhaustion: workloads exhaust memory and the CPUs, the system domain and the control plane keep working
+stress_memory	stress	memory	host,hostv1,guest	stress_memory	ok	a workload over its memory limit is killed by the kernel inside its own domain, counted by its own memory cgroup, while a neighbour keeps what it holds
+stress_class	stress	memory	host,hostv1,guest	stress_class	ok	workloads that each fit their own limit but together exceed their class ceiling are held to it by OOM kills inside the class
+stress_kill	stress	lifecycle	host,hostv1,guest	stress_kill	ok	a forced kill of a workload that holds memory at its limit and keeps the CPUs busy leaves no process and no domain
+stress_oom_loop	stress	lifecycle	host,hostv1,guest	stress_oom_loop	ok	a supervised workload that runs out of memory on every start ends failed within its restart budget (4 starts)
+stress_system	stress	protection	host,hostv1,guest	stress_system	ok	a periodic task in the system domain runs through all of it, CPU saturation included, and the system domain's memory cgroup counts no OOM kill
+stress_stall	stress	protection	host,hostv1	stress_stall	ok	the longest stall of the system domain's periodic task stays within 0.5 s while workloads exhaust their memory and the CPUs
+stress_control	stress	lifecycle	host,hostv1	stress_control	ok	the control plane (resctl state) answers within 2 s throughout
+stress_kill_time	stress	lifecycle	host,hostv1	stress_kill_time	ok	the forced kill under load is complete within 5 s
+stress_loop_time	stress	lifecycle	host,hostv1	stress_loop_time	ok	the OOM crash loop ends failed within 15 s
+system_canary_stress	stress	protection	host,hostv1,guest	system_canary_stress	ok	a process in the system domain survives the exhaustion of memory and CPU by workloads
 # ---- lifecycle backends
 lifecycle_v2	lifecycle	lifecycle	host,hostv1,guest	lifecycle_v2	ok	--lifecycle v2 serves freeze, kill and pressure from cgroup v2
 lifecycle_v1_host	lifecycle	lifecycle	host,hostv1	lifecycle_v1	ok	--lifecycle v1 serves freeze and kill from the v1 freezer, and reports pressure unbound

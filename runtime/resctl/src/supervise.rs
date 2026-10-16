@@ -1570,6 +1570,9 @@ mod tests {
 
     const GIB: u64 = 1 << 30;
     const DIR: &str = "/run/ai";
+    /// More main processes than any test starts: a supervisor that gets there restarts without a bound, and its test
+    /// fails instead of running for ever.
+    const SPAWN_BOUND: usize = 1000;
     const BASE: &str = "[system]\ncpu.weight = 1000\nmemory.reserve = 64M\n[workload]\nmemory.max = 512M\npids.max = 256\n[class.batch]\ncpu.weight = 100\nmemory.max = 160M\npids.max = 96\n[limits.batch]\nmemory.max = 64M\npids.max = 16\n[stop]\ngrace = 1500ms\n";
 
     fn world() -> FakeHost {
@@ -1754,6 +1757,10 @@ mod tests {
                 self.spawned.borrow_mut().push(rec);
                 return Ok(pid);
             }
+            assert!(
+                self.mains().len() < SPAWN_BOUND,
+                "{SPAWN_BOUND} main processes were started: the restarts are not bounded"
+            );
             let script = self.take();
             if script.spawn_err {
                 self.spawned.borrow_mut().push(rec);

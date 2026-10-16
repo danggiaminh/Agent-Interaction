@@ -26,11 +26,13 @@ if [ -z "$CG_BLKDEV" ]; then
 	exit 0
 fi
 
-# every section on the lifecycle resctl chooses; the forced v1 lifecycle only where it changes the outcome
+# every section on the lifecycle resctl chooses; the forced v1 lifecycle only where it changes the outcome. The sections
+# are the arguments, else those of /work/areas (check-resctl.sh --areas), else all of them.
+if [ $# -eq 0 ] && [ -s /work/areas ]; then set -- $(cat /work/areas); fi
 WANT="$*"
 rc_suite h_ auto $WANT
 vsec=
-for s in layout normal isolation terminate recover process critical lifecycle; do
+for s in layout normal isolation terminate recover process critical stress lifecycle; do
 	case " $WANT " in *" $s "* | "  ") vsec="$vsec $s" ;; esac
 done
 if [ -z "$WANT" ] || [ -n "$vsec" ]; then rc_suite v_ v1 $vsec; fi

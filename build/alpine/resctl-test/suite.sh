@@ -206,6 +206,7 @@ rc_suite() {
 	rc_s_recover
 	rc_s_process
 	rc_s_critical
+	rc_s_stress
 	rc_s_lifecycle
 
 	# the epilogue: nothing of this suite stays behind
@@ -2687,6 +2688,178 @@ rc_s_critical() {
 	rm -f "$T/${RC_P}kc4.out" "$T/${RC_P}kp1.child" "$T/${RC_P}m5.go" "$T/${RC_P}m5.child" "$T/${RC_P}ku4.ready"
 	cr_scrub
 	canary_report system_canary_critical
+}
+
+# ------------------------------------------------------------------------------------------------ stress
+# Exhaustion inside the workload domains, measured from outside them. A periodic task in the system domain (ctr-test
+# beat, the stand-in for a critical service: it wakes every 20 ms and allocates) times its own stalls; a probe times the
+# control plane (resctl state); and the kernel's own counters of each memory cgroup, not resctl's report of them, say
+# where the OOM killer struck and how high the usage went. Every load is bounded twice, by its domain and by its own
+# size, so that a broken limit cannot take the machine with it. The thresholds of the timing rows hold on the host; the
+# guest is emulated (its timing is not real), so there the rows say what happened, not how fast.
+STRESS_STALL_MAX=0.50
+STRESS_PROBE_MAX=2.00
+STRESS_KILL_MAX=5.00
+STRESS_LOOP_MAX=15.00
+
+# rc_kmem DOMAIN oom_kill|peak: the kernel's count of OOM kills of a domain's memory cgroup, or its peak usage in bytes
+rc_kmem() {
+	_d="$(rc_dir memory "$1")"
+	case "$(rc_api memory):$2" in
+	v2:oom_kill) sed -n 's/^oom_kill //p' "$_d/memory.events" 2>/dev/null ;;
+	v1:oom_kill) sed -n 's/^oom_kill //p' "$_d/memory.oom_control" 2>/dev/null ;;
+	v2:peak) cat "$_d/memory.peak" 2>/dev/null ;;
+	v1:peak) cat "$_d/memory.max_usage_in_bytes" 2>/dev/null ;;
+	esac
+}
+# rc_probe OUT STOP: time `resctl state` every 0.2 s until the file STOP exists (at most 600 times); the longest one,
+# in seconds, goes to OUT
+rc_probe() {
+	pmax=0
+	pn=0
+	while [ ! -e "$2" ] && [ "$pn" -lt 600 ]; do
+		pa="$(cg_uptime)"
+		"$RC_BIN" --policy "$RC_POLICY" --lifecycle "$RC_LC" --state-dir "$RC_STATE" state >/dev/null 2>&1
+		pb="$(cg_uptime)"
+		pmax="$(awk -v m="$pmax" -v a="$pa" -v b="$pb" 'BEGIN { d = b - a; printf "%.2f", (d > m) ? d : m }')"
+		pn=$((pn + 1))
+		sleep 0.2
+	done
+	echo "$pn $pmax" >"$1"
+}
+
+rc_s_stress() {
+	section stress || return 0
+	stop="$T/${RC_P}stress.stop"
+	rm -f "$stop"
+	sys0="$(rc_kmem system oom_kill)"
+	rcbg enter system -- "$CT" beat 20 600 "$stop" >"$T/${RC_P}beat.out" 2>&1 &
+	beat=$!
+	CANARY_EXTRA=1
+	waitfor 10 grep -q '^beat-ready' "$T/${RC_P}beat.out"
+	beat_in="$(grep -c '/agent-interaction/system$' "/proc/$beat/cgroup" 2>/dev/null)"
+	rc_probe "$T/${RC_P}probe.out" "$stop" &
+	probe=$!
+
+	# a workload over its memory limit is killed by the kernel in its own domain; a neighbour keeps what it holds
+	rcbg run interactive/sn --memory-max 64M -- "$CT" mem 40 8 >"$T/${RC_P}sn.out" 2>&1 &
+	snp=$!
+	waitfor 20 grep -q mem-ok "$T/${RC_P}sn.out"
+	rc run batch/sa --memory-max 48M -- "$CT" mem 400
+	sa_rc=$RS
+	sa_kill="$(rc_kmem workload/batch/sa oom_kill)"
+	sa_peak="$(rc_kmem workload/batch/sa peak)"
+	sn_alive="$(yn rc_alive "$snp")"
+	wait "$snp" 2>/dev/null
+	sn_rc=$?
+	sn_kill="$(rc_kmem workload/interactive/sn oom_kill)"
+	rc_drop batch/sa
+	rc_drop interactive/sn
+	chk over_limit_rc "$sa_rc" 137
+	chk over_limit_oom_kills "$([ "${sa_kill:-0}" -ge 1 ] && echo ">=1" || echo "${sa_kill:-none}")" ">=1"
+	chk over_limit_peak "$([ -n "$sa_peak" ] && [ "$sa_peak" -le 54525952 ] && echo "<=48M+4M" || echo "${sa_peak:-none}")" "<=48M+4M"
+	chk neighbour_held "$sn_alive $sn_rc ${sn_kill:-none} $(grep -c mem-ok "$T/${RC_P}sn.out")" "yes 0 0 1"
+	verdict stress_memory "a 400 MiB allocation under --memory-max 48M ended rc 137 with $sa_kill OOM kill(s) counted by its own memory cgroup, peak $sa_peak bytes; the 40 MiB neighbour in interactive/sn kept running to its end (rc 0, no OOM kill)"
+	canary_note stress_memory
+
+	# three workloads that each fit their own limit but not, together, the ceiling of their class
+	for i in 1 2 3; do
+		rcbg run "interactive/sc$i" --memory-max 120M -- "$CT" mem 100 3 >/dev/null 2>&1 &
+		eval "scp$i=\$!"
+	done
+	sc_rcs=
+	sc_hung=
+	for i in 1 2 3; do
+		eval "p=\$scp$i"
+		rc_reap "$p" 30
+		sc_rcs="$sc_rcs $SPRC"
+		sc_hung="$sc_hung$SPHUNG"
+	done
+	sc_kills=0
+	for i in 1 2 3; do
+		k="$(rc_kmem "workload/interactive/sc$i" oom_kill)"
+		sc_kills=$((sc_kills + ${k:-0}))
+		rc_drop "interactive/sc$i"
+	done
+	cl_peak="$(rc_kmem workload/interactive peak)"
+	chk class_oom_kills "$([ "$sc_kills" -ge 1 ] && echo ">=1" || echo "$sc_kills")" ">=1"
+	chk class_peak "$([ -n "$cl_peak" ] && [ "$cl_peak" -le 272629760 ] && echo "<=256M+4M" || echo "${cl_peak:-none}")" "<=256M+4M"
+	chk class_ended "$sc_hung" nonono
+	verdict stress_class "3 x 100 MiB in interactive (class ceiling 256M): $sc_kills OOM kill(s) in the workloads (exit statuses$sc_rcs), class peak $cl_peak bytes"
+	canary_note stress_class
+
+	# every CPU busy in a batch workload (cpu.weight 100 against the system domain's 1000): judged by the beat below
+	rc run batch/su -- sh -c 'i=0; while [ "$i" -lt 8 ]; do "$0" cpu 5 & i=$((i + 1)); done; wait' "$CT"
+	su_rc=$RS
+	rc_drop batch/su
+	canary_note stress_cpu
+
+	# a forced kill of a workload that holds memory at its limit and burns CPU leaves nothing behind
+	rcbg run batch/sk --memory-max 64M -- sh -c '"$0" mem 28 60 & "$0" mem 28 60 & "$0" cpu 60 & "$0" cpu 60 & wait' "$CT" >/dev/null 2>&1 &
+	skp=$!
+	waitfor 20 rc_pids_ge batch/sk 5
+	sleep 1
+	sk_before="$(rc_find "$CT mem 28 60") $(rc_find "$CT cpu 60")"
+	ka="$(cg_uptime)"
+	rc kill batch/sk
+	sk_rc=$RS
+	waitfor 30 rc_dead "$skp"
+	waitfor 30 rc_find_is "$CT mem 28 60" 0
+	waitfor 30 rc_find_is "$CT cpu 60" 0
+	kb="$(cg_uptime)"
+	sk_left="$(rc_find "$CT mem 28 60") $(rc_find "$CT cpu 60")"
+	sk_el="$(rc_secs "$ka" "$kb")"
+	rc_drop batch/sk "$skp"
+	sk_gone="$(yn rc_gone batch/sk)"
+	chk kill_rc "$sk_rc" 0
+	chk kill_found "$sk_before" "2 2"
+	chk kill_left "$sk_left" "0 0"
+	chk kill_domain_gone "$sk_gone" yes
+	verdict stress_kill "kill of batch/sk (2 x 28 MiB at a 64M limit, 2 CPU burners): every process gone after ${sk_el}s, the domain removed"
+	canary_note stress_kill
+
+	# a supervised workload that runs out of memory on every start ends failed within its restart budget
+	la="$(cg_uptime)"
+	rc_pol_b 60 "$RC_POLICY" supervise batch/so --memory-max 32M -- "$CT" mem 200
+	so_rc=$RS
+	lb="$(cg_uptime)"
+	so_st="$(rc_sf batch/so phase gen restarts ended oom)"
+	so_starts="$(rc_ev batch/so start)"
+	so_el="$(rc_secs "$la" "$lb")"
+	rc reset batch/so
+	chk loop_rc "$so_rc" 1
+	chk loop_state "$so_st" "failed 4 3 crashed:9 yes"
+	chk loop_starts "$so_starts" 4
+	verdict stress_oom_loop "an OOM kill on every start: 4 starts, ended crashed:9 oom=yes, failed after ${so_el}s"
+	canary_note stress_oom_loop
+
+	# the measurements, and the system domain the OOM killer never touched
+	: >"$stop"
+	wait "$probe" 2>/dev/null
+	rc_reap "$beat" 10
+	beat_rc=$SPRC
+	CANARY_EXTRA=0
+	sys1="$(rc_kmem system oom_kill)"
+	read -r pn pmax <"$T/${RC_P}probe.out" 2>/dev/null
+	stall="$(sed -n 's/^beats=[0-9]* max_stall_ms=\([0-9]*\)$/\1/p' "$T/${RC_P}beat.out")"
+	beats="$(sed -n 's/^beats=\([0-9]*\) .*/\1/p' "$T/${RC_P}beat.out")"
+	stall_s="$(awk -v ms="${stall:-}" 'BEGIN { if (ms == "") print "none"; else printf "%.2f", ms / 1000 }')"
+	chk beat_in_system "$beat_in" "$(rc_roots | wc -l)"
+	chk beat_ended "$beat_rc ${beats:+yes}" "0 yes"
+	chk cpu_load_rc "$su_rc" 0
+	chk system_oom_kills "${sys0:-none} ${sys1:-none}" "${sys0:-none} ${sys0:-none}"
+	verdict stress_system "the beat in the system domain ran through all of it, 8 CPU burners included ($beats beats, longest stall ${stall_s}s), and the system domain's memory cgroup counted no OOM kill (${sys1:-none})"
+	canary_report system_canary_stress
+	# the timing, where it is real (RC_TIMING=no under software emulation)
+	[ "${RC_TIMING:-yes}" = yes ] || return 0
+	if [ -n "$stall" ] && cg_between "$stall_s" 0 "$STRESS_STALL_MAX"; then f stress_stall "ok the longest stall of the beat was ${stall_s}s over $beats beats (at most ${STRESS_STALL_MAX}s)"
+	else f stress_stall "fail:the longest stall of the beat was ${stall_s}s over ${beats:-0} beats (at most ${STRESS_STALL_MAX}s)"; fi
+	if [ "${pn:-0}" -ge 10 ] && cg_between "$pmax" 0 "$STRESS_PROBE_MAX"; then f stress_control "ok resctl state answered $pn times, the slowest in ${pmax}s (at most ${STRESS_PROBE_MAX}s)"
+	else f stress_control "fail:resctl state answered ${pn:-0} times, the slowest in ${pmax:-?}s (at least 10 answers, at most ${STRESS_PROBE_MAX}s)"; fi
+	if [ "$sk_left" = "0 0" ] && cg_between "$sk_el" 0 "$STRESS_KILL_MAX"; then f stress_kill_time "ok the kill under load was complete after ${sk_el}s (at most ${STRESS_KILL_MAX}s)"
+	else f stress_kill_time "fail:the kill under load left '$sk_left' after ${sk_el}s (wanted '0 0' within ${STRESS_KILL_MAX}s)"; fi
+	if [ "$so_rc" = 1 ] && cg_between "$so_el" 0 "$STRESS_LOOP_MAX"; then f stress_loop_time "ok the OOM crash loop ended failed after ${so_el}s (at most ${STRESS_LOOP_MAX}s)"
+	else f stress_loop_time "fail:the OOM crash loop ended rc ${so_rc} after ${so_el}s (wanted 1 within ${STRESS_LOOP_MAX}s)"; fi
 }
 
 # ------------------------------------------------------------------------------------------------ lifecycle layers

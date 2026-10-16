@@ -14,7 +14,7 @@ reads the fact "<prefix><fact>" of that environment's session:
     unpriv  u_  unprivileged session        host  h_  this host, lifecycle auto       bed  (no prefix) the test bed itself
     guest   g_  cgroup v2 guest             hostv1  v_  this host, v1 freezer lifecycle
 `area` is the part of the suite (build layout normal limits throttle pressure isolation terminate recover process critical
-lifecycle bed) and `resource` the domain that is controlled (memory cpu processes io lifecycle protection policy
+stress lifecycle bed) and `resource` the domain that is controlled (memory cpu processes io lifecycle protection policy
 platform). Expectations are those of tools-test/inventory.tsv: ok | =VALUE | ~REGEX | deny:REGEX (see tools-judge.py).
 
 Every row ends as PASS, DENIED (a deny: row: the refusal that must happen), LIMIT or FAIL. A failed row becomes a LIMIT
@@ -27,6 +27,15 @@ leaked value (an operation that worked where it had to be refused) is never a li
 The judge also fails when a fact has no row or a row no fact, when a fact comes from the wrong session, and when an
 environment does not exercise every area it must (or the host and guest every resource, or a system-domain row that must
 exist). Exit status 1 on any FAIL.
+
+    resctl-judge.py --partial [--areas LIST] FACTS_FILE...     a run of some sessions or some areas (check-resctl.sh
+                                                               --areas, --no-guest, --mutant)
+A partial run is judged on what it ran: the rows of a session that did not run, and the rows of the privileged and guest
+environments outside --areas whose fact was not reported, are NOT RUN instead of FAIL, and the coverage that only a full
+run can give (every area, every resource) is required of what ran only. Everything that ran is judged as strictly as in a
+full run, a limitation still needs its guest proof (so a run without the guest cannot prove one), and the verdict says
+that it is partial: it is never a full verdict. --status FILE writes one "row<TAB>status" line per row (NOTRUN for a row
+that did not run); --list-areas prints the areas of the suite.
 """
 import argparse
 import collections
@@ -54,22 +63,22 @@ ENVS = collections.OrderedDict([
 ])
 SESSIONS = ("unprivileged", "privileged", "guest")
 AREAS = ("build", "layout", "normal", "limits", "throttle", "pressure", "isolation", "terminate", "recover", "process", "critical",
-         "lifecycle", "bed")
+         "stress", "lifecycle", "bed")
 RESOURCES = ("memory", "cpu", "processes", "io", "lifecycle", "protection", "policy", "platform")
 FULL = ("layout", "normal", "limits", "throttle", "pressure", "isolation", "terminate", "recover", "process", "critical",
-        "lifecycle")
+        "stress", "lifecycle")
 MUST_AREAS = {
     "unpriv": ("build", "layout", "normal", "isolation"),
     "host": FULL,
-    "hostv1": ("layout", "normal", "isolation", "terminate", "recover", "process", "critical", "lifecycle"),
+    "hostv1": ("layout", "normal", "isolation", "terminate", "recover", "process", "critical", "stress", "lifecycle"),
     "guest": FULL,
     "bed": ("bed",),
 }
 MUST_RESOURCES = {env: ("memory", "cpu", "processes", "io", "lifecycle", "protection") for env in ("host", "guest")}
 # the system domain stays outside every kill domain: these rows must exist, and pass, wherever a hierarchy exists
 SYSTEM_ROWS = ("system_unreachable", "system_canary", "system_canary_terminate", "system_canary_recover",
-               "system_canary_reinit", "system_canary_process", "system_canary_critical", "system_canary_lifecycle",
-               "teardown_keeps_system")
+               "system_canary_reinit", "system_canary_process", "system_canary_critical", "system_canary_stress",
+               "system_canary_lifecycle", "teardown_keeps_system", "stress_system")
 LIMIT_ENVS = ("host", "hostv1")
 LIMIT_AREAS = ("normal", "limits", "throttle", "pressure")
 LIMIT_CLASSES = tuple(c for c in tj.CLASSES if c != "upstream")
@@ -79,10 +88,27 @@ def main(argv):
     ap = argparse.ArgumentParser(description="judge the facts of the resource-control sessions")
     ap.add_argument("--checks", default=CHECKS)
     ap.add_argument("--limits", default=LIMITS)
-    ap.add_argument("facts", nargs="+")
+    ap.add_argument("--partial", action="store_true", help="judge a run of some sessions or areas")
+    ap.add_argument("--areas", help="the areas a partial run ran (comma or space separated)")
+    ap.add_argument("--status", help="write one 'row<TAB>status' line per row to this file")
+    ap.add_argument("--list-areas", action="store_true", help="print the areas of the suite and exit")
+    ap.add_argument("facts", nargs="*")
     args = ap.parse_args(argv)
+    if args.list_areas:
+        print(" ".join(FULL))
+        return 0
+    if not args.facts:
+        ap.error("no facts file")
 
     problems = []
+    selected = None
+    if args.areas is not None:
+        selected = args.areas.replace(",", " ").split()
+        bad = [a for a in selected if a not in FULL]
+        if bad or not selected:
+            problems.append("--areas: '%s' is not a list of %s" % (args.areas, ", ".join(FULL)))
+        if not args.partial:
+            problems.append("--areas needs --partial: a run of some areas is never a full verdict")
     facts = {}  # name -> (value, session)
     sessions = []
     for path in args.facts:
@@ -147,6 +173,17 @@ def main(argv):
             covered[row["key"]] = row["id"]
             by_id[row["id"]] = row
             rows.append(row)
+
+    # ---- a partial run: what did not run is NOT RUN; the unprivileged session and the test bed always run in full
+    skipped = {}  # row id -> row
+    if args.partial:
+        def ran(row):
+            if row["session"] not in sessions:
+                return False
+            return (selected is None or row["env"] in ("unpriv", "bed") or row["area"] in selected
+                    or row["key"] in facts)
+        skipped = collections.OrderedDict((r["id"], r) for r in rows if not ran(r))
+        rows = [r for r in rows if r["id"] not in skipped]
 
     # ---- the limits
     limits = {}
@@ -260,6 +297,9 @@ def main(argv):
                     break
         if unmet is None:
             for p in entry["proofs"]:
+                if p in skipped:
+                    unmet = "the proof row %s did not run (partial run)" % p
+                    break
                 if pass1.get(p) != "PASS":
                     unmet = "the proof row %s is not PASS (%s)" % (p, status.get(p, "FAIL"))
                     break
@@ -272,14 +312,21 @@ def main(argv):
 
     # ---- coverage: what an environment must exercise
     gaps = []
+    ran_envs = [env for env, (session, _, _) in ENVS.items() if not args.partial or session in sessions]
     for env, areas in MUST_AREAS.items():
+        if env not in ran_envs:
+            continue
         for area in areas:
+            if args.partial and selected is not None and env not in ("unpriv", "bed") and area not in selected:
+                continue
             here = [r for r in rows if r["env"] == env and r["area"] == area]
             if not here:
                 gaps.append("no row exercises the area %s in the environment %s" % (area, env))
             elif not any(status[r["id"]] == "PASS" for r in here):
                 gaps.append("no row of the area %s passes in the environment %s" % (area, env))
     for env, resources in MUST_RESOURCES.items():
+        if args.partial:
+            break
         for resource in resources:
             here = [r for r in rows if r["env"] == env and r["resource"] == resource]
             if not here:
@@ -291,6 +338,8 @@ def main(argv):
             rid = "%s.%s" % (base, env)
             if rid not in by_id:
                 gaps.append("the system-domain row %s does not exist" % rid)
+            elif rid in skipped:
+                continue
             elif status[rid] != "PASS":
                 gaps.append("the system-domain row %s is %s: the system domain must stay outside every kill domain" % (rid, status[rid]))
     if "system_unreachable.unpriv" not in by_id:
@@ -384,8 +433,23 @@ def main(argv):
     else:
         print("  the host provides everything the resource control needs")
 
-    print("resctl-test: %d checks passed, %d denied as expected, %d limited by the host, %d failed" % (
-        counts["PASS"], counts["DENIED"], counts["LIMIT"], counts["FAIL"]))
+    if args.status:
+        with open(args.status, "w") as f:
+            for row in rows:
+                f.write("%s\t%s\n" % (row["id"], status[row["id"]]))
+            for rid in skipped:
+                f.write("%s\tNOTRUN\n" % rid)
+
+    head = "resctl-test"
+    if args.partial:
+        notrun = collections.Counter(r["env"] for r in skipped.values())
+        print("== partial run: not a full verdict")
+        print("  sessions: %s; areas: %s" % (" ".join(s for s in SESSIONS if s in sessions),
+                                             " ".join(selected) if selected is not None else "all"))
+        print("  not run: %d rows%s" % (len(skipped), "".join(" %s=%d" % (e, n) for e, n in notrun.items())))
+        head = "resctl-test (partial run, %d rows not run)" % len(skipped)
+    print("%s: %d checks passed, %d denied as expected, %d limited by the host, %d failed" % (
+        head, counts["PASS"], counts["DENIED"], counts["LIMIT"], counts["FAIL"]))
     return 1 if counts["FAIL"] else 0
 
 

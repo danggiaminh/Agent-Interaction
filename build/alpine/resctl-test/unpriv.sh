@@ -22,9 +22,14 @@ if section build; then
 	cd /crate || exit 1
 	run u_fmt cargo fmt --check
 	run u_clippy cargo clippy --offline --locked --all-targets -- -D warnings
-	if cargo test --offline --locked >"$T/u_unit.log" 2>&1; then
+	# bounded: a test that never ends fails the fact instead of holding the session (libtest names it after 60 s)
+	timeout 900 cargo test --offline --locked >"$T/u_unit.log" 2>&1
+	urc=$?
+	if [ "$urc" = 0 ]; then
 		n="$(sed -n 's/^test result: ok\. \([0-9][0-9]*\) passed; 0 failed.*/\1/p' "$T/u_unit.log" | awk '{ s += $1 } END { print s + 0 }')"
 		kv u_unit "ok $n tests"
+	elif [ "$urc" = 124 ] || [ "$urc" = 143 ]; then
+		kv u_unit "fail:the unit tests did not end within 900 s: $(grep -m 1 'has been running for over' "$T/u_unit.log" | cut -c1-160)"
 	else kv u_unit "fail:$(grep -E 'FAILED|panicked|^error' "$T/u_unit.log" | head -n 1 | cut -c1-200)"; fi
 	if cargo build --release --offline --locked >"$T/u_release.log" 2>&1 && [ -x "$RC" ]; then
 		mkdir -p /out

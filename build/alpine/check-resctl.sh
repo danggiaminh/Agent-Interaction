@@ -17,20 +17,48 @@
 # report would and requires the judge to fail every one of them. Exit status 1 only if something FAILs.
 # After the sessions the host is checked for leftovers: sandboxes, mounts, loop devices, cgroup directories, resctl
 # domains, nftables tables, daemons; and the vendored tree for changes.
-#   check-resctl.sh [--image FILE.rootfs.tar.gz] [--facts DIR]    --facts keeps the raw output of the sessions
+#   check-resctl.sh [--image FILE.rootfs.tar.gz] [--facts DIR] [--areas LIST] [--no-guest] [--mutant NAME]
+#     --facts DIR    keeps the raw output of the sessions and the status of every row
+#     --areas LIST   runs only these areas of the suite (resctl-judge.py --list-areas) in the privileged and guest sessions;
+#                    the unprivileged session always runs in full, it builds and tests the binary the others run
+#     --no-guest     does not boot the test bed guest
+#     --mutant NAME  negative control: the crate is built with the deliberate defect NAME of resctl-mutants.py, the areas
+#                    that the defect concerns (or --areas) run on this host, never in the guest, and the run passes only
+#                    if the judge fails every row the defect must break
+# A run with --areas, --no-guest or --mutant is partial: the judge reports what ran (resctl-judge.py --partial), the
+# self-test of the judge, which needs the facts of a full run, does not run, and the result is never a full verdict.
 # shellcheck source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require_root
 
 image=()
 keep=""
+areas=""
+guest=yes
+mutant=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--image) image=(--image "${2:?--image needs a file}"); shift 2 ;;
 	--facts) keep="${2:?--facts needs a directory}"; shift 2 ;;
+	--areas) areas="${2:?--areas needs a list}"; shift 2 ;;
+	--no-guest) guest=no; shift ;;
+	--mutant) mutant="${2:?--mutant needs a name (resctl-mutants.py list)}"; shift 2 ;;
 	*) die "unknown option $1" ;;
 	esac
 done
+mutants=(python3 "$ALPINE_BUILD_DIR/resctl-mutants.py")
+if [ -n "$mutant" ]; then
+	"${mutants[@]}" show "$mutant" >/dev/null || exit 1
+	[ -n "$areas" ] || areas="$("${mutants[@]}" areas "$mutant")"
+	guest=no
+fi
+known="$(python3 "$ALPINE_BUILD_DIR/resctl-judge.py" --list-areas)"
+areas="$(echo "$areas" | tr ',' ' ' | xargs)"
+for a in $areas; do
+	case " $known " in *" $a "*) ;; *) die "--areas: $a is not an area of the suite ($known)" ;; esac
+done
+partial=no
+if [ -n "$areas" ] || [ "$guest" = no ]; then partial=yes; fi
 
 work="$(mktemp -d "$BUILD_ROOT/resctl-check.XXXXXX")"
 trap 'rm -rf "${work:?}"' EXIT
@@ -61,20 +89,25 @@ cp "$ALPINE_BUILD_DIR/tools-test/ctr/ctr-test.c" "$run/ctr/"
 cp "$ALPINE_BUILD_DIR/tools-test/bpf/guest.c" "$run/bpf/"
 cp -a "$REPO_ROOT/runtime/resctl/." "$src/"
 rm -rf "${src:?}/target"
+if [ -n "$mutant" ]; then
+	"${mutants[@]}" apply "$mutant" "$src" || die "the defect $mutant does not apply to the sources: update resctl-mutants.py"
+fi
+# the sections of the suite that priv.sh and guest.sh run (all of them when the file is absent)
+if [ -n "$areas" ]; then echo "$areas" >"$run/areas"; fi
 chmod -R a+rX "$work"
 chmod a+rwx "$work/bin"
 
 # run_session <name> [tools-run.sh options] -- <command...>: facts on stdout, console on stderr
 run_session() {
-	local name="$1" opts=()
+	local name="$1" opts=() t0=$SECONDS
 	shift
 	while [ "$1" != -- ]; do opts+=("$1"); shift; done
 	shift
 	log "running the $name session"
 	if "$ALPINE_BUILD_DIR/tools-run.sh" ${opts[@]+"${opts[@]}"} ${image[@]+"${image[@]}"} -- "$@" >"$work/$name.facts" 2>"$work/$name.err"; then
-		echo "PASS  the $name session ran to the end"
+		echo "PASS  the $name session ran to the end ($((SECONDS - t0)) s)"
 	else
-		echo "FAIL  the $name session exited non-zero: $(tail -n 1 "$work/$name.err")"
+		echo "FAIL  the $name session exited non-zero after $((SECONDS - t0)) s: $(tail -n 1 "$work/$name.err")"
 		fail=1
 	fi
 }
@@ -95,20 +128,37 @@ else
 	exit 1
 fi
 run_session privileged --privileged --copy "$run:/work" -- sh /work/priv.sh
+facts=("$work/unprivileged.facts" "$work/privileged.facts")
 # the guest of the cgroup v2 test bed: booted by QEMU inside an unprivileged session, so the host is never made to
 # do what only the guest kernel may
-[ -f "$GUEST_DIR/bed/vmlinuz" ] && [ -f "$GUEST_DIR/bed/initramfs.cpio.gz" ] || die "no test bed guest; run make-guest.sh first"
-run_session guest --copy "$run:/work" --copy "$GUEST_DIR/bed:/bed" --copy "$TESTBED_DIR:/testbed" -- sh /testbed/launch.sh /work/guest.sh 1500
+if [ "$guest" = yes ]; then
+	[ -f "$GUEST_DIR/bed/vmlinuz" ] && [ -f "$GUEST_DIR/bed/initramfs.cpio.gz" ] || die "no test bed guest; run make-guest.sh first"
+	run_session guest --copy "$run:/work" --copy "$GUEST_DIR/bed:/bed" --copy "$TESTBED_DIR:/testbed" -- sh /testbed/launch.sh /work/guest.sh 1500
+	facts+=("$work/guest.facts")
+fi
 
 echo "== results"
+judge=(--status "$work/status.tsv")
+if [ "$partial" = yes ]; then judge+=(--partial); fi
+if [ -n "$areas" ]; then judge+=(--areas "$areas"); fi
 rc=0
-python3 "$ALPINE_BUILD_DIR/resctl-judge.py" "$work/unprivileged.facts" "$work/privileged.facts" "$work/guest.facts" || rc=$?
+python3 "$ALPINE_BUILD_DIR/resctl-judge.py" "${judge[@]}" "${facts[@]}" || rc=$?
+if [ -n "$mutant" ]; then
+	# the defect must make the judge fail: what is judged here is whether it failed the rows it must
+	echo "== negative control: $mutant"
+	rc=0
+	"${mutants[@]}" verify "$mutant" "$work/status.tsv" || rc=$?
+fi
 [ "$rc" = 0 ] || fail=1
 
-echo "== judge self-test"
-rc=0
-python3 "$ALPINE_BUILD_DIR/resctl-judge-selftest.py" "$work/unprivileged.facts" "$work/privileged.facts" "$work/guest.facts" || rc=$?
-[ "$rc" = 0 ] || fail=1
+if [ "$partial" = no ]; then
+	echo "== judge self-test"
+	rc=0
+	python3 "$ALPINE_BUILD_DIR/resctl-judge-selftest.py" "${facts[@]}" || rc=$?
+	[ "$rc" = 0 ] || fail=1
+else
+	echo "== judge self-test: not run (it damages the facts of a full run; this run is partial)"
+fi
 
 echo "== host state after the sessions"
 snapshot >"$work/host.after"
@@ -120,6 +170,6 @@ if msg="$(vendor_pristine)"; then echo "PASS  unchanged: vendor/alpine-aports"; 
 
 if [ -n "$keep" ]; then
 	mkdir -p "$keep"
-	cp "$work"/*.facts "$work"/*.err "$keep/"
+	cp "$work"/*.facts "$work"/*.err "$work/status.tsv" "$keep/"
 fi
 exit "$fail"

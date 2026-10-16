@@ -5,10 +5,12 @@
 
 The three files are the facts of a real run that the judge accepts. Each case below damages a copy of them, or of
 resctl-test/checks.tsv and limits.tsv, the way a broken resource control or a dishonest report would, runs the judge on the
-copy, and requires it to FAIL with a message that names the row concerned. Two cases go the other way: the unmodified facts
-must be accepted, and so must a host whose unified hierarchy has the memory controller (synthetic: the guest's results stand
-in for the host's), where the four limits of the host disappear. Prints one PASS or FAIL line per case; exit status 1 if
-any case FAILs.
+copy, and requires it to FAIL with a message that names the row concerned. Three cases go the other way: the unmodified
+facts must be accepted, and so must a host whose unified hierarchy has the memory controller (synthetic: the guest's results
+stand in for the host's), where the four limits of the host disappear, and a partial run (judge --partial) that reports
+what it ran. The partial cases also require that a partial run judges whatever ran as strictly as a full run, and that it
+can neither prove a limitation without the guest nor pass for a full verdict. Prints one PASS or FAIL line per case; exit
+status 1 if any case FAILs.
 """
 import os
 import subprocess
@@ -59,6 +61,8 @@ class Case:
         self.s = {k: Facts(v) for k, v in base.items()}
         self.checks = read_raw(CHECKS)
         self.limits = read_raw(LIMITS)
+        self.args = []  # extra arguments of the judge
+        self.omit = set()  # sessions whose facts file is not passed (they did not run)
 
     def drop_checks(self, keep):
         """Keep the data rows of checks.tsv for which keep(columns) holds."""
@@ -103,6 +107,8 @@ def judge(case):
     with tempfile.TemporaryDirectory(prefix="resctl-judge-selftest.") as d:
         paths = []
         for name in SESSIONS:
+            if name in case.omit:
+                continue
             path = os.path.join(d, name + ".facts")
             with open(path, "w") as f:
                 f.write("\n".join(case.s[name].lines) + "\n")
@@ -112,7 +118,7 @@ def judge(case):
             f.write("\n".join(case.checks) + "\n")
         with open(limits, "w") as f:
             f.write("\n".join(case.limits) + "\n")
-        p = subprocess.run([sys.executable, JUDGE, "--checks", checks, "--limits", limits] + paths,
+        p = subprocess.run([sys.executable, JUDGE, "--checks", checks, "--limits", limits] + case.args + paths,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     return p.returncode, p.stdout
 
@@ -147,6 +153,33 @@ def duplicate_fact(c):
 
 def no_guest_session(c):
     c.s["guest"].lines = []
+
+
+# ---- partial runs (check-resctl.sh --areas, --no-guest, --mutant)
+PARTIAL_ENVS = {"host": ("privileged", "h_"), "hostv1": ("privileged", "v_"), "guest": ("guest", "g_")}
+
+
+def partial(areas=None, omit=(), then=None):
+    def mutate(c):
+        c.args = ["--partial"] + (["--areas", areas] if areas else [])
+        c.omit = set(omit)
+        if then:
+            then(c)
+    return mutate
+
+
+def drop_area_facts(area):
+    """The facts an area outside the run would not have reported."""
+    def mutate(c):
+        for ln in c.checks:
+            cols = ln.split("\t")
+            if ln.startswith("#") or len(cols) < 7 or cols[1] != area:
+                continue
+            for env in cols[3].split(","):
+                if env in PARTIAL_ENVS:
+                    session, prefix = PARTIAL_ENVS[env]
+                    c.s[session].lines = [x for x in c.s[session].lines if not x.startswith(prefix + cols[4] + "=")]
+    return mutate
 
 
 # ---- damaged tables
@@ -206,6 +239,21 @@ def limit_cause_is_a_fiction(c):
 # name, mutation, expected rc, text that must appear in the output (in a FAIL line when rc is 1)
 CASES = (
     ("the unmodified facts are accepted", lambda c: None, 0, "4 limited by the host, 0 failed"),
+    ("a partial run is judged on what ran and says that it is not a full verdict",
+     partial("process,critical", then=drop_area_facts("throttle")), 0, "== partial run: not a full verdict"),
+    ("a failure in an area of a partial run fails it",
+     partial("process,critical", then=set_fact("privileged", "h_proc_stop", "fail:boom")), 1, "proc_stop.host"),
+    ("a missing fact of an area of a partial run fails it",
+     partial("process", then=drop_fact("privileged", "h_proc_stop")), 1, "h_proc_stop"),
+    ("a partial run still fails a reported failure outside its areas",
+     partial("process", then=set_fact("privileged", "h_cpu_quota", "fail:boom")), 1, "cpu_quota.host"),
+    ("a system-domain row of an area of a partial run must pass",
+     partial("critical", then=set_fact("privileged", "h_system_canary_critical", "fail:boom")), 1,
+     "system_canary_critical.host"),
+    ("a partial run without the guest cannot prove a limitation of the host", partial(omit=("guest",)), 1,
+     "did not run (partial run)"),
+    ("a run of some areas that does not say it is partial is refused",
+     lambda c: c.args.extend(["--areas", "process"]), 1, "needs --partial"),
     ("a host with the memory controller in the unified hierarchy is accepted with no limit", memory_v2_host, 0,
      "0 limited by the host, 0 failed"),
     ("a refused init that worked is a failure, not a pass", set_fact("unprivileged", "u_init_denied", "leaked:resctl created the domains"),
@@ -315,6 +363,13 @@ CASES = (
     ("a limit on a process-lifecycle row is rejected",
      limit_on("proc_crash_loop.host", "proc_crash_loop.guest"), 1, "can be limited"),
     ("a limit on a critical-process row is rejected", limit_on("crit_survival.host", "crit_survival.guest"), 1, "can be limited"),
+    ("an environment without the area stress is a failure", no_area("stress"), 1, "no row exercises the area stress"),
+    ("a limit on an exhaustion row is rejected", limit_on("stress_stall.host", "stress_memory.guest"), 1, "can be limited"),
+    ("a stall of the system domain beyond its bound is a failure",
+     set_fact("privileged", "h_stress_stall", "fail:the longest stall of the beat was 2.10s"), 1, "stress_stall.host"),
+    ("an OOM kill in the system domain fails a system-domain row",
+     set_fact("privileged", "v_stress_system", "fail:boom"), 1, "the system-domain row stress_system.hostv1"),
+    ("a control plane that was not timed is a failure", drop_fact("privileged", "h_stress_control"), 1, "h_stress_control"),
     ("supervising where it must be refused is a failure",
      set_fact("unprivileged", "u_supervise_denied", "leaked:the workload ran"), 1, "supervise_denied.unpriv"),
     ("registering a critical process where it must be refused is a failure",
