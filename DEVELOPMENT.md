@@ -41,7 +41,7 @@ States: **verified** (a check proves it on this revision) · **partly verified**
   directory kept between runs needs a key per copy of the crate: two copies at different paths that shared one made cargo
   test the first copy's binaries.
 - **open**: a whole session has no wall-clock bound in `check-resctl.sh`; the bounds are inside the sessions.
-- **partly verified**: stability of the timing rows. In three runs on this host the longest stall was 0.01 to 0.04 s
+- **partly verified**: stability of the timing rows. In eleven runs on this host the longest stall was 0.01 to 0.04 s
   (bound 0.5 s), the slowest `state` 0.02 s (2 s), the kill 0.04 to 0.06 s (5 s) and the OOM crash loop 2.0 to 2.5 s
   (15 s); a loaded or noisier host is not investigated.
 
