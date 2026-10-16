@@ -271,9 +271,10 @@ no `unsafe` code (`#![forbid(unsafe_code)]` in both crate roots, checked by `u_n
 inside the tools image.
 
 `check-resctl.sh` validates it in three sessions, like `tools-test.sh`, and `resctl-judge.py` judges every fact against
-`resctl-test/checks.tsv` (154 rows: id, area, resource, environments, fact, expectation, description):
+`resctl-test/checks.tsv` (164 rows: id, area, resource, environments, fact, expectation, description):
 - **unprivileged** (`resctl-test/unpriv.sh`, prefix `u_`): `cargo fmt --check`, `clippy -D warnings`, the 267 unit tests (lifecycle
-  rules, restart arithmetic, store, supervisor and registry against fakes), the release build (the binary the other sessions run), the
+  rules, restart arithmetic, store, supervisor and registry against fakes; bounded at 900 s, and a fake host that is asked for
+  1000 processes fails its test), the release build (the binary the other sessions run), the
   proof that the crate holds no `unsafe` and no dependency, then what resctl does with no hierarchy at all: `probe`, `policy`, `list`,
   `state`, `audit` and `critical` work (and report nothing), and `init`, `run`, `supervise`, `enter` and `protect` are refused with the
   "unsupported" code (`deny:` rows, DENIED) together with ten more commands that change something, none of them creating anything, not even
@@ -300,21 +301,31 @@ inside the tools image.
   processes are refused; 8 policies that grant protection are refused; a workload running as nobody cannot reach `system`, the registry
   or the state directory; a corrupt registry is quarantined and rebuilt with its readable lines kept; stale entries, `unprotect` and
   `teardown`; and the same critical processes, never restarted, still beat without a gap from the first scenario to the last.
+  The `stress` section (10 facts and a canary) exhausts memory and the CPUs inside workload domains and measures from outside
+  them: a 400 MiB allocation under a 48 MiB limit is killed inside its own memory cgroup (the kernel's counter, peak at the limit)
+  while a neighbour keeps its 40 MiB; three workloads that each fit their limit are held to their class ceiling of 256 MiB; 8 CPU
+  burners run in batch; a workload at its memory limit and busy on the CPUs is killed; a supervised workload runs out of memory on
+  every start. Throughout, a periodic task in `system` (`ctr-test beat`: every 20 ms, with an allocation) times its own stalls and
+  a probe times `resctl state`; on this host the longest stall must stay within 0.5 s, the slowest answer within 2 s, the kill
+  within 5 s and the OOM crash loop within 15 s, and the system domain's memory cgroup must count no OOM kill.
   `v_` repeats the sections that depend on the lifecycle backend with the v1 freezer forced (`--lifecycle v1`): the limits, throttle and
   pressure rows read the same v1 resource hierarchies as `h_`, and pressure has no v1 source at all, so those rows have no `hostv1`
   environment.
 - **guest** (`resctl-test/guest.sh`, prefix `g_`): the whole suite on the pure cgroup v2 hierarchy of the test bed (QEMU, TCG on this
-  host), the lifecycle and critical-process sections included: v2 memory, `memory.high`, `memory.oom.group`, the system memory protection,
+  host), the lifecycle, critical-process and stress sections included (the timing rows of stress only on the host: the guest's
+  clock runs under emulation): v2 memory, `memory.high`, `memory.oom.group`, the system memory protection,
   and the v1 freezer refused as unsupported.
 
-Every row ends as PASS, DENIED, LIMIT or FAIL; the last run on this host gave 336 PASS, 6 DENIED, 4 LIMIT and 0 FAIL. Four rows are
+Every row ends as PASS, DENIED, LIMIT or FAIL; the last run on this host gave 362 PASS, 6 DENIED, 4 LIMIT and 0 FAIL. Four rows are
 LIMIT on this host (`resctl-test/limits.tsv`, class `host-config`): the memory protection of the system domain (`memory.low`),
 `memory.oom.group` and `memory.high`, all v2-only memory files, and the same system-protection row of the v1-freezer pass. Each is accepted
 only while resctl reports the matching `unbound=<setting>: needs the cgroup v2 memory controller`, the host's memory controller is
 measured to be v1 (`h_feature_memory`, `h_cgroup_v2_controllers`), and the same row passes in the guest. A host with a v2 memory
 controller turns the failure back into FAIL. The kill domains, the system domain, the lifecycle, the process lifecycle, the critical-process
-protection, isolation and recovery rows cannot be limited at all.
-After the judge, `resctl-judge-selftest.py` runs 79 cases that damage the facts and the tables (a missing, extra, duplicated or
+protection, isolation, recovery and exhaustion (stress) rows cannot be limited at all.
+After the judge, `resctl-judge-selftest.py` runs 91 cases that damage the facts and the tables (a partial run that passes for a
+full verdict, hides a failure outside its areas or proves a limit without the guest, a stall of the system domain beyond its
+bound, an OOM kill in the system domain, a missing, extra, duplicated or
 misplaced fact, a refusal that was a success, a killed system canary, a leftover domain, a guest that did not boot, a limit with a
 wrong or unmeasured cause, without a guest proof or on an isolation, termination, recovery, process, critical or deny row, a vacuous
 expectation, a crash loop that is not stopped, an orphan or a stale domain left behind, an unexpected exit taken for a requested stop,
@@ -322,6 +333,17 @@ an audit trail with a gap, a restart storm, a critical process killed, frozen or
 protected status or changed the registry, a policy that grants protection, an unbounded restart policy, unsafe code) and requires the
 judge to reject each one; then the host is compared with its state before the sessions (sandboxes, mounts, loop devices, cgroup
 directories, resctl domains, nftables tables, daemons) and `vendor/alpine-aports` is checked for changes.
+
+Every session prints its duration (on this host: unprivileged 61 to 128 s, privileged about 4 minutes, guest about 9). For iteration,
+`check-resctl.sh --areas LIST` runs only some sections in the privileged and guest sessions (the unprivileged session always
+runs in full: it builds and tests the binary the others run) and `--no-guest` skips the test bed. Such a run is partial: the
+judge (`--partial`) judges what ran exactly as in a full run, cannot prove a limitation without its guest proof, skips its
+self-test and never reports a full verdict; the process and critical sections on the host take 4.4 minutes against 14.4 for a full run.
+`check-resctl.sh --mutant NAME` is a negative control: it builds one of the deliberate defects of `resctl-mutants.py` into a
+copy of the crate, runs the sections it concerns on this host and passes only if the judge fails every row the defect must
+break. Six defects are kept there (no shield for critical processes, protection of a workload process, no guard against
+requests from workloads, an ignored stop intent, unbounded restarts, no memory limit per workload); each is caught by its
+rows and by the unit tests. A defect whose text is no longer in the sources makes the control fail, not pass.
 
 ## Isolation
 - Own mount/PID/IPC/UTS namespaces, chroot into `.build/rootfs`, environment rebuilt with `env -i` (no host variables or tokens;

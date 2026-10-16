@@ -1,0 +1,85 @@
+# Development tree
+
+The working plan of Agent-Interaction: what exists, how well it is proven on the revision that carries this file, and
+what comes next. It is not a roadmap and not a target state. A branch changes state only on evidence (a check, a row of a
+judge, a measurement), and the evidence is named here. The details stay where they belong: `build/alpine/README.md` (the
+Alpine environment and its checks), `runtime/resctl/README.md` (resource control: design, commands, limits) and the
+tables of the judges. This file is the index of their state and the order of the work.
+
+States: **verified** (a check proves it on this revision) · **partly verified** (the unproven part is named) ·
+**open** (known work, not done) · **blocked** (the blocker is named) · **not investigated** · **not applicable** (why).
+
+## Components
+
+| path | what | owner |
+|---|---|---|
+| `vendor/alpine-aports` | Alpine v3.24.2 aports at `d9d560d5`, see `vendor/alpine-aports.PROVENANCE.md` | vendor: never edited; every check proves it unchanged |
+| `build/alpine` | reproducible base, dev and tools images, the cgroup v2 test bed (QEMU), the checks and their judges | project |
+| `runtime/resctl` | resource domains, process lifecycle and critical-process protection (Rust, no `unsafe`, no dependency) | project |
+
+## Tree
+
+### Development workflow
+- **verified**: the full validation of resource control is `build/alpine/check-resctl.sh`: unprivileged, privileged and guest
+  sessions, the judge, its self-test, then the host and the vendored tree compared with their state before. It takes 14.4
+  minutes here (sessions of 71, 243 and 544 s); every session prints its duration.
+- **verified**: targeted runs. `--areas LIST` runs only those sections of the suite, `--no-guest` skips the test bed, and the
+  judge's `--partial` mode judges whatever ran as strictly as a full run, never proves a limit without its guest proof and
+  never passes for a full verdict (7 self-test cases). Measured: the process and critical sections on the host in 4.4
+  minutes; the stress section alone in sessions of 63 and 67 s.
+- **verified**: negative controls live in the repository. `resctl-mutants.py` holds six deliberate defects of resctl and
+  the rows each must break; `check-resctl.sh --mutant NAME` builds the defect into a copy of the crate, runs its areas on
+  the host and passes only if the judge fails those rows. All six are caught, each by its unit tests as well.
+- **verified**: bounded test execution. Every crash-loop supervisor of the suite runs under a time limit, the unit tests
+  under 900 s, and the fake host of the supervisor tests fails a test that starts 1000 processes. Found by the negative
+  controls: the unbounded-restart defect held `cargo test` for 42 minutes, and earlier the suite itself.
+- **open**: the unprivileged session compiles the crate from scratch on every run (61 to 128 s, three profiles). A target
+  directory kept between runs needs a key per copy of the crate: two copies at different paths that shared one made cargo
+  test the first copy's binaries.
+- **open**: a whole session has no wall-clock bound in `check-resctl.sh`; the bounds are inside the sessions.
+- **partly verified**: stability of the timing rows. In three runs on this host the longest stall was 0.01 to 0.04 s
+  (bound 0.5 s), the slowest `state` 0.02 s (2 s), the kill 0.04 to 0.06 s (5 s) and the OOM crash loop 2.0 to 2.5 s
+  (15 s); a loaded or noisier host is not investigated.
+
+### Resource management and runtime behaviour (`runtime/resctl`)
+- **Allocation** — **verified** as not applicable for a custom allocator: resctl uses the standard allocator of Rust on
+  musl, allocates little and briefly, and an allocation failure aborts (`panic = "abort"`); for a supervisor that is a
+  lost supervisor, which its reaper and `recover` handle (rows `proc_lost_reaper`, `proc_lost_recover`).
+- **Buffering and queues** — **verified**: the persistent state is bounded (audit trail 2 × 1024 lines, quarantine 32
+  files, start log one minute; unit tests); a supervised workload's stdio is inherited, resctl buffers none of it.
+- **Low memory** — **partly verified**:
+  - **verified** on this host with real timing (h_, v_) and in the guest without timing (g_), rows `stress_*`: a workload
+    over its memory limit is killed inside its own memory cgroup (the kernel's counter, peak at the limit) while a neighbour
+    keeps what it holds; three workloads that each fit their limit are held to their class ceiling (peak exactly 256 MiB);
+    a periodic task in `system` keeps waking every 20 ms and allocating (longest stall 0.01 to 0.04 s, bound 0.5 s); the
+    control plane answers (slowest `resctl state` 0.02 s, bound 2 s); a kill under memory and CPU load is complete in
+    0.05 s (bound 5 s); an OOM crash loop ends `failed` after 4 starts in 2 s (bound 15 s); the system domain's memory
+    cgroup counts no OOM kill.
+  - **LIMIT** on this host: the memory protection of `system` (`memory.low`) needs the cgroup v2 memory controller; it is
+    proven in the guest.
+  - **open**: memory pressure of the whole machine from outside the workload tree. The global OOM killer chooses by its own
+    score and resctl biases nothing (`oom_score_adj`), so a large critical process can be chosen before a workload. Only the
+    guest can produce this safely.
+  - **not applicable here**: swap (this host has none; a workload gets none by default).
+- **CPU, I/O and concurrency** — **verified**: CPU weights, quotas, cpuset, `io.max` on a whole disk, CPU pressure (PSI), the
+  periodic task of `system` under 8 CPU burners. **open**: stalls of `system` caused by I/O; `system` has no I/O protection.
+- **Lifecycle and recovery** — **verified** in three environments: rows of the areas process (26), critical (17), terminate,
+  recover and lifecycle, and the negative controls for the restart bound, the classification of a requested end, the
+  shield of critical processes, the guard against requests from workloads and the refusal to protect a workload process.
+
+### Testing and verification
+- **verified**: unit tests (267), the three sessions as integration tests, the full check as regression, fault injection
+  (corrupt records and registry, killed supervisors and reapers, a command that cannot start), exhaustion (the stress
+  area) and the Alpine kernel of the test bed (QEMU, emulated: functional, not timing).
+- **not applicable**: physical hardware (none in this environment).
+
+### Self-judge and negative controls
+- **verified**: `resctl-judge.py` and its self-test (91 cases); the six negative controls.
+- **open**: a negative control for the timing oracles (the stall of the periodic task, the latency of the control plane):
+  a defect that stalls `system` cannot be produced safely on this host.
+
+## Next
+1. Global memory pressure in the guest: bias workloads as the OOM killer's first choice (`oom_score_adj`, which needs no
+   privilege to raise) and prove in the guest that a machine-wide OOM takes a workload, never a critical process.
+2. A key per crate copy for a kept cargo target directory, then measure the unprivileged session again.
+3. A wall-clock bound per session of `check-resctl.sh` that cannot leave a sandbox behind.

@@ -240,13 +240,26 @@ What resctl does not do, so that nobody relies on it:
 - **Signalling** uses the system's `kill` tool (batches of 256, signals 0, 9 and 15 only); without it a graceful stop
   falls back to the kill and the v1 kill is unsupported. `NoNewPrivs` and an `oom_score_adj` bias are not applied.
   Supervised workloads inherit the supervisor's environment and stdio (stdin is null). Non-UTF-8 arguments are refused.
+- **Memory exhaustion: the boundary.** What holds is measured (the `stress` rows): a workload, a class or all workloads
+  together are held to their ceilings by the kernel's OOM killer inside their own memory cgroups, and meanwhile a periodic
+  task in `system` and the control plane stay responsive (on the host, with real timing: the longest stall and the
+  slowest `state` are bounded). What resctl does not provide: protection against memory pressure of the whole machine that
+  comes from outside the workload tree (the global OOM killer picks its victim by its own score, and workloads get no
+  `oom_score_adj` bias, so a large critical process can be chosen first), against exhaustion of kernel memory, or against
+  stalls caused by I/O (`system` has no I/O protection, and `io.max` needs a whole disk). Where the memory controller is
+  cgroup v1, `system` has no reclaim protection (`memory.low`), only the ceiling on `workload`. No userspace tool can
+  prevent every kernel failure or every OOM of the whole machine.
 - **Tests.** Failed domain creation with an unforeseen I/O error and restart delays caused by the start rate are covered
-  by unit tests only (an end-to-end check would take about a minute).
+  by unit tests only (an end-to-end check would take about a minute). The timing oracles of the `stress` rows (the stall
+  of the periodic task, the latency of the control plane) have no negative control: a defect that stalls `system` cannot
+  be produced safely on a shared host.
 
 ## Validation
 
 ```sh
 build/alpine/check-resctl.sh [--image FILE] [--facts DIR]   # as root, three sessions and the judge; see build/alpine/README.md
+build/alpine/check-resctl.sh --areas process,critical --no-guest   # a partial run: some sections, judged as strictly
+build/alpine/check-resctl.sh --mutant unbounded                    # a negative control (resctl-mutants.py list)
 ```
 
 The unit tests (`cargo test`: lifecycle rules, restart arithmetic, store, supervisor and registry against fakes) run in
@@ -254,3 +267,9 @@ the unprivileged session next to `fmt`, `clippy -D warnings`, a proof that the c
 dependencies, and the refusals a machine without a hierarchy must give. The `process` and `critical` sections of the
 privileged and guest sessions then run the real thing against real cgroups: normal lifecycle, crashes, crash loops,
 forced termination, orphans, isolation, recovery, and a canary critical service that must survive all of it unchanged.
+The `stress` section exhausts memory and the CPUs inside workload domains and measures from outside them: a periodic task
+in `system` (`ctr-test beat`) times its own stalls, a probe times `resctl state`, and the kernel's counters of each memory
+cgroup, not resctl's report, say where the OOM killer struck and how high the usage went. Every load is bounded twice, by
+its domain and by its own size. `resctl-mutants.py` holds deliberate defects of resctl (no shield for critical processes,
+protection of a workload process, no guard against requests from workloads, an ignored intent, unbounded restarts, no
+memory limit per workload) and the rows each must break; `check-resctl.sh --mutant NAME` proves that they do.
