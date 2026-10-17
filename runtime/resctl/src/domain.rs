@@ -16,6 +16,7 @@
 
 use crate::fs::Host;
 use crate::layout::{Api, Feature, Layout};
+use crate::oom;
 use crate::policy::{valid_name, Dev, IoLimit, Limits, Mem, Num, Orphans, Policy, CPU_PERIOD_US};
 use std::cell::RefCell;
 use std::fmt;
@@ -1185,6 +1186,65 @@ impl<'a> Controller<'a> {
             (Api::V2, h) => keyed(&self.get(h, rel, "memory.events")?, "oom_kill"),
             (Api::V1, h) => keyed(&self.get(h, rel, "memory.oom_control")?, "oom_kill"),
         }
+    }
+
+    /// What the kernel counts about out-of-memory at `rel` (`oom::Counts`), and the API of the hierarchy that holds it;
+    /// `None` where no memory hierarchy holds the directory.
+    pub fn oom_counts(&self, rel: &str) -> Option<(Api, oom::Counts)> {
+        let (api, h) = self.at(Feature::Memory, rel)?;
+        let n = |file: &str| self.get(h, rel, file).and_then(|t| t.parse::<u64>().ok());
+        let counts = match api {
+            Api::V2 => {
+                let local = self.get(h, rel, "memory.events.local");
+                oom::Counts {
+                    declared: local.as_deref().and_then(|t| keyed(t, "oom")),
+                    reached: local.as_deref().and_then(|t| keyed(t, "max")),
+                    kills: self.oom_kills(rel),
+                }
+            }
+            Api::V1 => oom::Counts {
+                declared: None,
+                // without swap accounting there is no memsw counter, and nothing for it to count
+                reached: n("memory.failcnt").map(|f| f + n("memory.memsw.failcnt").unwrap_or(0)),
+                kills: self.oom_kills(rel),
+            },
+        };
+        Some((api, counts))
+    }
+
+    /// The counts of the levels of `w`'s memory hierarchy and of the machine, now.
+    fn oom_now(&self, w: &Workload) -> oom::Snapshot {
+        let mut s = oom::Snapshot::default();
+        for (i, rel) in oom::level_rels(w).iter().enumerate() {
+            if let Some((api, c)) = self.oom_counts(rel) {
+                s.api = Some(api);
+                s.levels[i] = Some(c);
+            }
+        }
+        s.machine = self
+            .host
+            .read("/proc/vmstat")
+            .ok()
+            .and_then(|t| keyed(&t, "oom_kill"));
+        s
+    }
+
+    /// The evidence about OOM kills that a run of `w` starts from (see `oom`): the counts, and the position of the kernel
+    /// log, whose records from there on belong to the run.
+    pub fn oom_start(&self, w: &Workload) -> oom::Snapshot {
+        let mut s = self.oom_now(w);
+        s.log_next = self.host.oom_log().ok().map(|l| l.next);
+        s
+    }
+
+    /// Where the OOM kills of the run of `w` that started at `start` came from: read when the run has ended, before its
+    /// domain is removed.
+    pub fn oom_verdict(&self, w: &Workload, start: &oom::Snapshot) -> oom::Verdict {
+        let end = self.oom_now(w);
+        let log = start
+            .log_next
+            .and_then(|since| self.host.oom_log().ok().map(|l| l.origins(since, w)));
+        oom::attribute(start, &end, log.as_deref())
     }
 
     /// Whether the workload has a domain (in any hierarchy).
@@ -2903,6 +2963,100 @@ grace = 1500ms
             "oom_kill_disable 0\nunder_oom 0\noom_kill 3\n",
         );
         assert_eq!(c.oom_kills(&a.rel()), Some(3));
+    }
+
+    #[test]
+    fn the_evidence_about_oom_kills_is_read_at_every_level_and_from_the_kernel_log() {
+        let h = v2_host();
+        let l = Layout::detect(&h, Lifecycle::Auto);
+        let c = setup(&h, &l);
+        c.init().unwrap();
+        let a = running(&c, &h, "a", &[]);
+        let local = |oom: u64, max: u64| {
+            format!("low 0\nhigh 0\nmax {max}\noom {oom}\noom_kill 0\noom_group_kill 0\n")
+        };
+        h.set("/proc/vmstat", "pgfault 4\noom_kill 10\n");
+        h.set(
+            "/c/agent-interaction/workload/batch/memory.events.local",
+            &local(2, 7),
+        );
+        let mine = "/agent-interaction/workload/batch/a";
+        let record = format!(
+            "oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),cpuset=/,mems_allowed=0,oom_memcg={mine},task_memcg={mine},task=x,pid=5,uid=0"
+        );
+        // a record from before the start: an earlier run of the same workload
+        h.log_kernel(true, &record);
+        let start = c.oom_start(&a);
+        assert_eq!(start.api, Some(Api::V2));
+        assert_eq!(start.machine, Some(10));
+        assert_eq!(start.log_next, Some(1001));
+        assert_eq!(
+            start.levels[1],
+            Some(oom::Counts {
+                declared: Some(2),
+                reached: Some(7),
+                kills: Some(0)
+            })
+        );
+        h.set(&format!("/c/{}/memory.events.local", a.rel()), &local(1, 3));
+        h.set(
+            &format!("/c/{}/memory.events", a.rel()),
+            "low 0\nhigh 0\nmax 3\noom 1\noom_kill 1\n",
+        );
+        h.set("/proc/vmstat", "pgfault 9\noom_kill 11\n");
+        h.log_kernel(true, &record);
+        let v = c.oom_verdict(&a, &start);
+        assert_eq!(v.kills, Some(1));
+        assert_eq!(v.origin, Some(oom::Origin::Workload));
+        assert_eq!(
+            v.evidence,
+            "kills:1;declared:1/0/0;log:workload*1;machine:+1"
+        );
+        // a kernel log that cannot be read is said to be so; the counts still decide on v2
+        h.fail_kernel_log(crate::fs::fake::EACCES);
+        assert_eq!(c.oom_start(&a).log_next, None);
+        let v = c.oom_verdict(&a, &start);
+        assert_eq!(
+            (v.origin, v.evidence.as_str()),
+            (
+                Some(oom::Origin::Workload),
+                "kills:1;declared:1/0/0;log:unread;machine:+1"
+            )
+        );
+
+        // cgroup v1: how often a limit was reached, with and without swap accounting, and no count of declared OOMs
+        let h = hybrid_host();
+        let l = Layout::detect(&h, Lifecycle::V1);
+        let c = setup(&h, &l);
+        c.init().unwrap();
+        let a = running(&c, &h, "a", &[]);
+        let start = c.oom_start(&a);
+        let at = "/c/memory/agent-interaction/workload/batch/a";
+        h.set(&format!("{at}/memory.failcnt"), "40");
+        h.set(&format!("{at}/memory.memsw.failcnt"), "2");
+        h.set(
+            &format!("{at}/memory.oom_control"),
+            "oom_kill_disable 0\nunder_oom 0\noom_kill 1\n",
+        );
+        assert_eq!(
+            c.oom_counts(&a.rel()),
+            Some((
+                Api::V1,
+                oom::Counts {
+                    declared: None,
+                    reached: Some(42),
+                    kills: Some(1)
+                }
+            ))
+        );
+        let v = c.oom_verdict(&a, &start);
+        assert_eq!(v.origin, Some(oom::Origin::Unknown));
+        assert!(
+            v.evidence
+                .starts_with("why:v1-no-declared-count;kills:1;reached:42/0/0;"),
+            "{}",
+            v.evidence
+        );
     }
 
     #[test]

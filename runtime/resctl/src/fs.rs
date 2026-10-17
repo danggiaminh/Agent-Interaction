@@ -6,9 +6,10 @@
 //! The crate contains no `unsafe` code: a signal goes out through the kill tool of the system (the only way the standard
 //! library offers to signal a process that is not its own child), and the locks are the ones of `std::fs::File`.
 
+use crate::oom::OomLog;
 use std::any::Any;
 use std::fs::{self, OpenOptions, TryLockError};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -86,7 +87,30 @@ pub trait Host {
     fn files(&self, dir: &str) -> io::Result<Vec<String>>;
     /// Lock the file (created for the owner alone when it is missing). `None`: a `Try` lock somebody holds.
     fn lock(&self, path: &str, how: Lock) -> io::Result<Option<Guard>>;
+    /// The kernel log (`/dev/kmsg`), read without waiting for a record: the records of the OOM killer still in it, and
+    /// the sequence number of the record after the last one. An error where it cannot be read (no CAP_SYSLOG, no such
+    /// device).
+    fn oom_log(&self) -> io::Result<OomLog>;
 }
+
+/// `O_NONBLOCK` of open(2), for the kernel log: its value on every architecture but mips, sparc, alpha and parisc.
+#[cfg(not(any(
+    target_arch = "mips",
+    target_arch = "mips64",
+    target_arch = "sparc",
+    target_arch = "sparc64"
+)))]
+const O_NONBLOCK: i32 = 0o4000;
+#[cfg(any(target_arch = "mips", target_arch = "mips64"))]
+const O_NONBLOCK: i32 = 0o200;
+#[cfg(any(target_arch = "sparc", target_arch = "sparc64"))]
+const O_NONBLOCK: i32 = 0o40000;
+/// A read of `/dev/kmsg` whose record was overwritten in the meantime; the next read returns the oldest one left.
+const EPIPE: i32 = 32;
+/// The largest record of the kernel log with its dictionary (`CONSOLE_EXT_LOG_MAX`): a read into less fails.
+const KMSG_RECORD: usize = 8192;
+/// The records read in one go at most: a log that is written faster than it is read does not hold the reader.
+const KMSG_READS: usize = 1 << 16;
 
 /// The kill tools tried, in this order. Absolute paths only: a search of PATH would let the environment pick the tool.
 const KILL_TOOLS: [&str; 2] = ["/bin/kill", "/usr/bin/kill"];
@@ -343,11 +367,33 @@ impl Host for RealHost {
         };
         Ok(got.then(|| Guard::new(file)))
     }
+
+    fn oom_log(&self) -> io::Result<OomLog> {
+        let mut f = OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NONBLOCK)
+            .open("/dev/kmsg")?;
+        let mut log = OomLog::default();
+        let mut buf = vec![0u8; KMSG_RECORD];
+        for _ in 0..KMSG_READS {
+            match f.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => log.add(&String::from_utf8_lossy(&buf[..n])),
+                Err(e)
+                    if e.raw_os_error() == Some(EPIPE)
+                        || e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(log)
+    }
 }
 
 #[cfg(test)]
 pub mod fake {
     use super::{kill_argv, Guard, Host, Lock, Owner};
+    use crate::oom::OomLog;
     use std::cell::RefCell;
     use std::collections::{BTreeMap, BTreeSet};
     use std::io;
@@ -422,6 +468,10 @@ pub mod fake {
         stat_garbled: BTreeSet<i32>,
         /// files that cannot be read, with the errno
         read_fails: BTreeMap<String, i32>,
+        /// the records of the kernel log, as `/dev/kmsg` gives them
+        kmsg: Vec<String>,
+        /// the errno a read of the kernel log fails with
+        kmsg_fails: Option<i32>,
     }
 
     /// What holds a lock of the table: one exclusive holder or any number of shared ones.
@@ -481,6 +531,10 @@ pub mod fake {
                 ("memory.current", "0"),
                 ("memory.peak", "0"),
                 ("memory.events", "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n"),
+                (
+                    "memory.events.local",
+                    "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+                ),
                 ("memory.oom.group", "0"),
             ],
             "pids" => vec![
@@ -504,6 +558,7 @@ pub mod fake {
                 ("memory.usage_in_bytes", "0"),
                 ("memory.max_usage_in_bytes", "0"),
                 ("memory.failcnt", "0"),
+                ("memory.memsw.failcnt", "0"),
                 (
                     "memory.oom_control",
                     "oom_kill_disable 0\nunder_oom 0\noom_kill 0\n",
@@ -1155,6 +1210,18 @@ pub mod fake {
         }
 
         /// Reading the file fails with the errno (`/proc/self/cgroup` when the kernel hides where a process runs).
+        /// Add a record to the kernel log: one the kernel wrote (facility 0), or one a process wrote (facility user).
+        pub fn log_kernel(&self, by_kernel: bool, msg: &str) {
+            let mut s = self.s.borrow_mut();
+            let (seq, usecs) = (1000 + s.kmsg.len(), s.clock_ms * 1000);
+            let prio = if by_kernel { 6 } else { 14 };
+            s.kmsg.push(format!("{prio},{seq},{usecs},-;{msg}"));
+        }
+
+        pub fn fail_kernel_log(&self, code: i32) {
+            self.s.borrow_mut().kmsg_fails = Some(code);
+        }
+
         pub fn fail_read_of(&self, path: &str, code: i32) {
             self.s.borrow_mut().read_fails.insert(path.into(), code);
         }
@@ -1454,6 +1521,18 @@ pub mod fake {
                 path: path.into(),
                 exclusive,
             })))
+        }
+
+        fn oom_log(&self) -> io::Result<OomLog> {
+            let s = self.s.borrow();
+            if let Some(code) = s.kmsg_fails {
+                return Err(errno(code));
+            }
+            let mut log = OomLog::default();
+            for raw in &s.kmsg {
+                log.add(raw);
+            }
+            Ok(log)
         }
     }
 }

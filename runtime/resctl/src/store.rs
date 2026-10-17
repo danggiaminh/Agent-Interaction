@@ -97,6 +97,8 @@ pub enum Event {
     Start,
     /// The main process of a workload ended, and how.
     Exit,
+    /// The kernel's OOM killer ended processes of a run: where that came from, and the evidence (`oom`).
+    Oom,
     Restart,
     /// A request was refused.
     Refuse,
@@ -110,7 +112,7 @@ pub enum Event {
 }
 
 impl Event {
-    pub const ALL: [Event; 24] = [
+    pub const ALL: [Event; 25] = [
         Event::Init,
         Event::Create,
         Event::Run,
@@ -128,6 +130,7 @@ impl Event {
         Event::Intent,
         Event::Start,
         Event::Exit,
+        Event::Oom,
         Event::Restart,
         Event::Refuse,
         Event::Protect,
@@ -156,6 +159,7 @@ impl Event {
             Event::Intent => "intent",
             Event::Start => "start",
             Event::Exit => "exit",
+            Event::Oom => "oom",
             Event::Restart => "restart",
             Event::Refuse => "refuse",
             Event::Protect => "protect",
@@ -1492,7 +1496,7 @@ mod tests {
             assert!(seen.insert(e.name()), "{} twice", e.name());
             assert_eq!(Event::parse(e.name()), Some(e));
         }
-        assert_eq!(seen.len(), 24);
+        assert_eq!(seen.len(), 25);
         assert_eq!(Event::parse("nope"), None);
         assert_eq!(Event::parse("Stop"), None);
     }

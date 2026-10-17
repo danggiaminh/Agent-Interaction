@@ -18,6 +18,7 @@ use crate::fs::{Guard, Host};
 use crate::life::{
     classify, decide, tidy, Ending, Exit, History, Intent, Phase, Record, Verdict, Why,
 };
+use crate::oom;
 use crate::policy::{Limits, Orphans, Restart, RestartMode};
 use crate::store::{record_rel, Audit, Event, Listed, Locked, Store, Stored, Sup, RECORDS};
 
@@ -284,7 +285,27 @@ enum Plan {
 
 struct Swept {
     stuck: Option<String>,
-    oom: bool,
+    oom: oom::Verdict,
+}
+
+/// Where the OOM kills of the run that ended came from, and what that rests on, into the record.
+fn set_oom(rec: &mut Record, v: &oom::Verdict) {
+    rec.oom = v.kills.is_some_and(|n| n > 0);
+    rec.oom_origin = v.origin;
+    rec.oom_evidence = tidy(&v.evidence);
+}
+
+/// The origin of the OOM kills of the run that ended into the trail, when it had any (or they could not be counted).
+fn audit_oom(ctx: Ctx<'_>, w: &Workload, rec: &Record) {
+    if let Some(o) = rec.oom_origin {
+        let detail = format!(
+            "gen={} origin={} evidence={}",
+            rec.gen,
+            o.name(),
+            rec.oom_evidence
+        );
+        audit_opt(ctx, Event::Oom, &w.to_string(), &detail);
+    }
 }
 
 fn my_pid() -> i32 {
@@ -692,6 +713,8 @@ fn begin_held(ctx: Ctx<'_>, job: &Job) -> Result<Record> {
             r.ended = None;
             r.status = None;
             r.oom = false;
+            r.oom_origin = None;
+            r.oom_evidence.clear();
             r
         }
         None => Record::new(&w.to_string(), secs),
@@ -733,6 +756,8 @@ fn run(ctx: Ctx<'_>, job: &Job, rec: &mut Record, created: bool) -> Flow<Outcome
     let mut created = created;
     loop {
         let precreated = std::mem::take(&mut created);
+        // the counts of OOM kills, and the position of the kernel log, that this run is measured from
+        let start = ctx.c.oom_start(w);
         let ran = match launch(ctx, job, rec, precreated)? {
             Launched::Broke(msg) => Ran::Broke(msg),
             Launched::Up(pid) => match watch(ctx, w, rec, pid) {
@@ -757,23 +782,25 @@ fn run(ctx: Ctx<'_>, job: &Job, rec: &mut Record, created: bool) -> Flow<Outcome
             Ran::Exit(s) => *s,
             _ => None,
         };
-        let swept = sweep(ctx, w, rec);
+        let swept = sweep(ctx, w, rec, &start);
         rec.ended = Some(ending);
         rec.status = status;
-        rec.oom = swept.oom;
+        set_oom(rec, &swept.oom);
         let reason = match &ran {
             Ran::Exit(_) => format!("the run ended: {}", ending.render()),
             Ran::Broke(m) | Ran::Lost(m) => m.clone(),
         };
         rec.set_reason(&reason);
         let detail = format!(
-            "gen={} ended={} status={} oom={}",
+            "gen={} ended={} status={} oom={} oom_origin={}",
             rec.gen,
             ending.render(),
             status.map_or_else(|| "-".to_string(), Exit::render),
-            if swept.oom { "yes" } else { "no" }
+            if rec.oom { "yes" } else { "no" },
+            show(rec.oom_origin.map(oom::Origin::name))
         );
         save(ctx, w, rec, Event::Exit, &detail);
+        audit_oom(ctx, w, rec);
 
         if let Some(why) = swept.stuck {
             go(
@@ -1017,10 +1044,11 @@ fn end_on_request(ctx: Ctx<'_>, w: &Workload, rec: &mut Record, pid: i32) -> Opt
     reap_main(ctx, pid)
 }
 
-/// The run is over: remove its domain and with it everything that is left of it.
-fn sweep(ctx: Ctx<'_>, w: &Workload, rec: &mut Record) -> Swept {
+/// The run that started at `start` is over: where its OOM kills came from, then remove its domain and with it everything
+/// that is left of it.
+fn sweep(ctx: Ctx<'_>, w: &Workload, rec: &mut Record, start: &oom::Snapshot) -> Swept {
     let _ = go(ctx, w, rec, Phase::Sweeping, Event::Phase, "the run ended");
-    let oom = ctx.c.oom_kills(&w.rel()).is_some_and(|n| n > 0);
+    let oom = ctx.c.oom_verdict(w, start);
     let stuck = clear_domain(ctx, w).err();
     rec.main = None;
     if let Some(i) = peek_intent(ctx, w) {
@@ -1229,11 +1257,13 @@ fn sweep_held(
         }
     }
     flush_rescues(ctx.c, ctx.s);
-    let oom = ctx.c.oom_kills(&w.rel()).is_some_and(|n| n > 0);
+    // nobody saw the run start: the counts of the class and the ceiling, and the kernel log, cannot be measured from it
+    let oom = ctx.c.oom_verdict(w, &oom::Snapshot::unseen());
     let stuck = clear_domain(ctx, w).err();
     rec.status = None;
     rec.main = None;
-    rec.oom = oom;
+    set_oom(rec, &oom);
+    audit_oom(ctx, w, rec);
     rec.stop = Some(text);
     let (ended, phase, reason) = match intent {
         Some(i) => (Ending::Requested(i), Phase::Stopped, "stopped on request"),
@@ -1473,7 +1503,7 @@ fn render_state(ctx: Ctx<'_>, x: &Workload, r: &Record) -> String {
     };
     let dom = if ctx.c.exists(x) { "present" } else { "absent" };
     format!(
-        "{x} phase={} gen={} restarts={} supervisor={sup} domain={dom} main={} sup={} intent={} ended={} status={} oom={} stop={} since={} cmd={} reason={}",
+        "{x} phase={} gen={} restarts={} supervisor={sup} domain={dom} main={} sup={} intent={} ended={} status={} oom={} oom_origin={} oom_evidence={} stop={} since={} cmd={} reason={}",
         r.phase.name(),
         r.gen,
         r.restarts,
@@ -1483,6 +1513,8 @@ fn render_state(ctx: Ctx<'_>, x: &Workload, r: &Record) -> String {
         show(r.ended.map(Ending::render)),
         show(r.status.map(Exit::render)),
         if r.oom { "yes" } else { "no" },
+        show(r.oom_origin.map(oom::Origin::name)),
+        field(&r.oom_evidence),
         show(r.stop.as_deref()),
         r.since,
         field(&r.cmd),
@@ -2350,6 +2382,176 @@ mod tests {
         }
         assert!(!record(&s, "a").oom);
         let _ = op;
+    }
+
+    /// A run that ends once and is not restarted.
+    fn once(id: &str) -> Job {
+        Job {
+            mode: Some(RestartMode::Never),
+            ..job(id)
+        }
+    }
+
+    const MINE: &str = "/agent-interaction/workload/batch/a";
+    const CLASS: &str = "/c/agent-interaction/workload/batch";
+
+    /// The OOM killer's record of a kill of a process in `task`: by the limit of `memcg`, or by the machine's OOM.
+    fn kill_record(memcg: Option<&str>, task: &str) -> String {
+        let (constraint, at) = match memcg {
+            Some(m) => ("CONSTRAINT_MEMCG", format!("oom_memcg={m}")),
+            None => ("CONSTRAINT_NONE", "global_oom".to_string()),
+        };
+        format!(
+            "oom-kill:constraint={constraint},nodemask=(null),cpuset=/,mems_allowed=0,{at},task_memcg={task},task=worker,pid=100001,uid=0"
+        )
+    }
+
+    fn local(oom: u64, max: u64) -> String {
+        format!("low 0\nhigh 0\nmax {max}\noom {oom}\noom_kill 0\noom_group_kill 0\n")
+    }
+
+    #[test]
+    fn the_origin_of_an_oom_kill_is_recorded_with_its_evidence() {
+        rig!(h, c, s, p, op, ctx, standard());
+        p.scripts(&[Script::ends(Exit::Signal(9), 1)]);
+        h.set("/proc/vmstat", "pgfault 1\noom_kill 7\n");
+        // a record of an earlier run, and then one a process wrote: neither is this run's
+        h.log_kernel(true, &kill_record(None, MINE));
+        let hr = &h;
+        p.on_poll(move |n| {
+            if n == 1 {
+                hr.set(
+                    &format!("{}/memory.events", dom("a")),
+                    "low 0\nhigh 0\nmax 3\noom 1\noom_kill 1\n",
+                );
+                hr.set(&format!("{}/memory.events.local", dom("a")), &local(1, 3));
+                hr.set("/proc/vmstat", "pgfault 9\noom_kill 8\n");
+                hr.log_kernel(false, &kill_record(None, MINE));
+                hr.log_kernel(true, &kill_record(Some(MINE), MINE));
+            }
+        });
+        let out = supervise(ctx, &once("a")).unwrap();
+        assert_eq!(out.phase, Phase::Failed);
+        let r = record(&s, "a");
+        let evidence = "kills:1;declared:1/0/0;log:workload*1;machine:+1";
+        assert_eq!(
+            (r.oom, r.oom_origin, r.oom_evidence.as_str()),
+            (true, Some(oom::Origin::Workload), evidence)
+        );
+        assert_eq!(
+            details(&s, Event::Oom),
+            vec![format!("gen=1 origin=workload evidence={evidence}")]
+        );
+        let exits = details(&s, Event::Exit);
+        assert!(
+            exits[0].ends_with(" oom=yes oom_origin=workload"),
+            "{exits:?}"
+        );
+        let st = state_lines(op, Some(&w("batch/a"))).unwrap();
+        assert!(
+            st[0].contains(&format!(
+                " oom=yes oom_origin=workload oom_evidence={evidence} "
+            )),
+            "{st:?}"
+        );
+        // the record reads back with them
+        let back = Record::parse(&r.render()).unwrap();
+        assert_eq!(
+            (back.oom_origin, back.oom_evidence),
+            (r.oom_origin, r.oom_evidence)
+        );
+        let _ = c;
+    }
+
+    #[test]
+    fn a_kill_by_the_machine_or_a_ceiling_is_not_put_on_the_workload() {
+        for (case, want, evidence) in [
+            (
+                "machine",
+                oom::Origin::Outside,
+                "kills:1;declared:0/0/0;log:outside*1;machine:+1",
+            ),
+            (
+                "class",
+                oom::Origin::Class,
+                "kills:1;declared:0/1/0;log:none;machine:+1",
+            ),
+            (
+                "no log",
+                oom::Origin::Workload,
+                "kills:1;declared:1/0/0;log:unread;machine:+1",
+            ),
+        ] {
+            rig!(h, c, s, p, op, ctx, standard());
+            p.scripts(&[Script::ends(Exit::Signal(9), 1)]);
+            h.set("/proc/vmstat", "oom_kill 3\n");
+            h.set(&format!("{CLASS}/memory.events.local"), &local(2, 5));
+            if case == "no log" {
+                h.fail_kernel_log(crate::fs::fake::EACCES);
+            }
+            let hr = &h;
+            p.on_poll(move |n| {
+                if n == 1 {
+                    hr.set(
+                        &format!("{}/memory.events", dom("a")),
+                        "low 0\nhigh 0\nmax 0\noom 0\noom_kill 1\n",
+                    );
+                    hr.set("/proc/vmstat", "oom_kill 4\n");
+                    match case {
+                        "machine" => hr.log_kernel(true, &kill_record(None, MINE)),
+                        "class" => hr.set(&format!("{CLASS}/memory.events.local"), &local(3, 9)),
+                        _ => hr.set(&format!("{}/memory.events.local", dom("a")), &local(1, 1)),
+                    }
+                }
+            });
+            supervise(ctx, &once("a")).unwrap();
+            let r = record(&s, "a");
+            assert_eq!(
+                (r.oom, r.oom_origin, r.oom_evidence.as_str()),
+                (true, Some(want), evidence),
+                "{case}"
+            );
+            let _ = (&c, &op);
+        }
+    }
+
+    #[test]
+    fn a_kill_that_is_not_the_oom_killer_has_no_origin() {
+        rig!(h, c, s, p, op, ctx, standard());
+        p.scripts(&[Script::ends(Exit::Signal(9), 1)]);
+        supervise(ctx, &once("a")).unwrap();
+        let r = record(&s, "a");
+        assert_eq!(r.ended, Some(Ending::Crashed(9)));
+        assert_eq!(
+            (r.oom, r.oom_origin, r.oom_evidence.as_str()),
+            (false, None, "kills:0")
+        );
+        assert!(details(&s, Event::Oom).is_empty());
+        let _ = (&h, &c, &op);
+    }
+
+    #[test]
+    fn the_oom_kills_of_a_run_whose_supervisor_was_lost_have_an_unknown_origin() {
+        rig!(h, c, s, p, op, ctx, standard());
+        let _ = orphan(&h, &c, &s, "a", &[300, 301], false);
+        h.set(
+            &format!("{}/memory.events", dom("a")),
+            "low 0\nhigh 0\nmax 2\noom 1\noom_kill 1\n",
+        );
+        h.set(&format!("{}/memory.events.local", dom("a")), &local(1, 2));
+        assert_eq!(reap(op, &w("batch/a")).unwrap(), Some(Phase::Failed));
+        let r = record(&s, "a");
+        // nobody saw the run start: the class and the ceiling cannot be compared with it, nor the kernel log bounded
+        assert_eq!(
+            (r.oom, r.oom_origin, r.oom_evidence.as_str()),
+            (
+                true,
+                Some(oom::Origin::Unknown),
+                "why:unseen-start;kills:1;declared:1/?/?;log:unread;machine:?"
+            )
+        );
+        assert_eq!(details(&s, Event::Oom).len(), 1);
+        let _ = (&p, &ctx);
     }
 
     // -----------------------------------------------------------------------------------------------------------------
@@ -3497,7 +3699,7 @@ mod tests {
             "batch/a phase=running gen=1 restarts=0 supervisor=alive domain=present main="
                 .to_string(),
             format!(
-                " sup={} intent=- ended=- status=- oom=no stop=- since=",
+                " sup={} intent=- ended=- status=- oom=no oom_origin=- oom_evidence=- stop=- since=",
                 my_pid()
             ),
             " cmd=worker reason=main=".to_string(),
@@ -3584,8 +3786,8 @@ mod tests {
         assert_eq!(
             details(&s, Event::Exit),
             vec![
-                "gen=1 ended=failed:1 status=exit:1 oom=no".to_string(),
-                "gen=2 ended=clean status=exit:0 oom=no".to_string(),
+                "gen=1 ended=failed:1 status=exit:1 oom=no oom_origin=-".to_string(),
+                "gen=2 ended=clean status=exit:0 oom=no oom_origin=-".to_string(),
             ]
         );
         assert_eq!(

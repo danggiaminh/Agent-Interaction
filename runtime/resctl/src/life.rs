@@ -12,6 +12,7 @@
 //! `stopped` and `finished` are the ends of a run that may be started again; `failed` is quarantined until an operator
 //! resets it, so a crash loop stops being restarted and cannot be restarted by accident.
 
+use crate::oom::Origin;
 use crate::policy::{valid_name, Restart, RestartMode};
 
 /// Where a supervised workload is in its life. Every change goes through [`Record::advance`], which refuses the changes
@@ -385,6 +386,10 @@ pub struct Record {
     pub status: Option<Exit>,
     /// The kernel's OOM killer killed something of the previous run.
     pub oom: bool,
+    /// Where the OOM kills of the previous run came from (`oom`); `None` when it had none.
+    pub oom_origin: Option<Origin>,
+    /// What that origin rests on: the kernel's counts and log (`oom::attribute`).
+    pub oom_evidence: String,
     /// How the last stop ended: `empty`, `graceful` or `killed:N`.
     pub stop: Option<String>,
     /// Automatic restarts since the supervisor started.
@@ -411,6 +416,8 @@ impl Record {
             ended: None,
             status: None,
             oom: false,
+            oom_origin: None,
+            oom_evidence: String::new(),
             stop: None,
             restarts: 0,
             since: now_secs,
@@ -501,6 +508,12 @@ impl Record {
             put("status", x.render());
         }
         put("oom", u8::from(self.oom).to_string());
+        if let Some(o) = self.oom_origin {
+            put("oom_origin", o.name().into());
+        }
+        if !self.oom_evidence.is_empty() {
+            put("oom_evidence", self.oom_evidence.clone());
+        }
         if let Some(t) = &self.stop {
             put("stop", t.clone());
         }
@@ -606,6 +619,19 @@ impl Record {
                         "1" => true,
                         _ => return Err(format!("line {at}: oom is 0 or 1")),
                     }
+                }
+                "oom_origin" => {
+                    r.oom_origin = Some(Origin::parse(v).ok_or(format!(
+                        "line {at}: `{}` is not an origin of an OOM kill",
+                        tidy(v)
+                    ))?)
+                }
+                "oom_evidence" => {
+                    let e = text_ok(v)?;
+                    if e.contains(' ') {
+                        return Err(format!("line {at}: oom_evidence has a space"));
+                    }
+                    r.oom_evidence = e;
                 }
                 "stop" => {
                     let ok = matches!(v, "empty" | "graceful")

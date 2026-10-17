@@ -7,6 +7,7 @@ pub mod domain;
 pub mod fs;
 pub mod layout;
 pub mod life;
+pub mod oom;
 pub mod ops;
 pub mod policy;
 pub mod store;

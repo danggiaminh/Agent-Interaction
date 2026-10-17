@@ -2736,6 +2736,20 @@ STRESS_PROBE_MAX=2.00
 STRESS_KILL_MAX=5.00
 STRESS_LOOP_MAX=15.00
 
+# rc_oom_quiet: wait (60 s at most) until the machine has had no OOM kill for six seconds; then the kernel's limit on the
+# records of the OOM killer (ten in five seconds) cannot silence the record of the next kill.
+rc_oom_quiet() {
+	q0="$(sed -n 's/^oom_kill //p' /proc/vmstat)"
+	qs=0
+	for _ in $(seq 1 120); do
+		sleep 0.5
+		q1="$(sed -n 's/^oom_kill //p' /proc/vmstat)"
+		if [ "$q1" = "$q0" ]; then qs=$((qs + 1)); else q0=$q1 qs=0; fi
+		[ "$qs" -lt 12 ] || return 0
+	done
+	return 1
+}
+
 # rc_kmem DOMAIN oom_kill|peak: the kernel's count of OOM kills of a domain's memory cgroup, or its peak usage in bytes
 rc_kmem() {
 	_d="$(rc_dir memory "$1")"
@@ -2866,6 +2880,98 @@ rc_s_stress() {
 	chk loop_starts "$so_starts" 4
 	verdict stress_oom_loop "an OOM kill on every start: 4 starts, ended crashed:9 oom=yes, failed after ${so_el}s"
 	canary_note stress_oom_loop
+
+	# where the OOM kills of a supervised run came from, as its record says, against what was done to it: the workload's
+	# own limit, the ceiling of its class, a SIGKILL that is not the OOM killer's and (in the guest only) the whole
+	# machine. The kernel writes at most ten records of the OOM killer in five seconds, so the scenarios start after six
+	# seconds without an OOM kill: the kernel log then holds the record of each of their kills. On cgroup v2 the counts
+	# of declared OOMs per level must agree with it; cgroup v1 has none (what it counts, a limit reached, is reported and
+	# decides nothing), so there the kernel's record is the evidence.
+	oq="$(yn rc_oom_quiet)"
+	# the workload's own limit; in the guest a forged record of a machine-wide OOM of this very workload is written to the
+	# kernel log first (a process may write to the log, never as the kernel: the record must not count)
+	forged=no
+	if [ "${RC_GLOBAL_OOM:-no}" = yes ]; then
+		printf '<0>oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/agent-interaction/workload/batch/ol,task=forged,pid=1,uid=0\n' >/dev/kmsg 2>/dev/null && forged=yes
+	fi
+	rc supervise batch/ol --memory-max 32M --restart never -- "$CT" mem 200
+	ol_rc=$RS
+	ol="$(rc_sf batch/ol ended oom oom_origin)"
+	ol_ev="$(rc_sf batch/ol oom_evidence)"
+	rc reset batch/ol
+	chk quiet "$oq" yes
+	chk rc "$ol_rc" 1
+	chk record "$ol" "crashed:9 yes workload"
+	chk evidence "$(yn matches "$ol_ev" '^kills:1;(declared:[1-9][0-9]*/0/0|reached:[0-9]+/[0-9]+/[0-9]+);log:workload\*1;machine:\+[1-9][0-9]*$')" yes
+	[ "${RC_GLOBAL_OOM:-no}" = no ] || chk forged "$forged" yes
+	verdict oom_origin_local "a 200 MiB allocation under --memory-max 32M, supervised: ended crashed:9, oom=yes, origin workload, evidence $ol_ev$([ "$forged" = yes ] && echo ' (a forged record of a machine-wide OOM of this workload was in the kernel log)')"
+
+	# the ceiling of the class: two supervised workloads that each fit their own limit (80M of 96M) but not, together, the
+	# 128M of their class; the OOM the kernel declares at the class takes one of them, and the other runs to its end
+	sup_bg "$RC_POLICY" batch/oa --memory-max 96M --restart never -- "$CT" mem 80 5
+	oa_sup=$SUPPID
+	sup_bg "$RC_POLICY" batch/ob --memory-max 96M --restart never -- "$CT" mem 80 5
+	ob_sup=$SUPPID
+	rc_reap "$oa_sup" 60
+	oc_hung=$SPHUNG
+	rc_reap "$ob_sup" 60
+	oc_hung="$oc_hung$SPHUNG"
+	oa="$(rc_sf batch/oa oom oom_origin oom_evidence)"
+	ob="$(rc_sf batch/ob oom oom_origin oom_evidence)"
+	rc reset batch/oa
+	rc reset batch/ob
+	oc_taken=
+	oc_ev=
+	oc_other=
+	for x in "$oa" "$ob"; do
+		case "$x" in
+		"yes class "*) oc_taken="$oc_taken+" oc_ev="${x#yes class }" ;;
+		"no - kills:0") oc_other="$oc_other+" ;;
+		esac
+	done
+	chk ended "$oc_hung" nono
+	chk taken_by_the_class "$oc_taken $oc_other" "+ +"
+	chk evidence "$(yn matches "$oc_ev" '^kills:1;(declared:0/[1-9][0-9]*/0|reached:[0-9]+/[0-9]+/[0-9]+);log:class\*1;machine:\+[1-9][0-9]*$')" yes
+	verdict oom_origin_class "batch/oa and batch/ob, 80 MiB each in a class of 128M: one was taken with origin class, evidence $oc_ev; the other ended without an OOM kill (records: $oa | $ob)"
+
+	# a SIGKILL from outside: the end is a crash, and no OOM kill of the run was counted
+	sup_bg "$RC_POLICY" batch/ox --restart never -- "$CT" mem 8 60
+	ox_sup=$SUPPID
+	waitfor 30 grep -q mem-ok "$T/${RC_P}ox.out"
+	ox_main="$(rc_sf batch/ox main)"
+	kill -9 "$ox_main" 2>/dev/null
+	rc_reap "$ox_sup" 30
+	ox="$(rc_sf batch/ox ended oom oom_origin oom_evidence)"
+	rc reset batch/ox
+	chk supervisor_ended "$SPHUNG" no
+	chk record "$ox" "crashed:9 no - kills:0"
+	verdict oom_origin_external "the main process of a supervised workload (pid $ox_main) killed by an outsider's SIGKILL: $ox (ended, oom, origin, evidence)"
+
+	# the whole machine out of memory (in the guest only): a supervised workload well inside its limits is taken by the OOM
+	# killer of the machine, which an allocation outside every domain runs out of memory until the workload is gone
+	if [ "${RC_GLOBAL_OOM:-no}" = yes ]; then
+		oq="$(yn rc_oom_quiet)"
+		avail=$(($(sed -n 's/^MemAvailable: *\([0-9]*\) kB$/\1/p' /proc/meminfo) / 1024))
+		wl=$((avail * 20 / 100))
+		[ "$wl" -le 200 ] || wl=200
+		out=$(($(sed -n 's/^MemTotal: *\([0-9]*\) kB$/\1/p' /proc/meminfo) / 1024))
+		sup_bg "$RC_POLICY" interactive/og --memory-max "$((wl + 32))M" --restart never -- "$CT" mem "$wl" 120
+		og_sup=$SUPPID
+		waitfor 60 grep -q mem-ok "$T/${RC_P}og.out"
+		og_main="$(rc_sf interactive/og main)"
+		"$CT" mem-until "$out" "$og_main" >"$T/${RC_P}ogout.out" 2>&1
+		og_out=$?
+		rc_reap "$og_sup" 60
+		og="$(rc_sf interactive/og ended oom oom_origin)"
+		og_ev="$(rc_sf interactive/og oom_evidence)"
+		rc reset interactive/og
+		chk quiet "$oq" yes
+		chk outside_stopped "$og_out $(grep -c 'process is gone' "$T/${RC_P}ogout.out")" "0 1"
+		chk record "$og" "crashed:9 yes outside"
+		chk evidence "$(yn matches "$og_ev" '^kills:1;declared:0/0/0;log:outside\*1;machine:\+[1-9][0-9]*$')" yes
+		verdict oom_origin_outside "a supervised workload of ${wl} MiB (limit $((wl + 32))M), the machine run out of memory by an allocation outside every domain (asked for all ${out} MiB): ended crashed:9, oom=yes, origin outside, evidence $og_ev"
+	fi
+	canary_note oom_origin
 
 	# every process resctl puts into a workload is the first choice of the OOM killer of the whole machine, a supervised one
 	# too after it changed its user, and the system domain is not biased (the floor of the bias is a row of limits)

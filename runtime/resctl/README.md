@@ -69,8 +69,32 @@ stops being restarted and cannot be restarted by accident.
 any signal is sent. When the main process ends, the end is classified: with a recorded intent it is `requested:stop` or
 `requested:kill` whatever the raw status was (SIGTERM, SIGKILL); without one it is `clean` (exit 0), `failed:N` (exit N),
 `crashed:S` (killed by signal S: a crash, an OOM kill, somebody else's `kill -9`), `launch-failed` (it never started) or
-`lost` (its supervisor vanished and nobody saw how it ended). A requested end is never restarted; the raw status and
-`oom=yes` (the kernel's `oom_kill` counter moved) stay next to the label.
+`lost` (its supervisor vanished and nobody saw how it ended). A requested end is never restarted; the raw status,
+`oom=yes` (the kernel's `oom_kill` counter moved) and where those OOM kills came from (`oom_origin`, below) stay next to
+the label.
+
+**An OOM kill is put where the evidence puts it, and nowhere else.** When a run ends with OOM kills in its domain, the
+record says where they came from: `workload` (its own memory limit), `class` (the ceiling of its class), `ceiling` (the
+ceiling of all workloads), `outside` (none of resctl's limits: the machine, a NUMA node, or a limit above resctl's tree)
+or `unknown`; a run without one has no origin, so a `crashed:9` with `oom=no` was a SIGKILL from somebody else. The
+evidence is taken when the run starts and again when it has ended, and kept with the verdict (`oom_evidence`, one line):
+`kills:N;declared:W/C/A;log:L;machine:+M`. `kills` is the domain's `oom_kill` (any OOM: its own, an ancestor's, the
+machine's). `declared` (cgroup v2) counts the OOMs declared at the limit of the workload, its class and the ceiling during
+the run (`memory.events.local` `oom`); cgroup v1 counts none of these, only how often each limit was reached (`reached`:
+`memory.failcnt` and `memory.memsw.failcnt`), which is reported and decides nothing: a limit that was reached is no proof
+that the OOM was declared there, and a limit can be hit without the count moving (on the 6.18 kernel of the test host both
+stay at 0 at an OOM when the swap limit equals the memory limit, which is how resctl sets it when swap is not allowed;
+`memory.failcnt` counts when the swap limit is open).
+`log` is what the kernel log (`/dev/kmsg`) holds about the run's kills: the OOM killer's own record names the constraint
+(the cgroup whose limit was hit, or `global_oom`) and the victim's cgroup; only records the kernel wrote count (a process
+can write to the log, never as the kernel), and nothing after the victim's name, which the victim chose, is read.
+`machine` is the machine's count (`/proc/vmstat` `oom_kill`), which cannot have grown less. A level is named only on
+evidence that agrees: kernel records for every kill of the run that name one origin and that the counts do not
+contradict, or, without records, v2 counts that declare an OOM at one level alone (at none: `outside`); on v1 only the
+kernel's records name an origin. Everything else is `unknown`, and the evidence then starts with the reason:
+`why:several-levels`, `v1-no-declared-count`, `log-mixed`, `log-contradicts`, `log-partial`, `machine-fewer`,
+`no-counts`, `no-kill-count` or `unseen-start` (the run was finished by a reaper or `recover`: nobody saw it start). The trail has the
+origin on the `exit` line (`oom_origin=`) and the evidence on an `oom` line of its own.
 
 **Whatever happens, nothing is left behind.** When the main process ends, for whatever reason, the supervisor sweeps: it
 kills every process that is still in the kill domain, removes the domain, and only then decides what follows. A reaper
@@ -168,7 +192,8 @@ LIMITS: --memory-max V --memory-high V --pids-max N|max --cpu-max P%|max --cpu-w
   carries both out (phases `stopping`, `killing`) and the command waits for it, falling back to the kill from the
   command line if the supervisor does not answer. `remove` kills, then removes the directory in every hierarchy.
 - `state` prints one line per supervised workload: `phase`, `gen`, `restarts`, `supervisor=alive|lost|unknown`,
-  `domain=present|absent`, `main`, `sup`, `intent`, `ended`, `status`, `oom`, `stop`, `since`, `cmd`, `reason`; a record that
+  `domain=present|absent`, `main`, `sup`, `intent`, `ended`, `status`, `oom`, `oom_origin`, `oom_evidence`, `stop`, `since`,
+  `cmd`, `reason`; a record that
   does not read is reported as `corrupt=`. `list` and `status` show the domains and their counters.
 - `audit [N]` shows the last N lines of the audit trail, `critical` the registry: `NAME pid=N state=live|stale
   placed=system|elsewhere|workload:CLASS/ID|- start=T`.
@@ -250,6 +275,15 @@ What resctl does not do, so that nobody relies on it:
   that exit as requested; exit codes 125–127 are ambiguous between a launch failure and the workload's own exit; a
   workload whose main process exits while its children go on (a daemon launcher) is considered ended and its leftovers
   are swept; `oom=yes` needs the kernel's `oom_kill` counter.
+- **OOM attribution limits.** The kernel writes at most ten records of the OOM killer in five seconds and the log is a
+  ring buffer, so a kill can have no record: on cgroup v2 the counts still decide, on cgroup v1 the origin is then
+  `unknown`. Reading the log needs CAP_SYSLOG (or `dmesg_restrict=0`) and the
+  device; without them `log:unread`. The kernel writes cgroup paths from the root of the hierarchy, which a cgroup
+  namespace does not show, so a record is matched by the end of its path: a workload of the same class and name under
+  another resctl tree on the same kernel, killed during the same run, would be counted too. On v2 an OOM declared at one
+  level in the same run as a machine-wide kill without a record of it is not told apart from that level's own kill. A
+  run finished by a reaper or `recover` is `unknown` (`unseen-start`). A root workload, which can write cgroup files,
+  can bend the evidence like everything else.
 - **State.** The state directory is volatile (`/run`); a workload whose record cannot be written is finished in memory
   and recovery later labels it `failed`/`lost`; audit write failures warn but do not block a termination; the audit trail
   keeps 1024 lines per generation, so the oldest generation is dropped; an adversary of the same user could flood the
@@ -306,5 +340,9 @@ their children and critical processes, against what `probe` claims and what `Cap
 machine runs out of memory twice: with a workload to take, and with none left. `resctl-mutants.py` holds deliberate
 defects (no shield for critical processes, protection of a workload process, no guard against requests from workloads,
 an ignored intent, unbounded restarts, no memory limit per workload, no OOM bias, no raise of a lowered bias, no OOM
-preference for critical processes, a `state` that stalls, and a blind stall observer in the suite itself) and the rows
-each must break; `check-resctl.sh --mutant NAME` proves that they do.
+preference for critical processes, every OOM kill put on the workload's own limit, records a process wrote to the kernel
+log taken for the OOM killer's, a `state` that stalls, and a blind stall observer in the suite itself) and the rows each
+must break; `check-resctl.sh --mutant NAME` proves that they do. The origin of OOM kills is checked against what was done
+(`oom_origin_*`): a workload over its own limit (in the guest with a forged kernel record of a machine-wide OOM of the
+same workload in the log), two workloads over the ceiling of their class, a SIGKILL from outside, and in the guest a
+machine-wide OOM.

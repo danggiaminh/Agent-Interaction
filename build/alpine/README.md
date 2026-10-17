@@ -340,7 +340,7 @@ bias as the workload's minimum; the bias itself is applied, `oom_bias.host`, and
 `oom_bias_restored.host`) and the preference of critical processes (`critical_oom`: the score stays 0, resctl warns and
 audits it, `probe` says `oom.lower=no`); both hold in the guest. The kill domains, the system domain, the lifecycle, the process lifecycle, the critical-process
 protection, isolation, recovery and exhaustion (stress) rows cannot be limited at all.
-After the judge, `resctl-judge-selftest.py` runs 99 cases that damage the facts and the tables (a partial run that passes for a
+After the judge, `resctl-judge-selftest.py` runs 103 cases that damage the facts and the tables (a partial run that passes for a
 full verdict, hides a failure outside its areas or proves a limit without the guest, a stall of the system domain beyond its
 bound, an OOM kill in the system domain, a workload that lowered its OOM bias, a bias not raised again, a critical service
 taken by the OOM killer with or without a workload left, a lowered bias or an unlowered critical score taken for a limit
@@ -381,12 +381,14 @@ judge (`--partial`) judges what ran exactly as in a full run, cannot prove a lim
 self-test and never reports a full verdict; the process and critical sections on the host take 4.4 minutes against 14 for a full run.
 `check-resctl.sh --mutant NAME` is a negative control: it builds one of the deliberate defects of `resctl-mutants.py` into a
 copy of the crate, runs the sections it concerns on this host (and in the guest for a defect that only the guest can show)
-and passes only if the judge fails every row the defect must break. Eleven defects are kept there: in resctl no shield for
-critical processes, protection of a workload process, no guard against requests from workloads, an ignored stop intent,
+and passes only if the judge fails every row the defect must break. Thirteen defects are kept there: in resctl no shield
+for critical processes, protection of a workload process, no guard against requests from workloads, an ignored stop intent,
 unbounded restarts, no memory limit per workload, no OOM bias for workloads, no raise of a lowered bias, no OOM preference
-for critical processes and a `state` that takes 2.5 s; in the suite itself a stall observer that never reports a stall (a
-defect of a file of the suite is written as `suite:PATH`). The last run caught all eleven by their rows, and the nine
-defects of resctl's logic by the unit tests as well; the slow `state` and the blind observer only show in the suite. A defect whose text is no longer in the sources makes the control fail, not pass.
+for critical processes, a `state` that takes 2.5 s, every OOM kill put on the workload whatever the evidence says, and
+kernel-log records written from user space taken for the kernel's; in the suite itself a stall observer that never reports
+a stall (a defect of a file of the suite is written as `suite:PATH`). The last series, of the first eleven, caught all of
+them by their rows, and the nine defects of resctl's logic by the unit tests as well; the slow `state` and the blind
+observer only show in the suite. The two defects of the OOM attribution are new and not yet run as controls. A defect whose text is no longer in the sources makes the control fail, not pass.
 
 ## Isolation
 - Own mount/PID/IPC/UTS namespaces, chroot into `.build/rootfs`, environment rebuilt with `env -i` (no host variables or tokens;
