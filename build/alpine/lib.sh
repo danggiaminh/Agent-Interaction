@@ -39,8 +39,7 @@ ROOTFS_DIGEST_FILE="$BUILD_ROOT/rootfs.digest" # digest of the toolchain rootfs 
 # check-deadline.sh compare it before and after with host_compare): sandboxes of either runner, their mounts and their
 # processes (any process in a user or PID namespace other than the host's: the holder of an unprivileged sandbox, or
 # what survived a privileged one, such as a frozen process; a process whose namespaces cannot be read is not counted),
-# loop devices, cgroup directories, resctl domains, nftables
-# tables and daemons.
+# loop devices, cgroup directories, resctl domains, nftables tables and daemons.
 # The depth of the cgroup directories below the hierarchy roots: 1 where /sys/fs/cgroup is itself the cgroup v2 root,
 # 2 where it holds one hierarchy per directory (cgroup v1 or hybrid).
 cgroup_mindepth() {

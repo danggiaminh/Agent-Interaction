@@ -37,6 +37,8 @@ image="$IMAGES_DIR/$BASE_IMAGE_NAME.rootfs.tar.gz"
 work="$(mktemp -d "$BUILD_ROOT/deadline-check.XXXXXX")"
 trap 'rm -rf "${work:?}"' EXIT
 fail=0
+ok() { echo "PASS  $*"; }
+bad() { echo "FAIL  $*"; fail=1; }
 
 if [ -n "$defect" ]; then
 	# the defects: the file of build/alpine, the text, its replacement, and the start of the FAIL line it must cause
@@ -97,8 +99,6 @@ tag="check-deadline-$$" # the name of everything the cases create
 nap=4917                # the sleep of the cases: its command line marks their processes
 deadline=5
 grace=10 # the runners send SIGKILL this long after the SIGTERM of the deadline
-ok() { echo "PASS  $*"; }
-bad() { echo "FAIL  $*"; fail=1; }
 host_snapshot >"$work/host.start"
 
 # The command of the cases, in the image. case.sh MODE TAG NAP [STATUS]: exit ends at once with STATUS; hang puts a
