@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Run a command inside the tools image (development image + debug, trace, profile, benchmark, pressure,
 # filesystem, VM and container tools), offline.
-#   tools-run.sh [--privileged] [--image FILE.rootfs.tar.gz] [--copy SRC:DST]... [--out DIR:HOSTDIR] -- command [args...]
+#   tools-run.sh [--privileged] [--image FILE.rootfs.tar.gz] [--copy SRC:DST]... [--out DIR:HOSTDIR] [--deadline SECONDS]
+#                -- command [args...]
 #     --copy SRC:DST     copy host directory SRC to DST inside the image before the command runs
 #     --out DIR:HOSTDIR  copy DIR out of the image into HOSTDIR (created) after the command
+#     --deadline SECONDS the command gets SIGTERM after SECONDS and SIGKILL 10 s later; then everything left of it
+#                        is removed as after any run, and tools-run.sh exits 124 ("tools-run: deadline" on stderr)
 #     --privileged       run as the real root of the host in private mount, PID, IPC, UTS, network and cgroup
 #                        namespaces (the image is the pivot_root'ed root of the command's mount namespace), with
 #                        the host's devices, sysfs, tracefs and cgroup hierarchies: what loop
@@ -15,8 +18,9 @@
 # emulation) runs this way.
 #
 # --privileged needs real root on the host and shares the kernel with it; the runner removes what it can
-# leave behind: processes (the PID namespace dies with the command), mounts and network state (private
-# namespaces), loop devices attached and cgroup directories created during the run, and the extracted root.
+# leave behind: processes (the PID namespace dies with the command; cgroups created during the run are thawed first,
+# a frozen process ignores even SIGKILL), mounts and network state (private namespaces), loop devices attached and
+# cgroup directories created during the run, and the extracted root. It does so after a deadline too.
 # The network namespace starts with a loopback device only; nothing reaches the network.
 #
 # Environment inside the image is the contract of dev-run.sh (PATH, HOME=/root, LANG=C.UTF-8, TZ=UTC,
@@ -28,11 +32,12 @@ if [ "${1:-}" = "--inner-privileged" ]; then
 	# ---- PID 1 of the new PID namespace, real root, new mount/IPC/UTS/network/cgroup namespaces ----
 	R="$2"
 	shift 2
-	copies=() outs=()
+	copies=() outs=() deadline=0
 	while [ "${1:-}" != "--" ]; do
 		case "$1" in
 		--copy) copies+=("$2"); shift 2 ;;
 		--out) outs+=("$2"); shift 2 ;;
+		--deadline) deadline="$2"; shift 2 ;;
 		esac
 	done
 	shift
@@ -71,29 +76,52 @@ if [ "${1:-}" = "--inner-privileged" ]; then
 	# What exists before, to remove only what this run created.
 	cg_before="$(mktemp)"
 	loops_before="$(mktemp)"
-	find /sys/fs/cgroup -mindepth 2 -type d 2>/dev/null | LC_ALL=C sort >"$cg_before"
+	find /sys/fs/cgroup -mindepth "$(cgroup_mindepth)" -type d 2>/dev/null | LC_ALL=C sort >"$cg_before"
 	losetup -a 2>/dev/null | cut -d: -f1 | LC_ALL=C sort >"$loops_before" || true
 	rc=0
 	# The command gets the image as the root of its own mount namespace (pivot_root, not chroot): runc and
 	# nsenter place a process that joins a container at the root of that container's mount namespace, which
 	# is the image root only when dockerd itself was not merely chrooted.
-	unshare --mount -- sh -c '
+	limit=()
+	if [ "$deadline" -gt 0 ]; then limit=(timeout --kill-after=10 "$deadline"); fi
+	t0=$SECONDS
+	${limit[@]+"${limit[@]}"} unshare --mount -- sh -c '
 		r="$1"; shift
 		cd "$r" && pivot_root . . && umount -l . || exit 125
 		exec /usr/bin/env -i "$@"' sh "$R" \
 		PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root LANG=C.UTF-8 TZ=UTC \
 		SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" CARGO_HOME=/root/.cargo CARGO_NET_OFFLINE=true \
 		CARGO_INCREMENTAL=0 CARGO_TERM_COLOR=never TERM=dumb "$@" || rc=$?
+	if [ "$deadline" -gt 0 ] && [ $((SECONDS - t0)) -ge "$deadline" ] && { [ "$rc" = 124 ] || [ "$rc" = 137 ]; }; then
+		echo "tools-run: deadline: the command was still running after ${deadline} s: stopped" >&2
+		rc=124
+	fi
 	for o in ${outs[@]+"${outs[@]}"}; do
 		mkdir -p "${o#*:}"
 		cp -a "$R${o%%:*}/." "${o#*:}/" || true
 	done
-	# Leave nothing running; detach loop devices and remove cgroup directories created during the run.
+	# Leave nothing running: thaw what the run froze (a frozen process does not even die of SIGKILL), kill everything
+	# in this PID namespace, then detach the loop devices and remove the cgroup directories the run created. Bounded:
+	# a directory that will not go after a few tries is left for the caller's check of the host to report.
+	find /sys/fs/cgroup -mindepth "$(cgroup_mindepth)" -type d 2>/dev/null | LC_ALL=C sort | comm -13 "$cg_before" - >"$cg_before.new" || true
+	while read -r d; do
+		if [ -f "$d/freezer.state" ]; then echo THAWED >"$d/freezer.state" 2>/dev/null || true; fi
+		if [ -f "$d/cgroup.freeze" ]; then echo 0 >"$d/cgroup.freeze" 2>/dev/null || true; fi
+	done <"$cg_before.new"
 	kill -9 -1 2>/dev/null || true
 	sleep 0.5
-	losetup -a 2>/dev/null | cut -d: -f1 | LC_ALL=C sort | comm -13 "$loops_before" - | while read -r l; do losetup -d "$l" 2>/dev/null || true; done
-	find /sys/fs/cgroup -mindepth 2 -type d 2>/dev/null | LC_ALL=C sort | comm -13 "$cg_before" - | sort -r | while read -r d; do rmdir "$d" 2>/dev/null || true; done
-	rm -f "$cg_before" "$loops_before"
+	losetup -a 2>/dev/null | cut -d: -f1 | LC_ALL=C sort | comm -13 "$loops_before" - | while read -r l; do losetup -d "$l" 2>/dev/null || true; done || true
+	for _ in 1 2 3 4 5; do
+		left=0
+		while read -r d; do
+			[ -d "$d" ] || continue
+			rmdir "$d" 2>/dev/null || left=1
+		done < <(sort -r "$cg_before.new")
+		[ "$left" = 0 ] && break
+		kill -9 -1 2>/dev/null || true
+		sleep 0.4
+	done
+	rm -f "$cg_before" "$cg_before.new" "$loops_before"
 	exit "$rc"
 fi
 
@@ -108,6 +136,11 @@ while [ $# -gt 0 ]; do
 	--privileged) privileged=1; shift ;;
 	--image) image="${2:?--image needs a file}"; shift 2 ;;
 	--copy | --out) pass+=("$1" "${2:?$1 needs an argument}"); shift 2 ;;
+	--deadline)
+		case "${2:-}" in '' | *[!0-9]* | 0) die "--deadline needs a number of seconds" ;; esac
+		pass+=("$1" "$2")
+		shift 2
+		;;
 	--) shift; break ;;
 	*) die "unknown option $1" ;;
 	esac

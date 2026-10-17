@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Run a command inside the development image (Rust + C), unprivileged and offline.
-#   dev-run.sh [--image FILE.rootfs.tar.gz] [--copy SRC:DST]... [--out DIR:HOSTDIR] -- command [args...]
+#   dev-run.sh [--image FILE.rootfs.tar.gz] [--copy SRC:DST]... [--out DIR:HOSTDIR] [--deadline SECONDS] -- command [args...]
 #     --copy SRC:DST     copy host directory SRC to DST inside the image before the command runs
 #     --out DIR:HOSTDIR  copy DIR out of the image into HOSTDIR (created) after the command
+#     --deadline SECONDS the command gets SIGTERM after SECONDS and SIGKILL 10 s later; the PID namespace dies with it,
+#                        the scratch root is removed, and dev-run.sh exits 124 ("dev-run: deadline" on stderr)
 #
 # The image archive is extracted into a scratch root under .build/ inside a user namespace that maps
 # ids 0-65535 of the image onto an unprivileged host range, so nothing in it holds privileges on the
@@ -23,11 +25,12 @@ if [ "${1:-}" = "--inner" ]; then
 	# ---- root of the (already mapped) user namespace, PID 1 of the new PID namespace ----
 	R="$2" tarball="$3"
 	shift 3
-	copies=() outs=()
+	copies=() outs=() deadline=0
 	while [ "${1:-}" != "--" ]; do
 		case "$1" in
 		--copy) copies+=("$2"); shift 2 ;;
 		--out) outs+=("$2"); shift 2 ;;
+		--deadline) deadline="$2"; shift 2 ;;
 		esac
 	done
 	shift
@@ -54,10 +57,19 @@ if [ "${1:-}" = "--inner" ]; then
 	done
 	ip link set lo up 2>/dev/null || true
 	rc=0
-	chroot "$R" /usr/bin/env -i \
+	limit=()
+	if [ "$deadline" -gt 0 ]; then limit=(timeout --kill-after=10 "$deadline"); fi
+	t0=$SECONDS
+	${limit[@]+"${limit[@]}"} chroot "$R" /usr/bin/env -i \
 		PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root LANG=C.UTF-8 TZ=UTC \
 		SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" CARGO_HOME=/root/.cargo CARGO_NET_OFFLINE=true \
 		CARGO_INCREMENTAL=0 CARGO_TERM_COLOR=never TERM=dumb "$@" || rc=$?
+	if [ "$deadline" -gt 0 ] && [ $((SECONDS - t0)) -ge "$deadline" ] && { [ "$rc" = 124 ] || [ "$rc" = 137 ]; }; then
+		echo "dev-run: deadline: the command was still running after ${deadline} s: stopped" >&2
+		rc=124
+	fi
+	# nothing of the command outlives it: the PID namespace dies with this process anyway, this makes it explicit
+	kill -9 -1 2>/dev/null || true
 	for o in ${outs[@]+"${outs[@]}"}; do
 		mkdir -p "${o#*:}"
 		cp -a "$R${o%%:*}/." "${o#*:}/" || true
@@ -81,6 +93,11 @@ while [ $# -gt 0 ]; do
 		shift 2
 		;;
 	--out) pass+=(--out "${2:?--out needs DIR:HOSTDIR}"); shift 2 ;;
+	--deadline)
+		case "${2:-}" in '' | *[!0-9]* | 0) die "--deadline needs a number of seconds" ;; esac
+		pass+=(--deadline "$2")
+		shift 2
+		;;
 	--) shift; break ;;
 	*) die "unknown option $1" ;;
 	esac

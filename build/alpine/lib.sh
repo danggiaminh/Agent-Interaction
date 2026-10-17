@@ -35,6 +35,48 @@ TESTBED_DIR="$ALPINE_BUILD_DIR/testbed"                     # test bed sources: 
 
 ROOTFS_DIGEST_FILE="$BUILD_ROOT/rootfs.digest" # digest of the toolchain rootfs right after bootstrap
 
+# What the host looks like, one line per kind of state a sandboxed session could leave behind (check-resctl.sh and
+# check-deadline.sh compare it before and after with host_compare): sandboxes of either runner, their mounts and their
+# processes (any process in a user or PID namespace other than the host's: the holder of an unprivileged sandbox, or
+# what survived a privileged one, such as a frozen process; a process whose namespaces cannot be read is not counted),
+# loop devices, cgroup directories, resctl domains, nftables
+# tables and daemons.
+# The depth of the cgroup directories below the hierarchy roots: 1 where /sys/fs/cgroup is itself the cgroup v2 root,
+# 2 where it holds one hierarchy per directory (cgroup v1 or hybrid).
+cgroup_mindepth() {
+	if [ "$(stat -f -c %T /sys/fs/cgroup 2>/dev/null)" = cgroup2fs ]; then echo 1; else echo 2; fi
+}
+
+host_snapshot() {
+	echo "sandbox directories: $(find "$BUILD_ROOT" -maxdepth 1 \( -name 'tools-run.*' -o -name 'dev-run.*' \) | wc -l)"
+	echo "sandbox mounts: $(grep -cE "$BUILD_ROOT/(tools|dev)-run" /proc/mounts || true)"
+	echo "sandbox processes: $(find /proc -mindepth 3 -maxdepth 3 \( -path '/proc/[0-9]*/ns/user' -o -path '/proc/[0-9]*/ns/pid' \) \
+		-printf '%h %l\n' 2>/dev/null | awk -v u="$(readlink /proc/self/ns/user)" -v p="$(readlink /proc/self/ns/pid)" \
+		'$2 != "" && $2 != u && $2 != p && !seen[$1]++ { n++ } END { print n + 0 }')"
+	echo "loop devices: $(losetup -a 2>/dev/null | cut -d: -f1 | LC_ALL=C sort | tr '\n' ' ')"
+	echo "cgroup directories: $(find /sys/fs/cgroup -mindepth "$(cgroup_mindepth)" -type d 2>/dev/null | LC_ALL=C sort | md5sum | cut -c1-12)"
+	echo "resctl domains: $(find /sys/fs/cgroup -maxdepth 4 -name agent-interaction -type d 2>/dev/null | wc -l)"
+	echo "nftables tables: $(nft list tables 2>/dev/null | LC_ALL=C sort | tr '\n' ';')"
+	echo "daemons: $(ps -eo pid=,comm= | awk '$2 ~ /^(dockerd|containerd|libvirtd|virtlogd|virtlockd|dnsmasq|qemu-system|runc|resctl)/ { printf "%s:%s ", $1, $2 }')"
+}
+
+# host_compare BEFORE AFTER: two outputs of host_snapshot; a PASS line for every kind of state that is as it was, a FAIL
+# line with what it is now and what it was for every other (something left behind, or something that went away while
+# the run went on); exit status 1 if anything differs.
+host_compare() {
+	local line was rc=0
+	while IFS= read -r line; do
+		if grep -qFx -- "$line" "$1"; then
+			echo "PASS  unchanged: ${line%%:*}"
+		else
+			was="$(grep -F -- "${line%%:*}:" "$1" | head -n 1 || true)"
+			echo "FAIL  not as before: $line (before:${was#*:})"
+			rc=1
+		fi
+	done <"$2"
+	return "$rc"
+}
+
 # Digest of the toolchain rootfs without the paths every sandbox run legitimately touches (mount
 # points, pseudo-filesystems, the resolver copy). Any other difference means the toolchain drifted.
 rootfs_digest() {

@@ -19,16 +19,17 @@ build/alpine/check-base.sh             # validate package set, filesystem, deter
 
 build/alpine/make-dev.sh               # add the Rust + C toolchain: .build/images/alpine-dev-3.24.2-x86_64.rootfs.tar.gz
 build/alpine/check-dev.sh              # validate the dev image, rebuild it from clean, compile and run C and Rust projects
-build/alpine/dev-run.sh [--copy SRC:DST] [--out DIR:HOSTDIR] -- cmd   # run a command in a throwaway copy of the dev image
+build/alpine/dev-run.sh [--copy SRC:DST] [--out DIR:HOSTDIR] [--deadline S] -- cmd   # run a command in a throwaway copy of the dev image
 
 build/alpine/make-tools.sh             # add the tools layer: .build/images/alpine-tools-3.24.2-x86_64.rootfs.tar.gz
 build/alpine/check-tools.sh            # validate the tools image, rebuild it from clean, rebuild the cgroup v2 test bed, then run every tool
-build/alpine/tools-test.sh             # only the functional run (3 sessions): PASS / DENIED / LIMIT / UPSTREAM / FAIL per fact, exit 1 on FAIL
+build/alpine/tools-test.sh [--deadline S]   # only the functional run (3 sessions): PASS / DENIED / LIMIT / UPSTREAM / FAIL per fact, exit 1 on FAIL
 build/alpine/tools-judge-selftest.py UNPRIV.facts PRIV.facts GUEST.facts   # prove the judge fails on damaged facts (tools-test.sh runs it)
 build/alpine/make-guest.sh [--check|--clean]   # build / verify / remove the cgroup v2 test bed (guest kernel + initramfs) in .build/guest
-build/alpine/tools-run.sh [--privileged] [--copy SRC:DST] [--out DIR:HOSTDIR] -- cmd   # run a command in a throwaway copy of the tools image
+build/alpine/tools-run.sh [--privileged] [--copy SRC:DST] [--out DIR:HOSTDIR] [--deadline S] -- cmd   # run a command in a throwaway copy of the tools image
+build/alpine/check-deadline.sh [--defect NAME]   # the deadline of the runners: a hung command is stopped and leaves nothing behind
 
-build/alpine/check-resctl.sh [--facts DIR]   # resource control (runtime/resctl): build, test and judge it in 3 sessions; exit 1 only on FAIL
+build/alpine/check-resctl.sh [--facts DIR] [--deadline S]   # resource control (runtime/resctl): build, test and judge it in 3 sessions; exit 1 only on FAIL
 build/alpine/resctl-judge-selftest.py UNPRIV.facts PRIV.facts GUEST.facts   # prove that judge fails on damaged facts and tables (check-resctl.sh runs it)
 ```
 `make-dev.sh` and `make-tools.sh` (and the two `check-*.sh`) are one mechanism, `make-layer.sh` and `check-layer.sh`, with the layer
@@ -349,8 +350,28 @@ wrong or unmeasured cause, without a guest proof or on an isolation, termination
 expectation, a crash loop that is not stopped, an orphan or a stale domain left behind, an unexpected exit taken for a requested stop,
 an audit trail with a gap, a restart storm, a critical process killed, frozen or left in a workload domain, a workload that obtained
 protected status or changed the registry, a policy that grants protection, an unbounded restart policy, unsafe code) and requires the
-judge to reject each one; then the host is compared with its state before the sessions (sandboxes, mounts, loop devices, cgroup
-directories, resctl domains, nftables tables, daemons) and `vendor/alpine-aports` is checked for changes.
+judge to reject each one; then the host is compared with its state before the sessions (sandboxes, their mounts and processes,
+loop devices, cgroup directories, resctl domains, nftables tables, daemons: `host_snapshot` of `lib.sh`) and
+`vendor/alpine-aports` is checked for changes, after a run that stopped early as well.
+
+**Every session has a deadline** (`--deadline S` of `dev-run.sh` and `tools-run.sh`): at the deadline the command gets
+SIGTERM, ten seconds later SIGKILL, then the runner removes what is left as after any run and exits 124 with
+`dev-run: deadline: ...` or `tools-run: deadline: ...` on stderr. The deadline is enforced inside the sandbox, by its PID 1,
+so its own cleanup runs afterwards: a process that changed its process group dies with the PID namespace, cgroups the run
+created are thawed first (a frozen process ignores even SIGKILL, and one left frozen keeps the PID namespace from ever
+dying), loop devices it attached are detached and its cgroup directories removed. `check-resctl.sh` gives its sessions 1200,
+2400 and 2100 s (the guest's QEMU has 1500 of its own), `tools-test.sh` 2400, 2400 and 1500; a stopped session is a FAIL
+of its own (`the X session was stopped at its deadline`), and the host is compared with its state before as after any
+run. `check-deadline.sh` proves it in about a minute: first the comparison of the host must see one planted leftover of
+each kind (a sandbox directory, a process in another user namespace, a cgroup directory, a loop device); then commands
+that end before their deadline keep their own exit status (124 included), unprivileged and privileged; a command that
+ignores SIGTERM and has a process outside its process group is stopped 15 s after it started with a deadline of 5 s, and
+a privileged one that also froze a process in a v1 freezer cgroup and attached a loop device leaves neither behind; and
+`check-resctl.sh --deadline 5` reports its stopped session and checks the host after it. The timeout and the cleanup of
+every case are reported apart, each case runs under a safety timeout of its own, and what a failed case left of its own
+is removed afterwards. `check-deadline.sh --defect NAME` runs it on a copy of `build/alpine` with a defect of the runners
+(`no-thaw`, `no-message`, `no-dev-deadline`) and passes only if the copy's check fails: without the thaw the frozen
+process kept the privileged sandbox alive until the safety timeout, which is how a hung session would look.
 
 Every session prints its duration (on this host: unprivileged 55 to 128 s, privileged about 4 minutes, guest about 9). For iteration,
 `check-resctl.sh --areas LIST` runs only some sections in the privileged and guest sessions, `layout` always among them (it

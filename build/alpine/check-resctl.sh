@@ -17,8 +17,11 @@
 # report would and requires the judge to fail every one of them. Exit status 1 only if something FAILs.
 # After the sessions the host is checked for leftovers: sandboxes, mounts, loop devices, cgroup directories, resctl
 # domains, nftables tables, daemons; and the vendored tree for changes.
-#   check-resctl.sh [--image FILE.rootfs.tar.gz] [--facts DIR] [--areas LIST] [--no-guest] [--mutant NAME]
+#   check-resctl.sh [--image FILE.rootfs.tar.gz] [--facts DIR] [--areas LIST] [--no-guest] [--mutant NAME] [--deadline S]
 #     --facts DIR    keeps the raw output of the sessions and the status of every row
+#     --deadline S   stops each session after S seconds instead of its own deadline (unprivileged 1200, privileged 2400,
+#                    guest 2100: several times what a session takes, and above the 1500 s the guest's QEMU may run);
+#                    a stopped session is a FAIL, and what it left behind is checked like after any other run
 #     --areas LIST   runs only these areas of the suite (resctl-judge.py --list-areas) in the privileged and guest sessions,
 #                    and layout, which measures what the causes of the host's limits name; the unprivileged session always
 #                    runs in full, it builds and tests the binary the others run
@@ -37,6 +40,7 @@ require_root
 
 image=()
 keep=""
+deadline=""
 areas=""
 guest=yes
 mutant=""
@@ -47,6 +51,11 @@ while [ $# -gt 0 ]; do
 	--areas) areas="${2:?--areas needs a list}"; shift 2 ;;
 	--no-guest) guest=no; shift ;;
 	--mutant) mutant="${2:?--mutant needs a name (resctl-mutants.py list)}"; shift 2 ;;
+	--deadline)
+		case "${2:-}" in '' | *[!0-9]* | 0) die "--deadline needs a number of seconds" ;; esac
+		deadline="$2"
+		shift 2
+		;;
 	*) die "unknown option $1" ;;
 	esac
 done
@@ -70,17 +79,15 @@ work="$(mktemp -d "$BUILD_ROOT/resctl-check.XXXXXX")"
 trap 'rm -rf "${work:?}"' EXIT
 fail=0
 
-# What the host looks like, one line per kind of state a session could leave behind.
-snapshot() {
-	echo "sandbox directories: $(find "$BUILD_ROOT" -maxdepth 1 -name 'tools-run.*' | wc -l)"
-	echo "sandbox mounts: $(grep -c "$BUILD_ROOT/tools-run" /proc/mounts || true)"
-	echo "loop devices: $(losetup -a 2>/dev/null | cut -d: -f1 | LC_ALL=C sort | tr '\n' ' ')"
-	echo "cgroup directories: $(find /sys/fs/cgroup -mindepth 2 -type d 2>/dev/null | LC_ALL=C sort | md5sum | cut -c1-12)"
-	echo "resctl domains: $(find /sys/fs/cgroup -maxdepth 4 -name agent-interaction -type d 2>/dev/null | wc -l)"
-	echo "nftables tables: $(nft list tables 2>/dev/null | LC_ALL=C sort | tr '\n' ';')"
-	echo "daemons: $(ps -eo pid=,comm= | awk '$2 ~ /^(dockerd|containerd|libvirtd|virtlogd|virtlockd|dnsmasq|qemu-system|runc|resctl)/ { printf "%s:%s ", $1, $2 }')"
+host_snapshot >"$work/host.before"
+# the host and the vendored tree compared with their state before the sessions: after every run, also one that stops
+# early because a session failed or was stopped at its deadline
+host_check() {
+	echo "== host state after the sessions"
+	host_snapshot >"$work/host.after"
+	host_compare "$work/host.before" "$work/host.after" || fail=1
+	if msg="$(vendor_pristine)"; then echo "PASS  unchanged: vendor/alpine-aports"; else echo "FAIL  vendor/alpine-aports: $msg"; fail=1; fi
 }
-snapshot >"$work/host.before"
 
 # The sessions run from copies: the copy is where the unprivileged namespace ids can read it, and the sources stay
 # editable while a session runs. run/ is what the sessions see as /work (the suite, the policies, the shared helpers of
@@ -103,22 +110,26 @@ if [ -n "$areas" ]; then echo "$areas" >"$run/areas"; fi
 chmod -R a+rX "$work"
 chmod a+rwx "$work/bin"
 
-# run_session <name> [tools-run.sh options] -- <command...>: facts on stdout, console on stderr
+# run_session <name> <deadline> [tools-run.sh options] -- <command...>: facts on stdout, console on stderr. The session
+# is stopped at its deadline (tools-run.sh --deadline), and a stopped session is reported apart from one that failed.
 run_session() {
-	local name="$1" opts=() t0=$SECONDS
-	shift
+	local name="$1" limit="${deadline:-$2}" opts=() t0=$SECONDS
+	shift 2
 	while [ "$1" != -- ]; do opts+=("$1"); shift; done
 	shift
-	log "running the $name session"
-	if "$ALPINE_BUILD_DIR/tools-run.sh" ${opts[@]+"${opts[@]}"} ${image[@]+"${image[@]}"} -- "$@" >"$work/$name.facts" 2>"$work/$name.err"; then
+	log "running the $name session (deadline $limit s)"
+	if "$ALPINE_BUILD_DIR/tools-run.sh" --deadline "$limit" ${opts[@]+"${opts[@]}"} ${image[@]+"${image[@]}"} -- "$@" >"$work/$name.facts" 2>"$work/$name.err"; then
 		echo "PASS  the $name session ran to the end ($((SECONDS - t0)) s)"
+	elif grep -qE '^(tools|dev)-run: deadline: ' "$work/$name.err"; then
+		echo "FAIL  the $name session was stopped at its deadline of $limit s (what it left behind is checked below)"
+		fail=1
 	else
 		echo "FAIL  the $name session exited non-zero after $((SECONDS - t0)) s: $(tail -n 1 "$work/$name.err")"
 		fail=1
 	fi
 }
 
-run_session unprivileged --copy "$run:/work" --copy "$src:/crate" --out "/out:$work/bin" -- sh /work/unpriv.sh
+run_session unprivileged 1200 --copy "$run:/work" --copy "$src:/crate" --out "/out:$work/bin" -- sh /work/unpriv.sh
 # the release binary the unprivileged session built (and tested) is the one the other sessions run
 if [ -x "$work/bin/resctl" ]; then
 	cp "$work/bin/resctl" "$run/resctl"
@@ -127,19 +138,20 @@ if [ -x "$work/bin/resctl" ]; then
 else
 	echo "FAIL  the unprivileged session built no resctl binary; the privileged and guest sessions cannot run"
 	fail=1
+	host_check
 	if [ -n "$keep" ]; then
 		mkdir -p "$keep"
 		cp "$work"/*.facts "$work"/*.err "$keep/"
 	fi
 	exit 1
 fi
-run_session privileged --privileged --copy "$run:/work" -- sh /work/priv.sh
+run_session privileged 2400 --privileged --copy "$run:/work" -- sh /work/priv.sh
 facts=("$work/unprivileged.facts" "$work/privileged.facts")
 # the guest of the cgroup v2 test bed: booted by QEMU inside an unprivileged session, so the host is never made to
 # do what only the guest kernel may
 if [ "$guest" = yes ]; then
 	[ -f "$GUEST_DIR/bed/vmlinuz" ] && [ -f "$GUEST_DIR/bed/initramfs.cpio.gz" ] || die "no test bed guest; run make-guest.sh first"
-	run_session guest --copy "$run:/work" --copy "$GUEST_DIR/bed:/bed" --copy "$TESTBED_DIR:/testbed" -- sh /testbed/launch.sh /work/guest.sh 1500
+	run_session guest 2100 --copy "$run:/work" --copy "$GUEST_DIR/bed:/bed" --copy "$TESTBED_DIR:/testbed" -- sh /testbed/launch.sh /work/guest.sh 1500
 	facts+=("$work/guest.facts")
 fi
 
@@ -166,13 +178,7 @@ else
 	echo "== judge self-test: not run (it damages the facts of a full run; this run is partial)"
 fi
 
-echo "== host state after the sessions"
-snapshot >"$work/host.after"
-while IFS= read -r line; do
-	before="$(grep -F -x -- "$line" "$work/host.before" || true)"
-	if [ -n "$before" ]; then echo "PASS  unchanged: ${line%%:*}"; else echo "FAIL  left behind: $line"; fail=1; fi
-done <"$work/host.after"
-if msg="$(vendor_pristine)"; then echo "PASS  unchanged: vendor/alpine-aports"; else echo "FAIL  vendor/alpine-aports: $msg"; fail=1; fi
+host_check
 
 if [ -n "$keep" ]; then
 	mkdir -p "$keep"
