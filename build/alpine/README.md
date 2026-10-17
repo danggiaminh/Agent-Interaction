@@ -271,8 +271,8 @@ no `unsafe` code (`#![forbid(unsafe_code)]` in both crate roots, checked by `u_n
 inside the tools image.
 
 `check-resctl.sh` validates it in three sessions, like `tools-test.sh`, and `resctl-judge.py` judges every fact against
-`resctl-test/checks.tsv` (168 rows: id, area, resource, environments, fact, expectation, description):
-- **unprivileged** (`resctl-test/unpriv.sh`, prefix `u_`): `cargo fmt --check`, `clippy -D warnings`, the 268 unit tests (lifecycle
+`resctl-test/checks.tsv` (173 rows: id, area, resource, environments, fact, expectation, description):
+- **unprivileged** (`resctl-test/unpriv.sh`, prefix `u_`): `cargo fmt --check`, `clippy -D warnings`, the 274 unit tests (lifecycle
   rules, restart arithmetic, store, supervisor and registry against fakes; bounded at 900 s, and a fake host that is asked for
   1000 processes fails its test), the release build (the binary the other sessions run), the
   proof that the crate holds no `unsafe` and no dependency, then what resctl does with no hierarchy at all: `probe`, `policy`, `list`,
@@ -310,11 +310,16 @@ inside the tools image.
   a probe times `resctl state`; on this host the longest stall must stay within 0.5 s, the slowest answer within 2 s, the kill
   within 5 s and the OOM crash loop within 15 s, and the system domain's memory cgroup must count no OOM kill. Every process
   resctl puts into a workload, a supervised one after it changed its user too, carries `oom_score_adj` 1000 (the first choice
-  of the OOM killer of the whole machine) while `system` keeps 0; in the guest only, the whole machine is made to run out of
-  memory (a critical service of `system` holding 55 % of what is available, a workload 20 %, and an allocation outside every
-  domain that asks for all of the memory and stops when the workload is gone), and the OOM killer must take the workload, not
-  the larger critical service. The limits section adds the floor of that bias: a workload running as another user cannot
-  lower it.
+  of the OOM killer of the whole machine), and the processes of `system` stay at 0 or below; a workload that lowers its score
+  (root can) has it raised again by its supervisor, a child it started after that too, within 3 s (it takes half a second),
+  and the trail records it. In the guest only, the whole machine is made to run out of memory twice: a critical service of
+  `system` holding 55 % of what is available, a workload 20 %, and an allocation outside every domain that asks for all of
+  the memory and stops when the workload is gone (the OOM killer must take the workload, not the larger critical service);
+  then, with no workload left, a critical service holding 60 % and the same allocation (the killer must take the
+  allocation: the critical service has the policy's preference, -500). A second periodic task, stopped on purpose for a
+  second, must report that second (`stress_observer`): the stall observer is not blind. The limits section adds the floor
+  of the bias (a workload running as another user cannot lower it), the preference of a registered critical process
+  (`critical_oom`: -500) and `CapEff`, measured, against what `probe` claims (`oom.lower=`).
   `v_` repeats the sections that depend on the lifecycle backend with the v1 freezer forced (`--lifecycle v1`): the limits, throttle and
   pressure rows read the same v1 resource hierarchies as `h_`, and pressure has no v1 source at all, so those rows have no `hostv1`
   environment.
@@ -323,19 +328,22 @@ inside the tools image.
   clock runs under emulation): v2 memory, `memory.high`, `memory.oom.group`, the system memory protection,
   and the v1 freezer refused as unsupported.
 
-Every row ends as PASS, DENIED, LIMIT or FAIL; the last run on this host gave 369 PASS, 6 DENIED, 5 LIMIT and 0 FAIL. Five rows are
+Every row ends as PASS, DENIED, LIMIT or FAIL; the last run on this host gave 378 PASS, 6 DENIED, 6 LIMIT and 0 FAIL. Six rows are
 LIMIT on this host (`resctl-test/limits.tsv`, class `host-config`): the memory protection of the system domain (`memory.low`),
 `memory.oom.group` and `memory.high`, all v2-only memory files, and the same system-protection row of the v1-freezer pass. Each is accepted
 only while resctl reports the matching `unbound=<setting>: needs the cgroup v2 memory controller`, the host's memory controller is
 measured to be v1 (`h_feature_memory`, `h_cgroup_v2_controllers`), and the same row passes in the guest. A host with a v2 memory
-controller turns the failure back into FAIL. The fifth is the floor of the OOM bias (`oom_bias_locked`): root in this sandbox
-lacks CAP_SYS_RESOURCE (`h_cap_sys_resource`, measured from `CapEff`), so the kernel does not keep the bias as the workload's
-minimum; the bias itself is applied (`oom_bias.host`) and the floor holds in the guest. The kill domains, the system domain, the lifecycle, the process lifecycle, the critical-process
+controller turns the failure back into FAIL. The other two need CAP_SYS_RESOURCE, which root lacks in this sandbox
+(`h_cap_sys_resource`, measured from `CapEff`): the floor of the OOM bias (`oom_bias_locked`: the kernel does not keep the
+bias as the workload's minimum; the bias itself is applied, `oom_bias.host`, and raised again when lowered,
+`oom_bias_restored.host`) and the preference of critical processes (`critical_oom`: the score stays 0, resctl warns and
+audits it, `probe` says `oom.lower=no`); both hold in the guest. The kill domains, the system domain, the lifecycle, the process lifecycle, the critical-process
 protection, isolation, recovery and exhaustion (stress) rows cannot be limited at all.
-After the judge, `resctl-judge-selftest.py` runs 94 cases that damage the facts and the tables (a partial run that passes for a
+After the judge, `resctl-judge-selftest.py` runs 99 cases that damage the facts and the tables (a partial run that passes for a
 full verdict, hides a failure outside its areas or proves a limit without the guest, a stall of the system domain beyond its
-bound, an OOM kill in the system domain, a workload that lowered its OOM bias or a critical service taken by the OOM killer,
-a lowered bias taken for a limit while resctl holds CAP_SYS_RESOURCE, a missing, extra, duplicated or
+bound, an OOM kill in the system domain, a workload that lowered its OOM bias, a bias not raised again, a critical service
+taken by the OOM killer with or without a workload left, a lowered bias or an unlowered critical score taken for a limit
+while resctl holds CAP_SYS_RESOURCE, a blind stall observer, a probe that claims too much, a missing, extra, duplicated or
 misplaced fact, a refusal that was a success, a killed system canary, a leftover domain, a guest that did not boot, a limit with a
 wrong or unmeasured cause, without a guest proof or on an isolation, termination, recovery, process, critical or deny row, a vacuous
 expectation, a crash loop that is not stopped, an orphan or a stale domain left behind, an unexpected exit taken for a requested stop,
@@ -344,17 +352,20 @@ protected status or changed the registry, a policy that grants protection, an un
 judge to reject each one; then the host is compared with its state before the sessions (sandboxes, mounts, loop devices, cgroup
 directories, resctl domains, nftables tables, daemons) and `vendor/alpine-aports` is checked for changes.
 
-Every session prints its duration (on this host: unprivileged 61 to 128 s, privileged about 4 minutes, guest about 9). For iteration,
+Every session prints its duration (on this host: unprivileged 55 to 128 s, privileged about 4 minutes, guest about 9). For iteration,
 `check-resctl.sh --areas LIST` runs only some sections in the privileged and guest sessions, `layout` always among them (it
 measures the causes of the host's limits; the unprivileged session always runs in full: it builds and tests the binary the
 others run) and `--no-guest` skips the test bed. Such a run is partial: the
 judge (`--partial`) judges what ran exactly as in a full run, cannot prove a limitation without its guest proof, skips its
-self-test and never reports a full verdict; the process and critical sections on the host take 4.4 minutes against 14.5 for a full run.
+self-test and never reports a full verdict; the process and critical sections on the host take 4.4 minutes against 14 for a full run.
 `check-resctl.sh --mutant NAME` is a negative control: it builds one of the deliberate defects of `resctl-mutants.py` into a
 copy of the crate, runs the sections it concerns on this host (and in the guest for a defect that only the guest can show)
-and passes only if the judge fails every row the defect must break. Seven defects are kept there (no shield for critical
-processes, protection of a workload process, no guard against requests from workloads, an ignored stop intent, unbounded
-restarts, no memory limit per workload, no OOM bias for workloads); each is caught by its rows and by the unit tests. A defect whose text is no longer in the sources makes the control fail, not pass.
+and passes only if the judge fails every row the defect must break. Eleven defects are kept there: in resctl no shield for
+critical processes, protection of a workload process, no guard against requests from workloads, an ignored stop intent,
+unbounded restarts, no memory limit per workload, no OOM bias for workloads, no raise of a lowered bias, no OOM preference
+for critical processes and a `state` that takes 2.5 s; in the suite itself a stall observer that never reports a stall (a
+defect of a file of the suite is written as `suite:PATH`). The last run caught all eleven by their rows, and the nine
+defects of resctl's logic by the unit tests as well; the slow `state` and the blind observer only show in the suite. A defect whose text is no longer in the sources makes the control fail, not pass.
 
 ## Isolation
 - Own mount/PID/IPC/UTS namespaces, chroot into `.build/rootfs`, environment rebuilt with `env -i` (no host variables or tokens;

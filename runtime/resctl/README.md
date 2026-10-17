@@ -29,11 +29,13 @@ ones that called `setsid`, double-forked, or filled the process limit.
 the policy is loaded. A policy that cannot mean what it says on this machine is refused with rc 2, never rounded or
 clamped: a limit above the limit of its domain, a workload ceiling that leaves no memory to `system`, a `memory.high`
 above `memory.max`, a missing `memory.max` or `pids.max` (every workload is bounded in memory and process count), a
-restart limit above its cap, a duplicate section, and any attempt to grant protected status.
+restart limit above its cap, a duplicate section, and any attempt to grant protected status. The one OOM setting a policy
+may make is `[system] oom.score_adj`, the preference that critical processes get when an operator registers them; it
+grants nothing, -1000 (immune to the OOM killer) is refused, and so is any `oom_score` key in another section.
 
 | section            | keys                                                                                       |
 |--------------------|--------------------------------------------------------------------------------------------|
-| `[system]`         | `cpu.weight`, `memory.reserve` (protected from reclaim where the kernel allows it)         |
+| `[system]`         | `cpu.weight`, `memory.reserve` (protected from reclaim where the kernel allows it), `oom.score_adj` (-999 to 0) |
 | `[workload]`       | `memory.max`, `pids.max`, `cpu.max`: the aggregate ceiling                                 |
 | `[class.NAME]`     | `memory.max`, `pids.max`, `cpu.max`, `cpu.weight`: the class ceiling and its CPU share     |
 | `[limits.NAME]`    | what one workload of the class gets by default: `memory.max`, `memory.high`, `pids.max`, `cpu.max`, `cpu.weight`, `memory.swap` (`none`\|`allow`), `oom.group`, `io.max` (`DEV rbps=N wbps=N riops=N wiops=N`, repeatable), `cpuset.cpus` |
@@ -113,10 +115,24 @@ process (so that a reused pid is not mistaken for the service) and a name. The p
    runs inside a workload domain; `protect` refuses a process that runs in a workload domain; a policy cannot name
    protected status; the registry lives in the state directory a workload (another uid) cannot open; and a request is
    decided by where the process is, not by what the caller says.
-4. **The OOM killer of the whole machine takes workloads first.** Every process resctl puts into a workload (`run`,
-   `enter`, the main process of `supervise`) is given `oom_score_adj` 1000 before it enters, and its children inherit it;
-   when resctl holds CAP_SYS_RESOURCE the kernel keeps 1000 as the process's minimum, so a workload that runs as another
-   user cannot lower it. An OOM inside a domain still chooses among the processes of that domain.
+4. **The OOM killer of the whole machine takes workloads first, ordinary processes next.** Its choice follows three
+   classes:
+   - **workloads**: every process resctl puts into a workload (`run`, `enter`, the main process of `supervise`) is
+     given `oom_score_adj` 1000 before it enters, and its children inherit it. When resctl holds CAP_SYS_RESOURCE the
+     kernel keeps 1000 as the process's minimum, so a workload of another user cannot lower it; where it can (resctl
+     without the capability, or a root workload), the supervisor raises every lowered score in its domain again within
+     half a second (audited at the first raise of a run and whenever the count doubles). An unmanaged `run` has no
+     supervisor to do that.
+   - **ordinary processes** (everything outside resctl's domains, resctl itself included): their own score, 0 by default.
+   - **critical processes**: registration (`protect`, `enter system`) sets the policy's `[system] oom.score_adj` (the
+     default policy says -500; a lower score a process already has is kept). The OOM killer then takes a critical process
+     before an ordinary one only when it is larger by half of the memory: it is protected, not immune, so a leaking
+     service cannot leave the machine with nothing to take. Lowering a score needs CAP_SYS_RESOURCE; without it the
+     registration stands, the score stays, and resctl says so (stderr, a `warn` line in the trail, `probe`:
+     `oom.lower=no: <why>`).
+   An OOM inside a domain still chooses among the processes of that domain, and `memory.reserve` (`memory.low` of
+   `system`, cgroup v2 only) keeps the memory of critical services from being reclaimed for workloads; resctl sets no
+   `memory.min`, whose hard protection would move the failure to everything else.
 
 A damaged registry is not believed: kill-type commands fail closed until it is healed. The heal (done by the prelude of
 most mutating commands, and by `recover`) keeps every readable line that still names a live process of the same start
@@ -136,8 +152,9 @@ resctl [--policy FILE] [--lifecycle auto|v1|v2] [--state-dir DIR] COMMAND
 LIMITS: --memory-max V --memory-high V --pids-max N|max --cpu-max P%|max --cpu-weight W --io 'DEV k=N ...' --cpus LIST --swap none|allow --oom-group yes|no
 ```
 
-- `probe` shows which hierarchy serves which feature (`feature.memory=v1:/sys/fs/cgroup/memory`, ...) and changes
-  nothing; `init` creates the domains and sets their limits, and is safe to repeat.
+- `probe` shows which hierarchy serves which feature (`feature.memory=v1:/sys/fs/cgroup/memory`, ...) and the OOM
+  settings it can make (`oom.workload=1000`, `oom.lower=yes`, or `oom.lower=no:` and why: no CAP_SYS_RESOURCE, or the
+  capability of a user namespace, which the kernel ignores for OOM scores), and changes nothing; `init` creates the domains and sets their limits, and is safe to repeat.
 - `run` creates the domain and execs the program in it; the exit status is the program's, and the domain stays, empty,
   until `remove` or `recover`. It has no lifecycle record. A program that cannot be resolved is refused with rc 2 before
   a domain is created; one that fails to exec afterwards removes its domain again.
@@ -244,21 +261,29 @@ What resctl does not do, so that nobody relies on it:
 - **Signalling** uses the system's `kill` tool (batches of 256, signals 0, 9 and 15 only); without it a graceful stop
   falls back to the kill and the v1 kill is unsupported. `NoNewPrivs` is not applied.
   Supervised workloads inherit the supervisor's environment and stdio (stdin is null). Non-UTF-8 arguments are refused.
-- **Memory exhaustion: the boundary.** What holds is measured (the `stress` rows): a workload, a class or all workloads
-  together are held to their ceilings by the kernel's OOM killer inside their own memory cgroups, and meanwhile a periodic
-  task in `system` and the control plane stay responsive (on the host, with real timing: the longest stall and the
-  slowest `state` are bounded); when the whole machine runs out of memory, the OOM killer takes a workload before a larger
-  critical service (shown in the guest only: it is not done to a shared host). What resctl does not provide: a bias that a
-  root workload cannot undo (`allow.root`, or `run` by root: such a workload holds the capability to lower it), or that a
-  workload of another user cannot undo when resctl lacks CAP_SYS_RESOURCE (when it is not root, or in a container that
-  drops the capability, as the sandbox of the test host does: a LIMIT row there), protection once no workload is left
-  to kill, against exhaustion of kernel memory, or against stalls caused by I/O (`system` has no I/O protection, and
-  `io.max` needs a whole disk). Where the memory controller is cgroup v1, `system` has no reclaim protection (`memory.low`), only the ceiling on
+- **Memory exhaustion: the boundary.** What holds is measured (the `stress` and `limits` rows): a workload, a class or
+  all workloads together are held to their ceilings by the kernel's OOM killer inside their own memory cgroups, and
+  meanwhile a periodic task in `system` and the control plane stay responsive (on the host, with real timing: the
+  longest stall and the slowest `state` are bounded). When the whole machine runs out of memory the OOM killer takes a
+  workload before a larger critical service, and with no workload left an ordinary process before a larger critical
+  service (both shown in the guest only: it is not done to a shared host). What resctl does not provide:
+  - a bias that a root workload cannot undo for good (`allow.root`, or `run` by root: it holds the capability to lower
+    it; a supervisor raises it again within half a second, an unmanaged `run` has nobody to);
+  - a floor that a workload of another user cannot lower in between when resctl lacks CAP_SYS_RESOURCE (when it is not
+    root, or in a container that drops the capability, as the sandbox of the test host does: a LIMIT row there): the
+    supervisor's raise closes the gap to half a second, not to nothing; the same capability is needed for the
+    preference of critical processes, which otherwise keep their score (a LIMIT row too);
+  - a critical service that keeps its memory once it is larger than the others by half of the memory, or when it is all
+    that is left; no early reaction to pressure (resctl does not watch PSI or `memory.events` to shed load before the
+    kernel acts; the limits and the OOM killer are the mechanism);
+  - protection against exhaustion of kernel memory, or against stalls caused by I/O (`system` has no I/O protection,
+    and `io.max` needs a whole disk).
+  Where the memory controller is cgroup v1, `system` has no reclaim protection (`memory.low`), only the ceiling on
   `workload`. No userspace tool can prevent every kernel failure or every OOM of the whole machine.
 - **Tests.** Failed domain creation with an unforeseen I/O error and restart delays caused by the start rate are covered
-  by unit tests only (an end-to-end check would take about a minute). The timing oracles of the `stress` rows (the stall
-  of the periodic task, the latency of the control plane) have no negative control: a defect that stalls `system` cannot
-  be produced safely on a shared host.
+  by unit tests only (an end-to-end check would take about a minute). The timing oracles are checked from both sides
+  without stalling the machine: a periodic task stopped on purpose for a second must report it (`stress_observer`), a
+  blinded observer and a slow `state` are negative controls; a real stall of `system` is not produced on a shared host.
 
 ## Validation
 
@@ -276,6 +301,10 @@ forced termination, orphans, isolation, recovery, and a canary critical service 
 The `stress` section exhausts memory and the CPUs inside workload domains and measures from outside them: a periodic task
 in `system` (`ctr-test beat`) times its own stalls, a probe times `resctl state`, and the kernel's counters of each memory
 cgroup, not resctl's report, say where the OOM killer struck and how high the usage went. Every load is bounded twice, by
-its domain and by its own size. `resctl-mutants.py` holds deliberate defects of resctl (no shield for critical processes,
-protection of a workload process, no guard against requests from workloads, an ignored intent, unbounded restarts, no
-memory limit per workload) and the rows each must break; `check-resctl.sh --mutant NAME` proves that they do.
+its domain and by its own size. The OOM policy is read back from the kernel too (`/proc/PID/oom_score_adj` of workloads,
+their children and critical processes, against what `probe` claims and what `CapEff` says), and in the guest the whole
+machine runs out of memory twice: with a workload to take, and with none left. `resctl-mutants.py` holds deliberate
+defects (no shield for critical processes, protection of a workload process, no guard against requests from workloads,
+an ignored intent, unbounded restarts, no memory limit per workload, no OOM bias, no raise of a lowered bias, no OOM
+preference for critical processes, a `state` that stalls, and a blind stall observer in the suite itself) and the rows
+each must break; `check-resctl.sh --mutant NAME` proves that they do.
