@@ -96,7 +96,7 @@ cp "$ALPINE_BUILD_DIR/tools-test/bpf/guest.c" "$run/bpf/"
 cp -a "$REPO_ROOT/runtime/resctl/." "$src/"
 rm -rf "${src:?}/target"
 if [ -n "$mutant" ]; then
-	"${mutants[@]}" apply "$mutant" "$src" || die "the defect $mutant does not apply to the sources: update resctl-mutants.py"
+	"${mutants[@]}" apply "$mutant" "$src" "$run" || die "the defect $mutant does not apply to the sources: update resctl-mutants.py"
 fi
 # the sections of the suite that priv.sh and guest.sh run (all of them when the file is absent)
 if [ -n "$areas" ]; then echo "$areas" >"$run/areas"; fi

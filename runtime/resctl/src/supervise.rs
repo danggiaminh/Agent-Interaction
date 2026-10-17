@@ -12,7 +12,7 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{self, Child, Command, Stdio};
 
 use crate::domain::{
-    Controller, Error, Recovered, Result, Stopped, Target, TornDown, Workload, SYSTEM,
+    Controller, Error, Recovered, Result, Stopped, Target, TornDown, Workload, OOM_BIAS, SYSTEM,
 };
 use crate::fs::{Guard, Host};
 use crate::life::{
@@ -31,6 +31,8 @@ const REAP_MS: u64 = 5_000;
 const FINISH_MS: u64 = 20_000;
 /// The longest sleep between two looks at the state: a request is seen within this time.
 const SLICE_MS: u64 = 200;
+/// How often, in polls, a supervisor raises again the OOM bias of the processes of its workload.
+const RESTORE_POLLS: u64 = 10;
 /// How long an operator leaves a kill to the supervisor of a workload that is watching its run, before it does it itself.
 const TAKE_MS: u64 = 500;
 /// How often it looks at that supervisor meanwhile.
@@ -943,6 +945,7 @@ fn launch(ctx: Ctx<'_>, job: &Job, rec: &mut Record, created: bool) -> Flow<Laun
 /// Wait for the main process to end or for an operator to ask for its end. An exit is looked at before a request: a
 /// workload that ended by itself is not called requested because a request arrived a moment later.
 fn watch(ctx: Ctx<'_>, w: &Workload, rec: &mut Record, pid: i32) -> Watched {
+    let (mut polls, mut restored) = (0u64, 0u64);
     loop {
         match ctx.p.try_wait(pid) {
             Ok(Some(e)) => return Watched::Exited(e),
@@ -952,7 +955,31 @@ fn watch(ctx: Ctx<'_>, w: &Workload, rec: &mut Record, pid: i32) -> Watched {
         if asked(ctx, w, rec) {
             return Watched::Asked;
         }
+        polls += 1;
+        if polls.is_multiple_of(RESTORE_POLLS) {
+            restore_bias(ctx, w, &mut restored);
+        }
         ctx.host.pause(POLL_MS);
+    }
+}
+
+/// A process of the workload may lower its OOM bias where the kernel does not keep it as the minimum (see
+/// `can_lower_oom`) or when it runs as root: raise it again. The first raise of a run is audited, then each one that
+/// doubles the count, so a workload that keeps lowering it cannot flood the trail.
+fn restore_bias(ctx: Ctx<'_>, w: &Workload, restored: &mut u64) {
+    for (pid, was, ok) in ctx.c.restore_bias(w) {
+        *restored += 1;
+        if restored.is_power_of_two() {
+            let what = if ok {
+                format!("raised to {OOM_BIAS} again")
+            } else {
+                "it could not be raised again".to_string()
+            };
+            let detail = format!(
+                "process {pid} had lowered its OOM bias to {was}: {what} (raise {restored} of this run)"
+            );
+            audit_opt(ctx, Event::Warn, &w.to_string(), &detail);
+        }
     }
 }
 
@@ -2019,6 +2046,43 @@ mod tests {
         // The same workload can be supervised again: a new generation of the same record.
         let again = supervise(ctx, &job("a")).unwrap();
         assert_eq!((again.phase, again.gen), (Phase::Finished, 2));
+        let _ = op;
+    }
+
+    #[test]
+    fn a_workload_that_lowers_its_oom_bias_has_it_raised_again_within_ten_polls() {
+        let seen = std::cell::RefCell::new(Vec::new());
+        rig!(h, c, s, p, op, ctx, standard());
+        p.scripts(&[Script::ends(Exit::Code(0), 35)]);
+        p.on_poll(|n| {
+            for pid in h.procs_of(&dom("a")) {
+                let path = format!("/proc/{pid}/oom_score_adj");
+                match n {
+                    // the workload lowers its bias three times; between them the score is looked at
+                    3 | 13 | 23 => h.set(&path, "0"),
+                    9 | 11 | 19 | 21 => seen.borrow_mut().push((n, h.value(&path))),
+                    _ => {}
+                }
+            }
+        });
+        let out = supervise(ctx, &job("a")).unwrap();
+        assert_eq!(out.phase, Phase::Finished);
+        assert_eq!(
+            *seen.borrow(),
+            [
+                (9, "0".to_string()),
+                (11, "1000".into()),
+                (19, "0".into()),
+                (21, "1000".into())
+            ],
+            "lowered, then raised again at the tenth poll"
+        );
+        // the first raise of a run and each one that doubles the count are audited: 1 and 2, not 3
+        let warn = details(&s, Event::Warn);
+        assert_eq!(warn.len(), 2, "{warn:?}");
+        assert!(warn[0]
+            .contains("had lowered its OOM bias to 0: raised to 1000 again (raise 1 of this run)"));
+        assert!(warn[1].contains("(raise 2 of this run)"));
         let _ = op;
     }
 

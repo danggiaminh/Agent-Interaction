@@ -62,6 +62,13 @@ if section layout; then
 	if [ "$prc" = 0 ] && [ "$mode" = none ] && [ "$nfeat" -ge 9 ] && [ "$nbound" = 0 ]; then
 		kv u_layout "ok layout=none: all $nfeat features unbound, probe changed nothing (rc 0)"
 	else kv u_layout "fail:probe rc=$prc layout=${mode:-?} features=$nfeat bound=$nbound"; fi
+	# root of a user namespace holds CAP_SYS_RESOURCE there, which the kernel ignores for OOM scores: resctl must not
+	# claim that it can lower one
+	lw="$(sed -n 's/^oom\.lower=//p' "$T/probe.out")"
+	case "$lw" in
+	"no: the CAP_SYS_RESOURCE of a user namespace"*) kv u_oom_lower "ok probe says oom.lower=no in a user namespace, whose CAP_SYS_RESOURCE does not count" ;;
+	*) kv u_oom_lower "fail:probe says oom.lower=${lw:-nothing} in a user namespace" ;;
+	esac
 	if [ -d /sys/fs/cgroup ] && [ -n "$(ls /sys/fs/cgroup 2>/dev/null)" ]; then kv u_no_hierarchy "fail:/sys/fs/cgroup is populated in the unprivileged session"
 	else kv u_no_hierarchy "ok no cgroup hierarchy is mounted in the unprivileged session"; fi
 fi
@@ -74,13 +81,13 @@ if section normal; then
 	have=0
 	for k in system.cpu.weight system.memory.reserve workload.memory.max workload.pids.max class.interactive.cpu.weight \
 		class.batch.memory.max limits.batch.pids.max stop.grace_ms recover.orphans restart.mode restart.max restart.window_ms \
-		restart.total restart.backoff_ms restart.backoff_max_ms restart.rate supervise.workloads run.allow_root; do
+		restart.total restart.backoff_ms restart.backoff_max_ms restart.rate supervise.workloads run.allow_root system.oom.score_adj; do
 		grep -q "^$k=" "$T/policy.out" && have=$((have + 1))
 	done
 	total="$(sed -n 's/^memtotal=//p' "$T/policy.out")"
-	if [ "$prc" = 0 ] && [ "$have" = 18 ] && [ -n "$total" ]; then
-		kv u_policy "ok the built-in policy binds to this machine (memtotal=$total): 18 of 18 settings printed"
-	else kv u_policy "fail:policy rc=$prc settings=$have/18 memtotal=${total:-?}"; fi
+	if [ "$prc" = 0 ] && [ "$have" = 19 ] && [ -n "$total" ]; then
+		kv u_policy "ok the built-in policy binds to this machine (memtotal=$total): 19 of 19 settings printed"
+	else kv u_policy "fail:policy rc=$prc settings=$have/19 memtotal=${total:-?}"; fi
 	"$RC" --policy /work/test.policy policy >"$T/policy2.out" 2>&1
 	frc=$?
 	if [ "$frc" = 0 ] && grep -qx 'workload.memory.max=536870912' "$T/policy2.out" && grep -qx 'stop.grace_ms=2000' "$T/policy2.out" \

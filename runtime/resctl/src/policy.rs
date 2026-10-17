@@ -5,6 +5,7 @@
 //! [system]            critical services; never in a kill domain
 //! cpu.weight = 1000
 //! memory.reserve = 128M
+//! oom.score_adj = -500  the OOM killer's preference for a registered critical process (-999 to 0)
 //! [workload]          the ceiling on every workload together (memory.max and pids.max are required)
 //! memory.max = 75%
 //! pids.max = 4096
@@ -81,7 +82,14 @@ pub struct Limits {
 pub struct SystemPolicy {
     pub cpu_weight: Option<u32>,
     pub memory_reserve: Option<Mem>,
+    /// The `oom_score_adj` a process gets when it is registered as critical: how much less the OOM killer of the whole
+    /// machine prefers it. Never -1000 (immune) and never above 0.
+    pub oom_score_adj: Option<i32>,
 }
+
+/// The lowest `[system] oom.score_adj`: -1000 would make a critical process immune to the OOM killer, and a service that
+/// leaks would then leave the machine without memory and with nothing the kernel may take.
+pub const MIN_CRITICAL_OOM_ADJ: i32 = -999;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Class {
@@ -510,6 +518,24 @@ fn parse_count(s: &str, min: u32, max: u32, what: &str) -> Result<u32, String> {
     }
 }
 
+/// The OOM preference of critical processes: from `MIN_CRITICAL_OOM_ADJ` to 0.
+fn parse_critical_oom_adj(s: &str) -> Result<i32, String> {
+    match s.parse::<i32>() {
+        Ok(-1000) => Err(
+            "`-1000` makes a critical process immune to the OOM killer: a service that leaks would leave the machine with \
+             nothing to take (-999 is the lowest)"
+                .into(),
+        ),
+        Ok(n) if (MIN_CRITICAL_OOM_ADJ..=0).contains(&n) => Ok(n),
+        Ok(n) if n > 0 => Err(format!(
+            "`{s}` would make a critical process the OOM killer's preference: 0 at most"
+        )),
+        _ => Err(format!(
+            "`{s}` is not an oom_score_adj between {MIN_CRITICAL_OOM_ADJ} and 0"
+        )),
+    }
+}
+
 /// A duration of at least `min_ms`.
 fn parse_span(s: &str, min_ms: u64, what: &str) -> Result<u64, String> {
     let ms = parse_duration(s)?;
@@ -656,7 +682,9 @@ impl Policy {
     }
 
     fn set(&mut self, s: &Section, key: &str, v: &str) -> Result<(), String> {
-        if grants_protection(key) {
+        // one exception, and only in [system]: the OOM preference that processes an operator registers get; it grants
+        // nothing to anybody
+        if grants_protection(key) && !(*s == Section::System && key == "oom.score_adj") {
             return Err(PROTECTION.into());
         }
         let weight = |v: &str| parse_weight(v);
@@ -690,6 +718,9 @@ impl Policy {
             (Section::System, "cpu.weight") => self.system.cpu_weight = Some(weight(v)?),
             (Section::System, "memory.reserve") => {
                 self.system.memory_reserve = Some(Mem::parse(v)?)
+            }
+            (Section::System, "oom.score_adj") => {
+                self.system.oom_score_adj = Some(parse_critical_oom_adj(v)?)
             }
             (Section::Stop, "grace") => self.stop_grace_ms = parse_duration(v)?,
             (Section::Recover, "orphans") => {
@@ -800,6 +831,7 @@ mod tests {
 [system]
 cpu.weight = 1000
 memory.reserve = 128M
+oom.score_adj = -500
 [workload]
 memory.max = 75%
 pids.max = 4096
@@ -852,6 +884,7 @@ gid = 1001
         let p = Policy::parse(GOOD).unwrap();
         assert_eq!(p.system.cpu_weight, Some(1000));
         assert_eq!(p.system.memory_reserve, Some(Mem::Bytes(128 << 20)));
+        assert_eq!(p.system.oom_score_adj, Some(-500));
         assert_eq!(p.aggregate.memory_max, Some(Mem::Percent(75)));
         assert_eq!(p.aggregate.cpu_max, Some(Num::N(300)));
         let i = &p.classes["interactive"];
@@ -995,6 +1028,13 @@ gid = 1001
             ("x = 1\n", "outside a section"),
             ("[system]\nmemory.max = 1G\n", "not a key of this section"),
             ("[system]\ncpu.weight = 0\n", "weight"),
+            (
+                "[system]\noom.score_adj = -1000\n",
+                "immune to the OOM killer",
+            ),
+            ("[system]\noom.score_adj = 1\n", "0 at most"),
+            ("[system]\noom.score_adj = -1001\n", "between -999 and 0"),
+            ("[system]\noom.score_adj = low\n", "between -999 and 0"),
             ("[system]\ncpu.weight = 1\ncpu.weight = 2\n", "set twice"),
             ("[system]\n[system]\n", "appears twice"),
             ("[system]\ncpu.weight\n", "not key = value"),
@@ -1052,6 +1092,18 @@ gid = 1001
             ),
             (
                 "[run]\nOOM_SCORE_ADJ = -1000\n",
+                "cannot grant protected status",
+            ),
+            (
+                "[class.a]\noom.score_adj = -500\n",
+                "cannot grant protected status",
+            ),
+            (
+                "[limits.a]\noom.score_adj = 0\n",
+                "cannot grant protected status",
+            ),
+            (
+                "[system]\noom_score_adj = -500\n",
                 "cannot grant protected status",
             ),
         ];
@@ -1157,9 +1209,19 @@ gid = 1001
     }
 
     #[test]
+    fn the_oom_preference_of_critical_processes_is_bounded() {
+        for (v, ok) in [("0", Some(0)), ("-500", Some(-500)), ("-999", Some(-999))] {
+            let p = Policy::parse(&format!("{BASE}[system]\noom.score_adj = {v}\n")).unwrap();
+            assert_eq!(p.system.oom_score_adj, ok, "{v}");
+        }
+        assert_eq!(Policy::parse(BASE).unwrap().system.oom_score_adj, None);
+    }
+
+    #[test]
     fn the_shipped_default_policy_is_valid() {
         let text = include_str!("../policy/default.policy");
         let p = Policy::parse(text).unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(p.system.oom_score_adj, Some(-500));
         for total in [1u64 << 30, 16 << 30] {
             p.resolve(total)
                 .unwrap_or_else(|e| panic!("{total}: {e:?}"));

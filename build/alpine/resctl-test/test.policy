@@ -3,6 +3,7 @@
 [system]
 cpu.weight = 1000
 memory.reserve = 64M
+oom.score_adj = -500
 
 [workload]
 memory.max = 512M

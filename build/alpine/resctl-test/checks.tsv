@@ -25,6 +25,7 @@ no_unsafe	build	platform	unpriv	no_unsafe	ok	the crate contains no unsafe code: 
 # ---- layout: what resctl sees, against what the mounts and the controller lists say
 layout	layout	platform	unpriv,host,hostv1,guest	layout	ok	resctl's reading of the cgroup layout equals the one of the mounts (unprivileged: none)
 no_hierarchy	layout	platform	unpriv	no_hierarchy	ok	no cgroup hierarchy exists in the unprivileged session
+oom_lower	layout	protection	unpriv	oom_lower	ok	in a user namespace resctl does not claim that it can lower an OOM score (its CAP_SYS_RESOURCE there does not count)
 mode_host	layout	platform	host,hostv1	cgroup_mode	~^(v1|v2|hybrid)$	the cgroup layout of the host (measured, not assumed)
 mode_guest	layout	platform	guest	cgroup_mode	=v2	the test bed guest is cgroup v2 only
 v1_host	layout	platform	host,hostv1	cgroup_v1_controllers	~^(none|.*\b(memory|pids|cpu|blkio|cpuset|freezer)\b.*)$	the cgroup v1 controllers of the host (the measured cause of its limits)
@@ -78,6 +79,7 @@ swap_denied	limits	memory	host,guest	swap_denied	ok	a workload cannot swap by de
 oom_group	limits	memory	host,guest	oom_group	ok	an OOM kill takes the whole workload (--oom-group yes) or only a process (no)
 oom_bias_locked	limits	protection	host,guest	oom_bias_locked	ok	a workload that runs as another user cannot lower its bias toward the OOM killer: the kernel keeps 1000 as its minimum
 cap_sys_resource	limits	platform	host,guest	cap_sys_resource	~^(yes|no) CapEff=[0-9a-f]+$	whether resctl holds CAP_SYS_RESOURCE, measured (the cause of a limit of oom_bias_locked)
+critical_oom	limits	protection	host,guest	critical_oom	ok	a registered critical process gets the OOM preference of the policy (oom_score_adj -500), and resctl's own report agrees with what it could do
 # ---- throttling
 cpu_quota	throttle	cpu	host,guest	cpu_quota	ok	a workload's CPU time is capped to its quota
 cpu_weight	throttle	cpu	host,guest	cpu_weight	ok	under contention the workloads share the CPU in proportion to their weights
@@ -178,8 +180,11 @@ stress_stall	stress	protection	host,hostv1	stress_stall	ok	the longest stall of 
 stress_control	stress	lifecycle	host,hostv1	stress_control	ok	the control plane (resctl state) answers within 2 s throughout
 stress_kill_time	stress	lifecycle	host,hostv1	stress_kill_time	ok	the forced kill under load is complete within 5 s
 stress_loop_time	stress	lifecycle	host,hostv1	stress_loop_time	ok	the OOM crash loop ends failed within 15 s
-oom_bias	stress	protection	host,hostv1,guest	oom_bias	ok	every process resctl puts into a workload, and its children, is the first choice of the OOM killer of the whole machine (oom_score_adj 1000), a supervised one too after it changed its user, and the system domain keeps 0
+oom_bias	stress	protection	host,hostv1,guest	oom_bias	ok	every process resctl puts into a workload, and its children, is the first choice of the OOM killer of the whole machine (oom_score_adj 1000), a supervised one too after it changed its user, while the processes of the system domain stay at 0 or below
 global_oom	stress	protection	guest	global_oom	ok	when the whole machine runs out of memory the OOM killer takes a workload, not a larger critical service of the system domain
+global_oom_no_workload	stress	protection	guest	global_oom_no_workload	ok	with no workload left, a machine-wide OOM takes an ordinary process, not a larger critical service that has the OOM preference of the policy
+oom_bias_restored	stress	protection	host,hostv1,guest	oom_bias_restored	ok	a workload that lowers its OOM bias, and a child it started after that, have it raised again by their supervisor within seconds, and the trail records it
+stress_observer	stress	platform	host,hostv1,guest	stress_observer	ok	the stall observer reports a stall that was made on purpose (a periodic task stopped for 1 s): it is not blind
 system_canary_stress	stress	protection	host,hostv1,guest	system_canary_stress	ok	a process in the system domain survives the exhaustion of memory and CPU by workloads
 # ---- lifecycle backends
 lifecycle_v2	lifecycle	lifecycle	host,hostv1,guest	lifecycle_v2	ok	--lifecycle v2 serves freeze, kill and pressure from cgroup v2

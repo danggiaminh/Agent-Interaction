@@ -464,6 +464,9 @@ rc_s_limits() {
 	capeff="$(sed -n 's/^CapEff:[[:space:]]*//p' /proc/self/status)"
 	if [ $((0x${capeff:-0} >> 24 & 1)) = 1 ]; then capres=yes; else capres=no; fi
 	f cap_sys_resource "$capres CapEff=$capeff"
+	# what resctl says about it itself (probe: oom.lower=yes, or no and why), held against the measurement
+	"$RC_BIN" --lifecycle "$RC_LC" probe >"$T/${RC_P}oomprobe.out" 2>&1
+	lower="$(sed -n 's/^oom\.lower=\([a-z]*\).*/\1/p' "$T/${RC_P}oomprobe.out")"
 	lk_dir="$T/${RC_P}lk"
 	mkdir -p "$lk_dir"
 	chmod 777 "$lk_dir"
@@ -472,9 +475,24 @@ rc_s_limits() {
 	lk_rc=$RS
 	lk="$(cat "$lk_dir/out" 2>/dev/null)"
 	rc reset batch/lk
-	if [ "$lk_rc $lk" = "0 65534 kept 1000" ]; then f oom_bias_locked "ok a workload running as uid 65534 could not lower its oom_score_adj from 1000 (CAP_SYS_RESOURCE: $capres)"
-	elif [ "$lk_rc $lk" = "0 65534 lowered 0" ] && [ "$capres" = no ]; then f oom_bias_locked "unsupported:CAP_SYS_RESOURCE is not in the capability set: the kernel does not keep the bias as a minimum, and a workload running as uid 65534 lowered it to 0"
-	else f oom_bias_locked "fail:rc=$lk_rc '$lk' with CAP_SYS_RESOURCE $capres (wanted 0 '65534 kept 1000')"; fi
+	if [ "$lk_rc $lk $lower" = "0 65534 kept 1000 yes" ]; then f oom_bias_locked "ok a workload running as uid 65534 could not lower its oom_score_adj from 1000 (CAP_SYS_RESOURCE: $capres; probe: oom.lower=yes)"
+	elif [ "$lk_rc $lk $lower" = "0 65534 lowered 0 no" ] && [ "$capres" = no ]; then f oom_bias_locked "unsupported:CAP_SYS_RESOURCE is not in the capability set: the kernel does not keep the bias as a minimum, and a workload running as uid 65534 lowered it to 0 (probe: oom.lower=no)"
+	else f oom_bias_locked "fail:rc=$lk_rc '$lk' with CAP_SYS_RESOURCE $capres, probe oom.lower=${lower:-?} (wanted 0 '65534 kept 1000' and yes)"; fi
+	# a registered critical process gets the OOM preference of the policy ([system] oom.score_adj = -500). Lowering a score
+	# needs CAP_SYS_RESOURCE too: without it the registration stands, the score stays and resctl says why.
+	rcbg enter system -- sleep 4891 >"$T/${RC_P}co.out" 2>"$T/${RC_P}co.err" &
+	co=$!
+	CANARY_EXTRA=1
+	waitfor 10 rc_find_is 'sleep 4891 ' 1
+	co_adj="$(cat "/proc/$co/oom_score_adj" 2>/dev/null)"
+	co_warn="$(grep -c 'registered, but process [0-9]* keeps its OOM score' "$T/${RC_P}co.err")"
+	rc unprotect "$co"
+	kill -9 "$co" 2>/dev/null
+	wait "$co" 2>/dev/null
+	CANARY_EXTRA=0
+	if [ "$co_adj $co_warn $lower" = "-500 0 yes" ]; then f critical_oom "ok a process registered by enter system has oom_score_adj -500, the preference of the policy (probe: oom.lower=yes)"
+	elif [ "$co_adj $co_warn $lower $capres" = "0 1 no no" ]; then f critical_oom "unsupported:CAP_SYS_RESOURCE is not in the capability set: a registered critical process keeps its OOM score (0), and resctl said so on stderr (probe: oom.lower=no)"
+	else f critical_oom "fail:oom_score_adj=${co_adj:-?} warnings=$co_warn CAP_SYS_RESOURCE=$capres probe oom.lower=${lower:-?} (wanted -500 0 yes, or 0 1 no without the capability)"; fi
 	canary_note limits
 }
 
@@ -2865,8 +2883,9 @@ rc_s_stress() {
 	ob_sys="$(cat "/proc/$CANARY/oom_score_adj" 2>/dev/null) $(cat "/proc/$beat/oom_score_adj" 2>/dev/null)"
 	chk run_and_child "$ob_run" "1000 1000"
 	chk supervised "$ob_rc $ob_sup" "0 65534 1000"
-	chk system "$ob_sys" "0 0"
-	verdict oom_bias "a run workload and its child have oom_score_adj 1000, a supervised workload running as uid 65534 has 1000, the canary and the beat in system keep 0"
+	# the canary and the beat are critical services: 0, or the preference of the policy where resctl may lower a score
+	chk system "$(for v in $ob_sys; do if [ "$v" -le 0 ] 2>/dev/null; then echo low; else echo "$v"; fi; done | tr '\n' ' ')" "low low "
+	verdict oom_bias "a run workload and its child have oom_score_adj 1000, a supervised workload running as uid 65534 has 1000, the canary and the beat in system are not biased (oom_score_adj $ob_sys)"
 	canary_note oom_bias
 
 	# the whole machine out of memory (in the guest only, where it is safe): the OOM killer takes the workload, not the
@@ -2910,6 +2929,71 @@ rc_s_stress() {
 		verdict global_oom "${avail} MiB available: a critical service in system held ${big} MiB, a workload ${wl} MiB (limit $((wl + 32))M), and an allocation outside every domain asked for all ${out} MiB: the OOM killer took the workload (rc 137, oom_kill counted in its memory cgroup, its own limit not reached), the allocation stopped at $(sed -n 's/^mem-until=\([0-9]*\) .*/\1/p' "$T/${RC_P}gout.out") MiB, and the critical service kept running in system ($((${vm1:-0} - ${vm0:-0})) OOM kill)"
 		canary_note global_oom
 	fi
+
+	# a workload that lowers its OOM bias (here it can: it runs as root, as it could anywhere the kernel does not keep the
+	# floor) has it raised again by its supervisor within a second, a child it started after lowering it too
+	rb_dir="$T/${RC_P}rb"
+	mkdir -p "$rb_dir"
+	sup_bg "$RC_POLICY" batch/rb --restart never -- sh -c 'echo 0 >/proc/self/oom_score_adj; a=$(cat /proc/self/oom_score_adj); sleep 30 & k=$!; sleep 3; echo "$a $(cat /proc/self/oom_score_adj) $(cat /proc/$k/oom_score_adj)" >"$0"; kill $k' "$rb_dir/out"
+	rb_sup=$SUPPID
+	rc_reap "$rb_sup" 30
+	rb="$(cat "$rb_dir/out" 2>/dev/null)"
+	rb_audit="$(rc_ev batch/rb warn 'process [0-9]+ had lowered its OOM bias to 0: raised to 1000 again')"
+	rc reset batch/rb
+	chk restored "$rb" "0 1000 1000"
+	chk audited "$([ "${rb_audit:-0}" -ge 1 ] && echo yes || echo no)" yes
+	chk supervisor_ended "$SPHUNG" no
+	verdict oom_bias_restored "a supervised workload lowered its oom_score_adj to 0 and started a child: 3 s later both had 1000 again, and the trail has the raise"
+	canary_note oom_bias_restored
+
+	# the whole machine out of memory with no workload left (in the guest only): the critical service holds more than
+	# half of what is available, so it would be the largest process; with the OOM preference of the policy (-500) the
+	# killer takes the allocation outside every domain instead
+	if [ "${RC_GLOBAL_OOM:-no}" = yes ]; then
+		avail=$(($(sed -n 's/^MemAvailable: *\([0-9]*\) kB$/\1/p' /proc/meminfo) / 1024))
+		big=$((avail * 60 / 100))
+		out=$(($(sed -n 's/^MemTotal: *\([0-9]*\) kB$/\1/p' /proc/meminfo) / 1024))
+		vm0="$(sed -n 's/^oom_kill //p' /proc/vmstat)"
+		rcbg enter system -- "$CT" mem "$big" 120 >"$T/${RC_P}nbig.out" 2>&1 &
+		nbig=$!
+		CANARY_EXTRA=2
+		waitfor 60 grep -q mem-ok "$T/${RC_P}nbig.out"
+		nb_adj="$(cat "/proc/$nbig/oom_score_adj" 2>/dev/null)"
+		rc list
+		nw="$(grep -cE '^(batch|interactive)/' "$T/rc.out")"
+		"$CT" mem "$out" 1 >"$T/${RC_P}nout.out" 2>&1
+		nout_rc=$?
+		vm1="$(sed -n 's/^oom_kill //p' /proc/vmstat)"
+		nbig_ok="$(yn rc_alive "$nbig") $(grep -c '/agent-interaction/system$' "/proc/$nbig/cgroup" 2>/dev/null)"
+		rc unprotect "$nbig"
+		kill -9 "$nbig" 2>/dev/null
+		wait "$nbig" 2>/dev/null
+		CANARY_EXTRA=1
+		chk no_workload "$nw" 0
+		chk critical_preference "$nb_adj" -500
+		chk outside_taken "$nout_rc" 137
+		chk machine_oom "$([ "$((${vm1:-0} - ${vm0:-0}))" -ge 1 ] && echo yes || echo no)" yes
+		chk critical_alive "$nbig_ok" "yes $(rc_roots | wc -l)"
+		verdict global_oom_no_workload "no workload left, ${avail} MiB available: the critical service in system held ${big} MiB with oom_score_adj ${nb_adj}, an allocation outside every domain asked for all ${out} MiB, and the OOM killer took that allocation (rc 137), not the larger critical service ($((${vm1:-0} - ${vm0:-0})) OOM kill)"
+		canary_note global_oom_no_workload
+	fi
+
+	# the stall observer itself: a second periodic task, stopped for a second on purpose, must report that second
+	ob_stop="$T/${RC_P}obs.stop"
+	rm -f "$ob_stop"
+	"$CT" beat 20 60 "$ob_stop" >"$T/${RC_P}obs.out" 2>&1 &
+	obs=$!
+	waitfor 10 grep -q '^beat-ready' "$T/${RC_P}obs.out"
+	sleep 0.5
+	kill -STOP "$obs"
+	sleep 1
+	kill -CONT "$obs"
+	sleep 0.5
+	: >"$ob_stop"
+	rc_reap "$obs" 10
+	obs_ms="$(sed -n 's/^beats=[0-9]* max_stall_ms=\([0-9]*\)$/\1/p' "$T/${RC_P}obs.out")"
+	if [ -n "$obs_ms" ] && [ "$obs_ms" -ge 900 ]; then f stress_observer "ok a periodic task stopped for 1 s reported a stall of ${obs_ms} ms: the observer of the system domain is not blind"
+	else f stress_observer "fail:a periodic task stopped for 1 s reported a stall of ${obs_ms:-nothing} ms (wanted at least 900)"; fi
 
 	# the measurements, and the system domain the OOM killer never touched
 	: >"$stop"

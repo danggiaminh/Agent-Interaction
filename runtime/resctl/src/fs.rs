@@ -363,6 +363,13 @@ pub mod fake {
     pub const ENOTEMPTY: i32 = 39;
     const UNLIMITED: &str = "9223372036854771712";
 
+    /// The process of a path `/proc/PID/oom_score_adj`.
+    fn oom_adj_pid(path: &str) -> Option<i32> {
+        path.strip_prefix("/proc/")
+            .and_then(|p| p.strip_suffix("/oom_score_adj"))
+            .and_then(|p| p.parse::<i32>().ok())
+    }
+
     fn errno(n: i32) -> io::Error {
         io::Error::from_raw_os_error(n)
     }
@@ -398,6 +405,8 @@ pub mod fake {
         /// the clock `pause` advances
         clock_ms: u64,
         euid: u32,
+        /// the effective capabilities in `/proc/PID/status` (all of them unless a test says otherwise)
+        cap_eff: Option<u64>,
         /// the process `/proc/self/...` stands for
         me: i32,
         /// start time of a process in clock ticks; a pid not listed has `1000 + pid`
@@ -623,7 +632,11 @@ pub mod fake {
                     "{pid} (fake proc) S 1 {pid} {pid} 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 {} 0 0\n",
                     self.start_of(pid)
                 ),
-                _ => format!("Name:\tfake\nUid:\t{0}\t{0}\t{0}\t{0}\n", self.euid),
+                _ => format!(
+                    "Name:\tfake\nUid:\t{0}\t{0}\t{0}\t{0}\nCapEff:\t{1:016x}\n",
+                    self.euid,
+                    self.cap_eff.unwrap_or(0x1ff_ffff_ffff)
+                ),
             }))
         }
 
@@ -846,11 +859,7 @@ pub mod fake {
             if self.deny.iter().any(|d| path.ends_with(d.as_str())) {
                 return Err(errno(EACCES));
             }
-            if let Some(pid) = path
-                .strip_prefix("/proc/")
-                .and_then(|p| p.strip_suffix("/oom_score_adj"))
-                .and_then(|p| p.parse::<i32>().ok())
-            {
+            if let Some(pid) = oom_adj_pid(path) {
                 // the kernel's file of a live process: -1000 to 1000
                 if !self.procs.contains_key(&pid) {
                     return Err(errno(ENOENT));
@@ -1080,6 +1089,10 @@ pub mod fake {
             self.s.borrow_mut().euid = uid;
         }
 
+        pub fn set_cap_eff(&self, caps: u64) {
+            self.s.borrow_mut().cap_eff = Some(caps);
+        }
+
         /// The process `/proc/self/...` stands for (it need not be a process of the cgroup tables).
         pub fn set_self(&self, pid: i32) {
             self.s.borrow_mut().me = pid;
@@ -1174,6 +1187,13 @@ pub mod fake {
                         .map(|p| format!("{p}\n"))
                         .collect());
                 }
+            }
+            if let Some(pid) = oom_adj_pid(path) {
+                // the kernel's file of a live process reads 0 until something is written to it
+                if !s.procs.contains_key(&pid) {
+                    return Err(errno(ENOENT));
+                }
+                return Ok(s.files.get(path).cloned().unwrap_or_else(|| "0".into()));
             }
             s.files.get(path).cloned().ok_or_else(|| errno(ENOENT))
         }

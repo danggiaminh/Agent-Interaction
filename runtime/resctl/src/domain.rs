@@ -29,6 +29,41 @@ pub const WORKLOAD: &str = "agent-interaction/workload";
 /// inherit it, and when resctl runs as root a workload cannot lower it again: the kernel keeps it as the minimum.
 pub const OOM_BIAS: i32 = 1000;
 
+/// Whether resctl can lower an `oom_score_adj`, which is what makes the kernel keep the bias of a workload as its minimum
+/// and what the OOM preference of critical processes needs: CAP_SYS_RESOURCE in the initial user namespace (that of a
+/// user namespace does not count for these settings). The reason when it cannot.
+pub fn can_lower_oom(host: &dyn Host) -> std::result::Result<(), String> {
+    let status = host
+        .read("/proc/self/status")
+        .map_err(|e| format!("cannot read /proc/self/status: {e}"))?;
+    let caps = status
+        .lines()
+        .find_map(|l| l.strip_prefix("CapEff:"))
+        .and_then(|h| u64::from_str_radix(h.trim(), 16).ok())
+        .ok_or("no CapEff in /proc/self/status")?;
+    if (caps >> 24) & 1 == 0 {
+        return Err("no CAP_SYS_RESOURCE".into());
+    }
+    let map = host.read("/proc/self/uid_map").unwrap_or_default();
+    if map.split_whitespace().collect::<Vec<_>>() != ["0", "0", "4294967295"] {
+        return Err("the CAP_SYS_RESOURCE of a user namespace, which these settings ignore".into());
+    }
+    Ok(())
+}
+
+/// What `probe` says about the OOM settings of this machine.
+pub fn oom_report(host: &dyn Host) -> Vec<String> {
+    let mut out = vec![format!("oom.workload={OOM_BIAS}")];
+    out.push(match can_lower_oom(host) {
+        Ok(()) => "oom.lower=yes".into(),
+        Err(why) => format!(
+            "oom.lower=no: {why} (a workload of another user can lower its bias, which its supervisor raises again; \
+             critical processes keep their score)"
+        ),
+    });
+    out
+}
+
 const FREEZE_MS: u64 = 5_000;
 const KILL_MS: u64 = 10_000;
 const REMOVE_MS: u64 = 3_000;
@@ -909,6 +944,50 @@ impl<'a> Controller<'a> {
                 .map_err(|e| io_err(&format!("attach {pid} to {path}"), &e))?;
         }
         Ok(())
+    }
+
+    /// Raise again the OOM bias of every process of the workload that lowered it (it can when the kernel does not keep
+    /// the bias as its minimum, or when it runs as root): each such process, the score it had, and whether the raise
+    /// took. A process that has gone in between is skipped.
+    pub fn restore_bias(&self, w: &Workload) -> Vec<(i32, i32, bool)> {
+        let mut out = Vec::new();
+        for pid in self.pids(&w.rel()) {
+            let path = format!("/proc/{pid}/oom_score_adj");
+            let Some(now) = self
+                .host
+                .read(&path)
+                .ok()
+                .and_then(|t| t.trim().parse::<i32>().ok())
+            else {
+                continue;
+            };
+            if now < OOM_BIAS {
+                let ok = self.host.write(&path, &OOM_BIAS.to_string()).is_ok();
+                out.push((pid, now, ok));
+            }
+        }
+        out
+    }
+
+    /// Give a critical process the OOM preference of the policy (`[system] oom.score_adj`); `None` when the policy sets
+    /// none. A process whose score is that low already, or lower, keeps it. Lowering needs CAP_SYS_RESOURCE: without it
+    /// the score stays as it is and the reason is returned.
+    pub fn critical_oom(&self, pid: i32) -> Option<std::result::Result<i32, String>> {
+        let want = self.policy.system.oom_score_adj?;
+        let path = format!("/proc/{pid}/oom_score_adj");
+        let now = match self.host.read(&path) {
+            Ok(t) => t.trim().parse::<i32>().ok(),
+            Err(e) => return Some(Err(format!("cannot read {path}: {e}"))),
+        };
+        if let Some(n) = now.filter(|&n| n <= want) {
+            return Some(Ok(n));
+        }
+        Some(
+            self.host
+                .write(&path, &want.to_string())
+                .map(|()| want)
+                .map_err(|e| format!("cannot set {path} to {want}: {e}")),
+        )
     }
 
     fn require(&self, w: &Workload) -> Result<String> {
@@ -2521,6 +2600,78 @@ grace = 1500ms
             "{err}"
         );
         assert_eq!(c.placement(13).unwrap(), Placement::Elsewhere);
+    }
+
+    #[test]
+    fn a_lowered_bias_is_raised_again_and_a_refused_raise_is_reported() {
+        let h = v2_host();
+        let l = Layout::detect(&h, Lifecycle::Auto);
+        let c = setup(&h, &l);
+        c.init().unwrap();
+        let a = running(&c, &h, "a", &[10, 11]);
+        assert!(
+            c.restore_bias(&a).is_empty(),
+            "nothing lowered, nothing raised"
+        );
+        h.set("/proc/11/oom_score_adj", "0");
+        assert_eq!(c.restore_bias(&a), vec![(11, 0, true)]);
+        assert_eq!(h.value("/proc/11/oom_score_adj"), OOM_BIAS.to_string());
+        h.set("/proc/10/oom_score_adj", "-5");
+        h.deny_writes_to("/10/oom_score_adj");
+        assert_eq!(c.restore_bias(&a), vec![(10, -5, false)]);
+    }
+
+    #[test]
+    fn a_critical_process_gets_the_oom_preference_of_the_policy_and_keeps_a_lower_one() {
+        let h = v2_host();
+        let l = Layout::detect(&h, Lifecycle::Auto);
+        h.proc_in(20, &[]);
+        assert_eq!(
+            setup(&h, &l).critical_oom(20),
+            None,
+            "no oom.score_adj, no change"
+        );
+        let mut p = policy();
+        p.system.oom_score_adj = Some(-500);
+        let c = Controller::new(&h, &l, &p, 4 * GIB).unwrap();
+        assert_eq!(c.critical_oom(20), Some(Ok(-500)));
+        assert_eq!(h.value("/proc/20/oom_score_adj"), "-500");
+        h.proc_in(21, &[]);
+        h.set("/proc/21/oom_score_adj", "-900");
+        assert_eq!(c.critical_oom(21), Some(Ok(-900)), "a lower score is kept");
+        assert!(h.writes_to("/proc/21/oom_score_adj").is_empty());
+        // lowering needs CAP_SYS_RESOURCE: the kernel refuses it, the score stays and the reason is given
+        h.proc_in(22, &[]);
+        h.deny_writes_to("/22/oom_score_adj");
+        let e = c.critical_oom(22).unwrap().unwrap_err();
+        assert!(
+            e.contains("cannot set /proc/22/oom_score_adj to -500"),
+            "{e}"
+        );
+        assert!(
+            h.value("/proc/22/oom_score_adj").is_empty(),
+            "the score is not changed"
+        );
+        assert!(
+            c.critical_oom(99).unwrap().is_err(),
+            "a process that is gone"
+        );
+    }
+
+    #[test]
+    fn the_oom_report_says_whether_resctl_can_lower_a_score() {
+        let h = FakeHost::new();
+        h.set("/proc/self/uid_map", "         0          0 4294967295\n");
+        assert_eq!(oom_report(&h), ["oom.workload=1000", "oom.lower=yes"]);
+        h.set_cap_eff(0x1ff_feff_ffff);
+        assert!(oom_report(&h)[1].starts_with("oom.lower=no: no CAP_SYS_RESOURCE"));
+        h.set_cap_eff(0x1ff_ffff_ffff);
+        h.set("/proc/self/uid_map", "0 100000 65536\n");
+        assert!(
+            oom_report(&h)[1].contains("user namespace"),
+            "{:?}",
+            oom_report(&h)
+        );
     }
 
     #[test]

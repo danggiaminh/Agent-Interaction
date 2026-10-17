@@ -486,6 +486,9 @@ fn policy_lines(p: &Policy) -> Vec<String> {
     if let Some(m) = p.system.memory_reserve {
         out.push(format!("system.memory.reserve={}", mem_text(m)));
     }
+    if let Some(a) = p.system.oom_score_adj {
+        out.push(format!("system.oom.score_adj={a}"));
+    }
     out.extend(limit_lines("workload", &p.aggregate));
     for (name, c) in &p.classes {
         out.extend(limit_lines(&format!("class.{name}"), &c.aggregate));
@@ -641,6 +644,9 @@ fn execute(inv: Invocation) -> Result<i32> {
     if matches!(cmd, Cmd::Probe) {
         println!("memtotal={total}");
         for line in layout.describe() {
+            println!("{line}");
+        }
+        for line in resctl::domain::oom_report(&host) {
             println!("{line}");
         }
         return Ok(0);

@@ -186,6 +186,12 @@ pub fn protect(
         )));
     }
     s.lock()?.protect(pid, &name)?;
+    // the OOM preference of the policy: the registration stands without it, and says so (audited and on stderr)
+    if let Some(Err(why)) = c.critical_oom(pid) {
+        let why = format!("process {pid} keeps its OOM score: {}", tidy(&why));
+        note(s, Event::Warn, &name, &why);
+        s.warn_out(format!("{name}: registered, but {why}"));
+    }
     Ok(Protected { pid, name, moved })
 }
 
@@ -406,7 +412,7 @@ mod tests {
     const DIR: &str = "/run/ai";
     const SYSDOM: &str = "/c/agent-interaction/system";
     const POLICY: &str = concat!(
-        "[system]\ncpu.weight = 1000\nmemory.reserve = 64M\n",
+        "[system]\ncpu.weight = 1000\nmemory.reserve = 64M\noom.score_adj = -500\n",
         "[workload]\nmemory.max = 512M\npids.max = 256\n",
         "[class.batch]\ncpu.weight = 100\nmemory.max = 160M\npids.max = 96\n",
         "[limits.batch]\nmemory.max = 64M\npids.max = 16\n",
@@ -592,6 +598,36 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].subject, "db");
         assert_eq!(lines[0].detail, "pid=900");
+        assert_eq!(
+            h.value("/proc/900/oom_score_adj"),
+            "-500",
+            "the OOM preference of the policy"
+        );
+        assert!(lines_of(&s, Event::Warn).is_empty());
+    }
+
+    #[test]
+    fn protect_without_the_right_to_lower_a_score_registers_and_says_why() {
+        rig!(h, c, s, ctx);
+        h.proc_in(905, &[]);
+        h.deny_writes_to("/905/oom_score_adj");
+        let p = protect(&c, &s, Some("db"), 905).unwrap();
+        assert!(p.moved);
+        assert!(s.critical().unwrap().live.iter().any(|e| e.pid == 905));
+        assert!(h.value("/proc/905/oom_score_adj").is_empty());
+        let warn = lines_of(&s, Event::Warn);
+        assert_eq!(warn.len(), 1);
+        assert!(
+            warn[0]
+                .detail
+                .starts_with("process 905 keeps its OOM score"),
+            "{}",
+            warn[0].detail
+        );
+        assert!(s
+            .take_warnings()
+            .iter()
+            .any(|w| w.contains("registered, but process 905 keeps its OOM score")));
     }
 
     #[test]

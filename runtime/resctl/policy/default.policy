@@ -8,6 +8,11 @@
 [system]
 cpu.weight = 1000
 memory.reserve = 128M
+# A registered critical process gets this oom_score_adj (it needs CAP_SYS_RESOURCE): when the whole machine runs out of
+# memory and no workload is left to take (workloads carry 1000), the OOM killer takes a critical process only once it is
+# larger than an ordinary one by half of the memory. Never -1000: a critical service that leaks would leave the machine
+# without memory and with nothing the kernel may take.
+oom.score_adj = -500
 
 [workload]
 memory.max = 75%
